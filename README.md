@@ -29,6 +29,14 @@ python run.py
 
 The API starts on `http://127.0.0.1:8010` and exposes `GET /v1/health`.
 
+Database migrations:
+
+```bash
+cd services/api
+alembic upgrade head
+alembic current
+```
+
 ### Frontend
 
 ```bash
