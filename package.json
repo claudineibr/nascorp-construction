@@ -1,0 +1,12 @@
+{
+  "name": "nascorp-construction",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "api:dev": "cd services/api && python run.py",
+    "api:test": "cd services/api && python -m pytest",
+    "mfe:dev": "npm --prefix ui/construction-mfe run dev",
+    "mfe:build": "npm --prefix ui/construction-mfe run build",
+    "mfe:preview": "npm --prefix ui/construction-mfe run preview"
+  }
+}
