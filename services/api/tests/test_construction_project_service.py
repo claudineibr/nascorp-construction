@@ -13,11 +13,12 @@ from app.domain.exceptions import (
 from app.domain.events.constants import ConstructionEventType, ErpEventType
 from app.domain.events.contracts import EventEnvelope
 from app.domain.services import ConstructionProjectService
-from app.infrastructure.database.models import ConstructionMeasurement, ConstructionProject
+from app.infrastructure.database.models import ConstructionMeasurement, ConstructionProject, ConstructionUnit
 from app.schemas.construction import (
     ConstructionMeasurementCreate,
     ConstructionProjectCreate,
     ConstructionProjectUpdate,
+    ConstructionUnitSaleConfirmRequest,
 )
 
 
@@ -25,13 +26,18 @@ class FakeConstructionRepository:
     def __init__(self) -> None:
         self.projects: dict[tuple[object, object], ConstructionProject] = {}
         self.measurements: dict[tuple[object, object], ConstructionMeasurement] = {}
+        self.units: dict[tuple[object, object], ConstructionUnit] = {}
         self.commits = 0
 
-    async def add(self, entity: ConstructionProject | ConstructionMeasurement) -> None:
+    async def add(self, entity: ConstructionProject | ConstructionMeasurement | ConstructionUnit) -> None:
         if entity.id is None:
             entity.id = uuid4()
         if isinstance(entity, ConstructionProject):
             self.projects[(entity.company_id, entity.id)] = entity
+            return
+
+        if isinstance(entity, ConstructionUnit):
+            self.units[(entity.company_id, entity.id)] = entity
             return
 
         self.measurements[(entity.company_id, entity.id)] = entity
@@ -39,7 +45,7 @@ class FakeConstructionRepository:
     async def commit(self) -> None:
         self.commits += 1
 
-    async def refresh(self, entity: ConstructionProject | ConstructionMeasurement) -> None:
+    async def refresh(self, entity: ConstructionProject | ConstructionMeasurement | ConstructionUnit) -> None:
         return None
 
     async def get_project(self, *, company_id, project_id):
@@ -59,15 +65,22 @@ class FakeConstructionRepository:
         items = [project for (stored_company_id, _), project in self.projects.items() if stored_company_id == company_id]
         return items[(page - 1) * page_size : page * page_size], len(items)
 
-    async def delete(self, entity: ConstructionProject | ConstructionMeasurement) -> None:
+    async def delete(self, entity: ConstructionProject | ConstructionMeasurement | ConstructionUnit) -> None:
         if isinstance(entity, ConstructionProject):
             self.projects.pop((entity.company_id, entity.id), None)
+            return
+
+        if isinstance(entity, ConstructionUnit):
+            self.units.pop((entity.company_id, entity.id), None)
             return
 
         self.measurements.pop((entity.company_id, entity.id), None)
 
     async def get_measurement(self, *, company_id, measurement_id):
         return self.measurements.get((company_id, measurement_id))
+
+    async def get_unit(self, *, company_id, unit_id):
+        return self.units.get((company_id, unit_id))
 
     async def get_measurement_by_code(self, *, company_id, project_id, code):
         return next(
@@ -147,6 +160,29 @@ class FakeErpMeasurementClient:
             },
         )
 
+    async def create_contract_and_receivables_from_unit_sale(self, *, event: EventEnvelope) -> EventEnvelope:
+        self.events.append(event)
+        event_id = uuid4()
+        return EventEnvelope(
+            event_id=event_id,
+            event_type=ErpEventType.CONTRACT_RECEIVABLE_CREATED,
+            event_version=1,
+            company_id=event.company_id,
+            aggregate_id=event.aggregate_id,
+            aggregate_type="construction_unit",
+            occurred_at=datetime.now(tz=UTC),
+            producer="erp-api",
+            correlation_id=event.correlation_id,
+            causation_id=event.event_id,
+            payload={
+                "construction_unit_id": str(event.aggregate_id),
+                "external_contract_id": str(uuid4()),
+                "contract_status": "ACTIVE",
+                "external_receivable_id": str(uuid4()),
+                "receivable_status": "OPEN",
+            },
+        )
+
 
 def make_service(repository: FakeConstructionRepository | None = None) -> ConstructionProjectService:
     return ConstructionProjectService(repository=repository or FakeConstructionRepository())
@@ -202,6 +238,34 @@ def make_erp_accounts_payable_updated_event(
             "construction_measurement_id": str(measurement_id),
             "accounts_payable_document_id": str(accounts_payable_document_id),
             "accounts_payable_status": accounts_payable_status,
+        },
+    )
+
+
+def make_erp_contract_status_updated_event(
+    *,
+    company_id,
+    unit_id,
+    contract_status,
+) -> EventEnvelope:
+    event_id = uuid4()
+    return EventEnvelope(
+        event_id=event_id,
+        event_type=ErpEventType.CONTRACT_STATUS_UPDATED,
+        event_version=1,
+        company_id=company_id,
+        aggregate_id=unit_id,
+        aggregate_type="construction_unit",
+        occurred_at=datetime.now(tz=UTC),
+        producer="erp-api",
+        correlation_id=event_id,
+        causation_id=None,
+        payload={
+            "construction_unit_id": str(unit_id),
+            "external_contract_id": str(uuid4()),
+            "contract_status": contract_status,
+            "external_receivable_id": str(uuid4()),
+            "receivable_status": "CANCELED" if contract_status == "CANCELED" else "OPEN",
         },
     )
 
@@ -445,4 +509,99 @@ async def test_apply_accounts_payable_updated_event_updates_measurement_once() -
     assert first_result.external_accounts_payable_id == accounts_payable_document_id
     assert first_result.external_accounts_payable_status == "PAID"
     assert second_result.external_accounts_payable_id == accounts_payable_document_id
+    assert repository.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_confirm_unit_sale_creates_contract_snapshot_once() -> None:
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    event_repository = FakeEventRepository()
+    erp_client = FakeErpMeasurementClient()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-040",
+        name="Unit sales project",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    unit = ConstructionUnit(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        code="A-101",
+        unit_type="apartment",
+        sale_price=Decimal("450000.00"),
+        status="available",
+    )
+    repository.projects[(company_id, project.id)] = project
+    repository.units[(company_id, unit.id)] = unit
+    service = ConstructionProjectService(
+        repository=repository,
+        event_repository=event_repository,
+        erp_client=erp_client,
+    )
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("450000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+    )
+    first_result = await service.confirm_unit_sale(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=request,
+    )
+    second_result = await service.confirm_unit_sale(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=request,
+    )
+
+    assert first_result.status == "sold"
+    assert first_result.external_contract_id is not None
+    assert first_result.external_receivable_id is not None
+    assert second_result.external_contract_id == first_result.external_contract_id
+    assert len(erp_client.events) == 1
+    assert any(event.event_type == ConstructionEventType.UNIT_SOLD for event in event_repository.outbox_events)
+
+
+@pytest.mark.asyncio
+async def test_apply_contract_status_updated_event_cancellation_reverts_unit_to_available() -> None:
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    event_repository = FakeEventRepository()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-041",
+        name="Contract status sync",
+        status=ConstructionProjectStatus.ACTIVE,
+    )
+    unit = ConstructionUnit(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        code="B-202",
+        unit_type="apartment",
+        status="sold",
+        sold_at=datetime.now(tz=UTC),
+    )
+    repository.projects[(company_id, project.id)] = project
+    repository.units[(company_id, unit.id)] = unit
+    service = ConstructionProjectService(repository=repository, event_repository=event_repository)
+    event = make_erp_contract_status_updated_event(
+        company_id=company_id,
+        unit_id=unit.id,
+        contract_status="CANCELED",
+    )
+
+    first_result = await service.apply_contract_status_updated_event(event=event)
+    second_result = await service.apply_contract_status_updated_event(event=event)
+
+    assert first_result.status == "available"
+    assert first_result.external_contract_status == "CANCELED"
+    assert second_result.status == "available"
     assert repository.commits == 1

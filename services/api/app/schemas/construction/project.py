@@ -125,6 +125,14 @@ class ConstructionUnitResponse(BaseModel):
     private_area: Decimal | None = None
     total_area: Decimal | None = None
     sale_price: Decimal | None = None
+    buyer_person_id: UUID | None = None
+    reserved_at: datetime | None = None
+    reservation_expires_at: date | None = None
+    sold_at: datetime | None = None
+    external_contract_id: UUID | None = None
+    external_contract_status: str | None = None
+    external_receivable_id: UUID | None = None
+    external_receivable_status: str | None = None
     status: str
     created_at: datetime
     updated_at: datetime
@@ -133,6 +141,18 @@ class ConstructionUnitResponse(BaseModel):
 class ConstructionUnitListResponse(BaseModel):
     items: list[ConstructionUnitResponse]
     total: int
+
+
+class ConstructionUnitReserveRequest(BaseModel):
+    buyer_person_id: UUID
+    reservation_expires_at: date | None = None
+
+
+class ConstructionUnitSaleConfirmRequest(BaseModel):
+    buyer_person_id: UUID
+    sale_price: Decimal | None = Field(default=None, gt=0)
+    first_due_date: date
+    installments: int = Field(default=1, ge=1, le=120)
 
 
 class ConstructionSchedulePhaseCreate(BaseModel):

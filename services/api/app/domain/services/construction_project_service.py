@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID, uuid4
@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from app.domain.constants import (
     BLOCK_STATUSES,
     ConstructionMeasurementStatus,
+    ConstructionUnitStatus,
     PROJECT_STATUS_TRANSITIONS,
     PROJECT_STATUSES,
     SCHEDULE_PHASE_STATUSES,
@@ -44,12 +45,17 @@ from app.schemas.construction import (
     ConstructionSchedulePhaseCreate,
     ConstructionSchedulePhaseUpdate,
     ConstructionUnitCreate,
+    ConstructionUnitReserveRequest,
+    ConstructionUnitSaleConfirmRequest,
     ConstructionUnitUpdate,
 )
 
 
 class ErpMeasurementClient(Protocol):
     async def create_accounts_payable_from_measurement(self, *, event: EventEnvelope) -> EventEnvelope:
+        raise NotImplementedError
+
+    async def create_contract_and_receivables_from_unit_sale(self, *, event: EventEnvelope) -> EventEnvelope:
         raise NotImplementedError
 
 
@@ -340,6 +346,133 @@ class ConstructionProjectService:
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
         await self.repository.delete(unit)
         await self.repository.commit()
+
+    async def reserve_unit(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        request: ConstructionUnitReserveRequest,
+    ) -> ConstructionUnit:
+        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        if unit.status != ConstructionUnitStatus.AVAILABLE:
+            raise ConstructionInvalidValueError(
+                message="Only available units can be reserved.",
+                error_code="CONSTRUCTION_UNIT_INVALID_STATUS",
+            )
+
+        unit.status = ConstructionUnitStatus.RESERVED
+        unit.buyer_person_id = request.buyer_person_id
+        unit.reserved_at = datetime.now(tz=UTC)
+        unit.reservation_expires_at = request.reservation_expires_at or (date.today() + timedelta(days=7))
+        await self.repository.commit()
+        await self.repository.refresh(unit)
+        return unit
+
+    async def release_unit_reservation(self, *, company_id: UUID, unit_id: UUID) -> ConstructionUnit:
+        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        if unit.status != ConstructionUnitStatus.RESERVED:
+            raise ConstructionInvalidValueError(
+                message="Only reserved units can have reservation released.",
+                error_code="CONSTRUCTION_UNIT_INVALID_STATUS",
+            )
+
+        unit.status = ConstructionUnitStatus.AVAILABLE
+        unit.buyer_person_id = None
+        unit.reserved_at = None
+        unit.reservation_expires_at = None
+        await self.repository.commit()
+        await self.repository.refresh(unit)
+        return unit
+
+    async def confirm_unit_sale(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        request: ConstructionUnitSaleConfirmRequest,
+        actor_user_id: UUID | None = None,
+    ) -> ConstructionUnit:
+        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        if unit.status == ConstructionUnitStatus.SOLD and unit.external_contract_id is not None:
+            return unit
+
+        if unit.status not in {
+            ConstructionUnitStatus.AVAILABLE,
+            ConstructionUnitStatus.RESERVED,
+            ConstructionUnitStatus.SOLD,
+        }:
+            raise ConstructionInvalidValueError(
+                message="Unit status does not allow sale confirmation.",
+                error_code="CONSTRUCTION_UNIT_INVALID_STATUS",
+            )
+
+        sale_price = request.sale_price or unit.sale_price
+        if sale_price is None or sale_price <= Decimal("0"):
+            raise ConstructionInvalidValueError(
+                message="Unit sale price is required to confirm sale.",
+                error_code="CONSTRUCTION_UNIT_SALE_PRICE_REQUIRED",
+            )
+
+        project = await self.get_project(company_id=company_id, project_id=unit.project_id)
+        if not project.analytic_cost_center_id:
+            raise ConstructionInvalidValueError(
+                message="Project must have an analytic cost center before confirming unit sale.",
+                error_code="CONSTRUCTION_PROJECT_COST_CENTER_REQUIRED",
+            )
+
+        unit.status = ConstructionUnitStatus.SOLD
+        unit.buyer_person_id = request.buyer_person_id
+        unit.sale_price = sale_price
+        unit.sold_at = datetime.now(tz=UTC)
+        unit.reservation_expires_at = None
+
+        sale_event = self._build_unit_sold_event(
+            unit=unit,
+            analytic_cost_center_id=project.analytic_cost_center_id,
+            first_due_date=request.first_due_date,
+            installments=request.installments,
+            actor_user_id=actor_user_id,
+        )
+        if self.event_repository is not None:
+            await self.event_repository.add_outbox_event(event=sale_event)
+
+        if self.erp_client is not None and unit.external_contract_id is None:
+            erp_event = await self.erp_client.create_contract_and_receivables_from_unit_sale(event=sale_event)
+            self._apply_contract_snapshot_from_payload(unit=unit, payload=erp_event.payload)
+
+        await self.repository.commit()
+        await self.repository.refresh(unit)
+        return unit
+
+    async def apply_contract_status_updated_event(self, *, event: EventEnvelope) -> ConstructionUnit:
+        if event.event_type not in {ErpEventType.CONTRACT_RECEIVABLE_CREATED, ErpEventType.CONTRACT_STATUS_UPDATED}:
+            raise ConstructionInvalidValueError(
+                message="Unsupported ERP event type for unit contract sync.",
+                error_code="CONSTRUCTION_UNSUPPORTED_ERP_EVENT",
+            )
+
+        unit_id = self._read_uuid_payload(payload=event.payload, field_name="construction_unit_id")
+        unit = await self._get_unit(company_id=event.company_id, unit_id=unit_id)
+
+        if self.event_repository is not None:
+            should_process_event = await self.event_repository.mark_processed(
+                consumer_name=ConstructionConsumerName.CONTRACT_STATUS_UPDATED,
+                event=event,
+            )
+            if not should_process_event:
+                return unit
+
+        self._apply_contract_snapshot_from_payload(unit=unit, payload=event.payload)
+        contract_status = str(event.payload.get("contract_status") or "")
+        if contract_status.upper() == "CANCELED":
+            unit.status = ConstructionUnitStatus.AVAILABLE
+            unit.sold_at = None
+            unit.external_contract_status = contract_status
+
+        await self.repository.commit()
+        await self.repository.refresh(unit)
+        return unit
 
     async def create_measurement(
         self,
@@ -725,6 +858,67 @@ class ConstructionProjectService:
         accounts_payable_status = payload.get("accounts_payable_status")
         if accounts_payable_status is not None:
             measurement.external_accounts_payable_status = str(accounts_payable_status)
+
+    @staticmethod
+    def _build_unit_sold_event(
+        *,
+        unit: ConstructionUnit,
+        analytic_cost_center_id: UUID,
+        first_due_date: date,
+        installments: int,
+        actor_user_id: UUID | None,
+    ) -> EventEnvelope:
+        event_id = uuid4()
+        payload: dict[str, Any] = {
+            "construction_unit_id": str(unit.id),
+            "construction_project_id": str(unit.project_id),
+            "unit_code": unit.code,
+            "buyer_person_id": str(unit.buyer_person_id),
+            "sale_price": ConstructionProjectService._format_event_decimal(value=unit.sale_price or Decimal("0")),
+            "first_due_date": ConstructionProjectService._format_event_date(value=first_due_date),
+            "installments": installments,
+            "analytic_cost_center_id": str(analytic_cost_center_id),
+        }
+        if actor_user_id is not None:
+            payload["user_id"] = str(actor_user_id)
+
+        return EventEnvelope(
+            event_id=event_id,
+            event_type=ConstructionEventType.UNIT_SOLD,
+            event_version=1,
+            company_id=unit.company_id,
+            aggregate_id=unit.id,
+            aggregate_type=ConstructionAggregateType.UNIT,
+            occurred_at=datetime.now(tz=UTC),
+            producer=EventProducer.CONSTRUCTION_API,
+            correlation_id=event_id,
+            causation_id=None,
+            payload=payload,
+        )
+
+    @staticmethod
+    def _apply_contract_snapshot_from_payload(*, unit: ConstructionUnit, payload: dict[str, Any]) -> None:
+        contract_id = payload.get("external_contract_id") or payload.get("contract_id")
+        if contract_id is not None:
+            unit.external_contract_id = ConstructionProjectService._read_uuid_payload(
+                payload={"external_contract_id": contract_id},
+                field_name="external_contract_id",
+            )
+
+        contract_status = payload.get("contract_status")
+        if contract_status is not None:
+            unit.external_contract_status = str(contract_status)
+
+        receivable_id = payload.get("external_receivable_id") or payload.get("receivable_id")
+        if receivable_id is not None:
+            unit.external_receivable_id = ConstructionProjectService._read_uuid_payload(
+                payload={"external_receivable_id": receivable_id},
+                field_name="external_receivable_id",
+            )
+
+        receivable_status = payload.get("receivable_status")
+        if receivable_status is not None:
+            unit.external_receivable_status = str(receivable_status)
 
     @staticmethod
     def _format_event_date(*, value: date | None) -> str | None:

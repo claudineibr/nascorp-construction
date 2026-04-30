@@ -33,7 +33,9 @@ from app.schemas.construction import (
     ConstructionSchedulePhaseUpdate,
     ConstructionUnitCreate,
     ConstructionUnitListResponse,
+    ConstructionUnitReserveRequest,
     ConstructionUnitResponse,
+    ConstructionUnitSaleConfirmRequest,
     ConstructionUnitUpdate,
 )
 
@@ -270,6 +272,56 @@ async def update_unit(
 ) -> ConstructionUnitResponse:
     try:
         unit = await service.update_unit(company_id=ctx.company_id, unit_id=unit_id, request=request_data)
+        return ConstructionUnitResponse.model_validate(unit)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/reserve", response_model=ConstructionUnitResponse)
+async def reserve_unit(
+    unit_id: UUID,
+    request_data: ConstructionUnitReserveRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionUnitResponse:
+    try:
+        unit = await service.reserve_unit(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            request=request_data,
+        )
+        return ConstructionUnitResponse.model_validate(unit)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/release", response_model=ConstructionUnitResponse)
+async def release_unit_reservation(
+    unit_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionUnitResponse:
+    try:
+        unit = await service.release_unit_reservation(company_id=ctx.company_id, unit_id=unit_id)
+        return ConstructionUnitResponse.model_validate(unit)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/confirm-sale", response_model=ConstructionUnitResponse)
+async def confirm_unit_sale(
+    unit_id: UUID,
+    request_data: ConstructionUnitSaleConfirmRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionUnitResponse:
+    try:
+        unit = await service.confirm_unit_sale(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            request=request_data,
+            actor_user_id=ctx.user_id,
+        )
         return ConstructionUnitResponse.model_validate(unit)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc

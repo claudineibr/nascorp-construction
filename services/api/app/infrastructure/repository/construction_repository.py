@@ -121,6 +121,20 @@ class ConstructionRepository:
         )
         return result.scalars().first()
 
+    async def get_unit_by_external_contract_id(
+        self,
+        *,
+        company_id: UUID,
+        external_contract_id: UUID,
+    ) -> ConstructionUnit | None:
+        result = await self.session.execute(
+            select(ConstructionUnit).where(
+                ConstructionUnit.company_id == company_id,
+                ConstructionUnit.external_contract_id == external_contract_id,
+            )
+        )
+        return result.scalars().first()
+
     async def list_units(self, *, company_id: UUID, project_id: UUID) -> list[ConstructionUnit]:
         result = await self.session.execute(
             select(ConstructionUnit)

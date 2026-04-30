@@ -70,6 +70,58 @@ class FakeProjectService:
             updated_at=now,
         )
 
+    async def reserve_unit(self, *, company_id: UUID, unit_id: UUID, request):
+        now = datetime.now(tz=UTC)
+        return SimpleNamespace(
+            id=unit_id,
+            company_id=company_id,
+            project_id=uuid4(),
+            block_id=None,
+            code="UNIT-001",
+            unit_type="apartment",
+            floor="10",
+            private_area="85.00",
+            total_area="102.00",
+            sale_price="450000.00",
+            buyer_person_id=request.buyer_person_id,
+            reserved_at=now,
+            reservation_expires_at=request.reservation_expires_at,
+            sold_at=None,
+            external_contract_id=None,
+            external_contract_status=None,
+            external_receivable_id=None,
+            external_receivable_status=None,
+            status="reserved",
+            created_at=now,
+            updated_at=now,
+        )
+
+    async def confirm_unit_sale(self, *, company_id: UUID, unit_id: UUID, request, actor_user_id=None):
+        now = datetime.now(tz=UTC)
+        return SimpleNamespace(
+            id=unit_id,
+            company_id=company_id,
+            project_id=uuid4(),
+            block_id=None,
+            code="UNIT-001",
+            unit_type="apartment",
+            floor="10",
+            private_area="85.00",
+            total_area="102.00",
+            sale_price=request.sale_price or "450000.00",
+            buyer_person_id=request.buyer_person_id,
+            reserved_at=now,
+            reservation_expires_at=None,
+            sold_at=now,
+            external_contract_id=uuid4(),
+            external_contract_status="ACTIVE",
+            external_receivable_id=uuid4(),
+            external_receivable_status="OPEN",
+            status="sold",
+            created_at=now,
+            updated_at=now,
+        )
+
 
 def create_test_client(*, permissions: dict[str, int]) -> TestClient:
     security_module.settings.jwt_secret_key = TEST_SECRET
@@ -206,3 +258,50 @@ def test_create_measurement_accepts_valid_permission() -> None:
     assert payload["project_id"] == str(project_id)
     assert payload["code"] == "MED-001"
     assert payload["status"] == "draft"
+
+
+def test_reserve_unit_requires_update_permission() -> None:
+    user_id = uuid4()
+    company_id = uuid4()
+    unit_id = uuid4()
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.READ})
+
+    response = client.post(
+        f"/v1/construction/units/{unit_id}/reserve",
+        headers={
+            "Authorization": make_authorization_header(user_id=user_id),
+            "X-Company-ID": str(company_id),
+        },
+        json={"buyer_person_id": str(uuid4())},
+    )
+
+    assert response.status_code == 403
+
+
+def test_confirm_unit_sale_returns_external_contract_snapshot() -> None:
+    user_id = uuid4()
+    company_id = uuid4()
+    unit_id = uuid4()
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.UPDATE})
+
+    response = client.post(
+        f"/v1/construction/units/{unit_id}/confirm-sale",
+        headers={
+            "Authorization": make_authorization_header(user_id=user_id),
+            "X-Company-ID": str(company_id),
+        },
+        json={
+            "buyer_person_id": str(uuid4()),
+            "sale_price": "450000.00",
+            "first_due_date": "2026-06-10",
+            "installments": 12,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == str(unit_id)
+    assert payload["company_id"] == str(company_id)
+    assert payload["status"] == "sold"
+    assert payload["external_contract_status"] == "ACTIVE"
+    assert payload["external_receivable_status"] == "OPEN"
