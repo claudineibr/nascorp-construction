@@ -10,6 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.constants import (
     ConstructionBlockStatus,
+    ConstructionMeasurementStatus,
     ConstructionProjectStatus,
     ConstructionSchedulePhaseStatus,
     ConstructionUnitStatus,
@@ -52,6 +53,10 @@ class ConstructionProject(Base):
         cascade="all, delete-orphan",
     )
     schedule_phases: Mapped[list[ConstructionSchedulePhase]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    measurements: Mapped[list[ConstructionMeasurement]] = relationship(
         back_populates="project",
         cascade="all, delete-orphan",
     )
@@ -159,3 +164,38 @@ class ConstructionSchedulePhase(Base):
     )
 
     project: Mapped[ConstructionProject] = relationship(back_populates="schedule_phases")
+
+
+class ConstructionMeasurement(Base):
+    __tablename__ = "construction_measurements"
+    __table_args__ = (
+        UniqueConstraint("project_id", "code", name="uq_construction_measurements_project_code"),
+        {"schema": CONSTRUCTION_SCHEMA},
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    project_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    code: Mapped[str] = mapped_column(String(50), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    measured_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    due_date: Mapped[date] = mapped_column(Date, nullable=False)
+    supplier_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default=ConstructionMeasurementStatus.DRAFT)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    external_accounts_payable_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    external_accounts_payable_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    project: Mapped[ConstructionProject] = relationship(back_populates="measurements")

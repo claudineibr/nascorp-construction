@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.infrastructure.database.models import (
     ConstructionBlock,
+    ConstructionMeasurement,
     ConstructionProject,
     ConstructionSchedulePhase,
     ConstructionUnit,
@@ -164,5 +165,55 @@ class ConstructionRepository:
                 ConstructionSchedulePhase.project_id == project_id,
             )
             .order_by(ConstructionSchedulePhase.sequence_order)
+        )
+        return list(result.scalars().all())
+
+    async def get_measurement(self, *, company_id: UUID, measurement_id: UUID) -> ConstructionMeasurement | None:
+        result = await self.session.execute(
+            select(ConstructionMeasurement).where(
+                ConstructionMeasurement.company_id == company_id,
+                ConstructionMeasurement.id == measurement_id,
+            )
+        )
+        return result.scalars().first()
+
+    async def get_measurement_by_code(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        code: str,
+    ) -> ConstructionMeasurement | None:
+        result = await self.session.execute(
+            select(ConstructionMeasurement).where(
+                ConstructionMeasurement.company_id == company_id,
+                ConstructionMeasurement.project_id == project_id,
+                ConstructionMeasurement.code == code,
+            )
+        )
+        return result.scalars().first()
+
+    async def get_measurement_by_external_accounts_payable_id(
+        self,
+        *,
+        company_id: UUID,
+        accounts_payable_id: UUID,
+    ) -> ConstructionMeasurement | None:
+        result = await self.session.execute(
+            select(ConstructionMeasurement).where(
+                ConstructionMeasurement.company_id == company_id,
+                ConstructionMeasurement.external_accounts_payable_id == accounts_payable_id,
+            )
+        )
+        return result.scalars().first()
+
+    async def list_measurements(self, *, company_id: UUID, project_id: UUID) -> list[ConstructionMeasurement]:
+        result = await self.session.execute(
+            select(ConstructionMeasurement)
+            .where(
+                ConstructionMeasurement.company_id == company_id,
+                ConstructionMeasurement.project_id == project_id,
+            )
+            .order_by(ConstructionMeasurement.created_at.desc())
         )
         return list(result.scalars().all())

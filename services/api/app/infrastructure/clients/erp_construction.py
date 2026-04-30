@@ -43,6 +43,40 @@ class ErpConstructionClient:
             payload=payload["payload"],
         )
 
+    async def create_accounts_payable_from_measurement(self, *, event: EventEnvelope) -> EventEnvelope:
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for Construction accounts payable integration.")
+
+        headers = {
+            "X-Service-Key": settings.erp_service_key,
+            "X-Company-ID": str(event.company_id),
+        }
+        if event.payload.get("user_id"):
+            headers["X-User-ID"] = str(event.payload["user_id"])
+
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.post(
+                "/v1/internal/construction/events/measurement-approved",
+                headers=headers,
+                json=self._build_project_created_payload(event=event),
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        return EventEnvelope(
+            event_id=UUID(payload["event_id"]),
+            event_type=payload.get("event_type", ErpEventType.ACCOUNTS_PAYABLE_CREATED),
+            event_version=int(payload["event_version"]),
+            company_id=event.company_id,
+            aggregate_id=UUID(payload["construction_measurement_id"]),
+            aggregate_type=ConstructionAggregateType.MEASUREMENT,
+            occurred_at=datetime.now(tz=UTC),
+            producer=EventProducer.ERP_API,
+            correlation_id=event.correlation_id,
+            causation_id=event.event_id,
+            payload=payload["payload"],
+        )
+
     @staticmethod
     def _build_project_created_payload(*, event: EventEnvelope) -> dict[str, object]:
         return {

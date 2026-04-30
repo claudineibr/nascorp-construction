@@ -25,6 +25,12 @@ class ConstructionSchedulePhaseStatus:
     CANCELLED = "cancelled"
 
 
+class ConstructionMeasurementStatus:
+    DRAFT = "draft"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
 PROJECT_STATUS_TRANSITIONS = {
     ConstructionProjectStatus.DRAFT: {ConstructionProjectStatus.ACTIVE, ConstructionProjectStatus.CANCELLED},
     ConstructionProjectStatus.ACTIVE: {
@@ -50,4 +56,9 @@ SCHEDULE_PHASE_STATUSES = {
     ConstructionSchedulePhaseStatus.IN_PROGRESS,
     ConstructionSchedulePhaseStatus.COMPLETED,
     ConstructionSchedulePhaseStatus.CANCELLED,
+}
+MEASUREMENT_STATUSES = {
+    ConstructionMeasurementStatus.DRAFT,
+    ConstructionMeasurementStatus.APPROVED,
+    ConstructionMeasurementStatus.REJECTED,
 }

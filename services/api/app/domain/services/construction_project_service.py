@@ -1,9 +1,11 @@
 from datetime import UTC, date, datetime
-from typing import Any
+from decimal import Decimal
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from app.domain.constants import (
     BLOCK_STATUSES,
+    ConstructionMeasurementStatus,
     PROJECT_STATUS_TRANSITIONS,
     PROJECT_STATUSES,
     SCHEDULE_PHASE_STATUSES,
@@ -25,6 +27,7 @@ from app.domain.events.constants import (
 from app.domain.events.contracts import EventEnvelope
 from app.infrastructure.database.models import (
     ConstructionBlock,
+    ConstructionMeasurement,
     ConstructionProject,
     ConstructionSchedulePhase,
     ConstructionUnit,
@@ -36,6 +39,8 @@ from app.schemas.construction import (
     ConstructionBlockUpdate,
     ConstructionProjectCreate,
     ConstructionProjectUpdate,
+    ConstructionMeasurementCreate,
+    ConstructionMeasurementUpdate,
     ConstructionSchedulePhaseCreate,
     ConstructionSchedulePhaseUpdate,
     ConstructionUnitCreate,
@@ -43,10 +48,21 @@ from app.schemas.construction import (
 )
 
 
+class ErpMeasurementClient(Protocol):
+    async def create_accounts_payable_from_measurement(self, *, event: EventEnvelope) -> EventEnvelope:
+        raise NotImplementedError
+
+
 class ConstructionProjectService:
-    def __init__(self, repository: ConstructionRepository, event_repository: EventRepository | None = None) -> None:
+    def __init__(
+        self,
+        repository: ConstructionRepository,
+        event_repository: EventRepository | None = None,
+        erp_client: ErpMeasurementClient | None = None,
+    ) -> None:
         self.repository = repository
         self.event_repository = event_repository
+        self.erp_client = erp_client
 
     async def create_project(
         self,
@@ -325,6 +341,172 @@ class ConstructionProjectService:
         await self.repository.delete(unit)
         await self.repository.commit()
 
+    async def create_measurement(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        request: ConstructionMeasurementCreate,
+    ) -> ConstructionMeasurement:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        existing_measurement = await self.repository.get_measurement_by_code(
+            company_id=company_id,
+            project_id=project_id,
+            code=request.code,
+        )
+        if existing_measurement:
+            raise ConstructionDuplicateCodeError(resource_name="Construction measurement", code=request.code)
+
+        measurement = ConstructionMeasurement(
+            company_id=company_id,
+            project_id=project_id,
+            code=request.code.strip(),
+            description=request.description,
+            measured_amount=request.measured_amount,
+            due_date=request.due_date,
+            supplier_person_id=request.supplier_person_id,
+            status=ConstructionMeasurementStatus.DRAFT,
+        )
+        await self.repository.add(measurement)
+        await self.repository.commit()
+        await self.repository.refresh(measurement)
+        return measurement
+
+    async def list_measurements(self, *, company_id: UUID, project_id: UUID) -> list[ConstructionMeasurement]:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        return await self.repository.list_measurements(company_id=company_id, project_id=project_id)
+
+    async def get_measurement(self, *, company_id: UUID, measurement_id: UUID) -> ConstructionMeasurement:
+        measurement = await self.repository.get_measurement(company_id=company_id, measurement_id=measurement_id)
+        if not measurement:
+            raise ConstructionNotFoundError(resource_name="Construction measurement")
+
+        return measurement
+
+    async def update_measurement(
+        self,
+        *,
+        company_id: UUID,
+        measurement_id: UUID,
+        request: ConstructionMeasurementUpdate,
+    ) -> ConstructionMeasurement:
+        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
+        if measurement.status == ConstructionMeasurementStatus.APPROVED:
+            raise ConstructionInvalidValueError(
+                message="Approved measurements cannot be edited.",
+                error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
+            )
+
+        updates = request.model_dump(exclude_unset=True)
+        next_code = updates.get("code")
+        if next_code is not None and next_code != measurement.code:
+            existing_measurement = await self.repository.get_measurement_by_code(
+                company_id=company_id,
+                project_id=measurement.project_id,
+                code=next_code,
+            )
+            if existing_measurement and existing_measurement.id != measurement.id:
+                raise ConstructionDuplicateCodeError(resource_name="Construction measurement", code=next_code)
+
+        self._apply_updates(entity=measurement, updates=updates)
+        await self.repository.commit()
+        await self.repository.refresh(measurement)
+        return measurement
+
+    async def reject_measurement(self, *, company_id: UUID, measurement_id: UUID) -> ConstructionMeasurement:
+        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
+        if measurement.status == ConstructionMeasurementStatus.APPROVED:
+            raise ConstructionInvalidValueError(
+                message="Approved measurements cannot be rejected.",
+                error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
+            )
+
+        measurement.status = ConstructionMeasurementStatus.REJECTED
+        await self.repository.commit()
+        await self.repository.refresh(measurement)
+        return measurement
+
+    async def approve_measurement(
+        self,
+        *,
+        company_id: UUID,
+        measurement_id: UUID,
+        actor_user_id: UUID | None = None,
+    ) -> ConstructionMeasurement:
+        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
+        if (
+            measurement.status == ConstructionMeasurementStatus.APPROVED
+            and measurement.external_accounts_payable_id is not None
+        ):
+            return measurement
+
+        project = await self.get_project(company_id=company_id, project_id=measurement.project_id)
+        if not project.analytic_cost_center_id:
+            raise ConstructionInvalidValueError(
+                message="Project must have an analytic cost center before approving measurements.",
+                error_code="CONSTRUCTION_PROJECT_COST_CENTER_REQUIRED",
+            )
+
+        measurement.status = ConstructionMeasurementStatus.APPROVED
+        if measurement.approved_at is None:
+            measurement.approved_at = datetime.now(tz=UTC)
+
+        approval_event = self._build_measurement_approved_event(
+            measurement=measurement,
+            analytic_cost_center_id=project.analytic_cost_center_id,
+            actor_user_id=actor_user_id,
+        )
+        if self.event_repository is not None:
+            await self.event_repository.add_outbox_event(event=approval_event)
+
+        if self.erp_client is not None and measurement.external_accounts_payable_id is None:
+            erp_event = await self.erp_client.create_accounts_payable_from_measurement(event=approval_event)
+            self._apply_accounts_payable_snapshot_from_payload(
+                measurement=measurement,
+                payload=erp_event.payload,
+            )
+
+        await self.repository.commit()
+        await self.repository.refresh(measurement)
+        return measurement
+
+    async def delete_measurement(self, *, company_id: UUID, measurement_id: UUID) -> None:
+        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
+        if measurement.status == ConstructionMeasurementStatus.APPROVED:
+            raise ConstructionInvalidValueError(
+                message="Approved measurements cannot be deleted.",
+                error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
+            )
+
+        await self.repository.delete(measurement)
+        await self.repository.commit()
+
+    async def apply_accounts_payable_updated_event(self, *, event: EventEnvelope) -> ConstructionMeasurement:
+        if event.event_type not in {ErpEventType.ACCOUNTS_PAYABLE_CREATED, ErpEventType.ACCOUNTS_PAYABLE_UPDATED}:
+            raise ConstructionInvalidValueError(
+                message="Unsupported ERP event type for measurement accounts payable sync.",
+                error_code="CONSTRUCTION_UNSUPPORTED_ERP_EVENT",
+            )
+
+        measurement_id = self._read_uuid_payload(payload=event.payload, field_name="construction_measurement_id")
+        measurement = await self.get_measurement(company_id=event.company_id, measurement_id=measurement_id)
+
+        if self.event_repository is not None:
+            should_process_event = await self.event_repository.mark_processed(
+                consumer_name=ConstructionConsumerName.ACCOUNTS_PAYABLE_UPDATED,
+                event=event,
+            )
+            if not should_process_event:
+                return measurement
+
+        self._apply_accounts_payable_snapshot_from_payload(
+            measurement=measurement,
+            payload=event.payload,
+        )
+        await self.repository.commit()
+        await self.repository.refresh(measurement)
+        return measurement
+
     async def create_schedule_phase(
         self,
         *,
@@ -493,11 +675,67 @@ class ConstructionProjectService:
         )
 
     @staticmethod
+    def _build_measurement_approved_event(
+        *,
+        measurement: ConstructionMeasurement,
+        analytic_cost_center_id: UUID,
+        actor_user_id: UUID | None,
+    ) -> EventEnvelope:
+        event_id = uuid4()
+        payload: dict[str, Any] = {
+            "construction_measurement_id": str(measurement.id),
+            "construction_project_id": str(measurement.project_id),
+            "measurement_code": measurement.code,
+            "description": measurement.description,
+            "measured_amount": ConstructionProjectService._format_event_decimal(value=measurement.measured_amount),
+            "due_date": ConstructionProjectService._format_event_date(value=measurement.due_date),
+            "supplier_person_id": str(measurement.supplier_person_id) if measurement.supplier_person_id else None,
+            "analytic_cost_center_id": str(analytic_cost_center_id),
+        }
+        if actor_user_id is not None:
+            payload["user_id"] = str(actor_user_id)
+
+        return EventEnvelope(
+            event_id=event_id,
+            event_type=ConstructionEventType.MEASUREMENT_APPROVED,
+            event_version=1,
+            company_id=measurement.company_id,
+            aggregate_id=measurement.id,
+            aggregate_type=ConstructionAggregateType.MEASUREMENT,
+            occurred_at=datetime.now(tz=UTC),
+            producer=EventProducer.CONSTRUCTION_API,
+            correlation_id=event_id,
+            causation_id=None,
+            payload=payload,
+        )
+
+    @staticmethod
+    def _apply_accounts_payable_snapshot_from_payload(
+        *,
+        measurement: ConstructionMeasurement,
+        payload: dict[str, Any],
+    ) -> None:
+        accounts_payable_id = payload.get("accounts_payable_document_id")
+        if accounts_payable_id is not None:
+            measurement.external_accounts_payable_id = ConstructionProjectService._read_uuid_payload(
+                payload=payload,
+                field_name="accounts_payable_document_id",
+            )
+
+        accounts_payable_status = payload.get("accounts_payable_status")
+        if accounts_payable_status is not None:
+            measurement.external_accounts_payable_status = str(accounts_payable_status)
+
+    @staticmethod
     def _format_event_date(*, value: date | None) -> str | None:
         if value is None:
             return None
 
         return value.isoformat()
+
+    @staticmethod
+    def _format_event_decimal(*, value: Decimal) -> str:
+        return format(value, "f")
 
     @staticmethod
     def _read_uuid_payload(*, payload: dict[str, Any], field_name: str) -> UUID:

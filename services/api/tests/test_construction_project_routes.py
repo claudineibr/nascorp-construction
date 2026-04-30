@@ -51,6 +51,25 @@ class FakeProjectService:
             updated_at=now,
         )
 
+    async def create_measurement(self, *, company_id: UUID, project_id: UUID, request):
+        now = datetime.now(tz=UTC)
+        return SimpleNamespace(
+            id=uuid4(),
+            company_id=company_id,
+            project_id=project_id,
+            code=request.code,
+            description=request.description,
+            measured_amount=request.measured_amount,
+            due_date=request.due_date,
+            supplier_person_id=request.supplier_person_id,
+            status="draft",
+            approved_at=None,
+            external_accounts_payable_id=None,
+            external_accounts_payable_status=None,
+            created_at=now,
+            updated_at=now,
+        )
+
 
 def create_test_client(*, permissions: dict[str, int]) -> TestClient:
     security_module.settings.jwt_secret_key = TEST_SECRET
@@ -136,4 +155,54 @@ def test_create_project_accepts_jwt_company_and_create_permission() -> None:
     assert payload["company_id"] == str(company_id)
     assert payload["code"] == "OBRA-001"
     assert payload["name"] == "Obra Alpha"
+    assert payload["status"] == "draft"
+
+
+def test_create_measurement_denies_missing_create_permission() -> None:
+    user_id = uuid4()
+    company_id = uuid4()
+    project_id = uuid4()
+    client = create_test_client(permissions={ConstructionFeature.MEASUREMENTS: PermissionAction.READ})
+
+    response = client.post(
+        f"/v1/construction/projects/{project_id}/measurements",
+        headers={
+            "Authorization": make_authorization_header(user_id=user_id),
+            "X-Company-ID": str(company_id),
+        },
+        json={
+            "code": "MED-001",
+            "measured_amount": "1200.00",
+            "due_date": "2026-05-15",
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_create_measurement_accepts_valid_permission() -> None:
+    user_id = uuid4()
+    company_id = uuid4()
+    project_id = uuid4()
+    client = create_test_client(permissions={ConstructionFeature.MEASUREMENTS: PermissionAction.CREATE})
+
+    response = client.post(
+        f"/v1/construction/projects/{project_id}/measurements",
+        headers={
+            "Authorization": make_authorization_header(user_id=user_id),
+            "X-Company-ID": str(company_id),
+        },
+        json={
+            "code": "MED-001",
+            "description": "Medição fase fundação",
+            "measured_amount": "1200.00",
+            "due_date": "2026-05-15",
+        },
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["company_id"] == str(company_id)
+    assert payload["project_id"] == str(project_id)
+    assert payload["code"] == "MED-001"
     assert payload["status"] == "draft"

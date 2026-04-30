@@ -1,9 +1,10 @@
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 
-from app.domain.constants import ConstructionProjectStatus
+from app.domain.constants import ConstructionMeasurementStatus, ConstructionProjectStatus
 from app.domain.exceptions import (
     ConstructionDuplicateCodeError,
     ConstructionInvalidStatusTransitionError,
@@ -12,24 +13,33 @@ from app.domain.exceptions import (
 from app.domain.events.constants import ConstructionEventType, ErpEventType
 from app.domain.events.contracts import EventEnvelope
 from app.domain.services import ConstructionProjectService
-from app.infrastructure.database.models import ConstructionProject
-from app.schemas.construction import ConstructionProjectCreate, ConstructionProjectUpdate
+from app.infrastructure.database.models import ConstructionMeasurement, ConstructionProject
+from app.schemas.construction import (
+    ConstructionMeasurementCreate,
+    ConstructionProjectCreate,
+    ConstructionProjectUpdate,
+)
 
 
 class FakeConstructionRepository:
     def __init__(self) -> None:
         self.projects: dict[tuple[object, object], ConstructionProject] = {}
+        self.measurements: dict[tuple[object, object], ConstructionMeasurement] = {}
         self.commits = 0
 
-    async def add(self, entity: ConstructionProject) -> None:
+    async def add(self, entity: ConstructionProject | ConstructionMeasurement) -> None:
         if entity.id is None:
             entity.id = uuid4()
-        self.projects[(entity.company_id, entity.id)] = entity
+        if isinstance(entity, ConstructionProject):
+            self.projects[(entity.company_id, entity.id)] = entity
+            return
+
+        self.measurements[(entity.company_id, entity.id)] = entity
 
     async def commit(self) -> None:
         self.commits += 1
 
-    async def refresh(self, entity: ConstructionProject) -> None:
+    async def refresh(self, entity: ConstructionProject | ConstructionMeasurement) -> None:
         return None
 
     async def get_project(self, *, company_id, project_id):
@@ -49,8 +59,49 @@ class FakeConstructionRepository:
         items = [project for (stored_company_id, _), project in self.projects.items() if stored_company_id == company_id]
         return items[(page - 1) * page_size : page * page_size], len(items)
 
-    async def delete(self, entity: ConstructionProject) -> None:
-        self.projects.pop((entity.company_id, entity.id), None)
+    async def delete(self, entity: ConstructionProject | ConstructionMeasurement) -> None:
+        if isinstance(entity, ConstructionProject):
+            self.projects.pop((entity.company_id, entity.id), None)
+            return
+
+        self.measurements.pop((entity.company_id, entity.id), None)
+
+    async def get_measurement(self, *, company_id, measurement_id):
+        return self.measurements.get((company_id, measurement_id))
+
+    async def get_measurement_by_code(self, *, company_id, project_id, code):
+        return next(
+            (
+                measurement
+                for (stored_company_id, _), measurement in self.measurements.items()
+                if (
+                    stored_company_id == company_id
+                    and measurement.project_id == project_id
+                    and measurement.code == code
+                )
+            ),
+            None,
+        )
+
+    async def get_measurement_by_external_accounts_payable_id(self, *, company_id, accounts_payable_id):
+        return next(
+            (
+                measurement
+                for (stored_company_id, _), measurement in self.measurements.items()
+                if (
+                    stored_company_id == company_id
+                    and measurement.external_accounts_payable_id == accounts_payable_id
+                )
+            ),
+            None,
+        )
+
+    async def list_measurements(self, *, company_id, project_id):
+        return [
+            measurement
+            for (stored_company_id, _), measurement in self.measurements.items()
+            if stored_company_id == company_id and measurement.project_id == project_id
+        ]
 
 
 class FakeEventRepository:
@@ -69,6 +120,32 @@ class FakeEventRepository:
 
         self.processed_events.add(processed_key)
         return True
+
+
+class FakeErpMeasurementClient:
+    def __init__(self) -> None:
+        self.events: list[EventEnvelope] = []
+
+    async def create_accounts_payable_from_measurement(self, *, event: EventEnvelope) -> EventEnvelope:
+        self.events.append(event)
+        event_id = uuid4()
+        return EventEnvelope(
+            event_id=event_id,
+            event_type=ErpEventType.ACCOUNTS_PAYABLE_CREATED,
+            event_version=1,
+            company_id=event.company_id,
+            aggregate_id=event.aggregate_id,
+            aggregate_type="construction_measurement",
+            occurred_at=datetime.now(tz=UTC),
+            producer="erp-api",
+            correlation_id=event.correlation_id,
+            causation_id=event.event_id,
+            payload={
+                "construction_measurement_id": str(event.aggregate_id),
+                "accounts_payable_document_id": str(uuid4()),
+                "accounts_payable_status": "OPEN",
+            },
+        )
 
 
 def make_service(repository: FakeConstructionRepository | None = None) -> ConstructionProjectService:
@@ -98,6 +175,33 @@ def make_erp_cost_center_created_event(
             "construction_project_id": str(project_id),
             "synthetic_cost_center_id": str(synthetic_cost_center_id),
             "analytic_cost_center_id": str(analytic_cost_center_id),
+        },
+    )
+
+
+def make_erp_accounts_payable_updated_event(
+    *,
+    company_id,
+    measurement_id,
+    accounts_payable_document_id,
+    accounts_payable_status,
+) -> EventEnvelope:
+    event_id = uuid4()
+    return EventEnvelope(
+        event_id=event_id,
+        event_type=ErpEventType.ACCOUNTS_PAYABLE_UPDATED,
+        event_version=1,
+        company_id=company_id,
+        aggregate_id=measurement_id,
+        aggregate_type="construction_measurement",
+        occurred_at=datetime.now(tz=UTC),
+        producer="erp-api",
+        correlation_id=event_id,
+        causation_id=None,
+        payload={
+            "construction_measurement_id": str(measurement_id),
+            "accounts_payable_document_id": str(accounts_payable_document_id),
+            "accounts_payable_status": accounts_payable_status,
         },
     )
 
@@ -225,4 +329,120 @@ async def test_apply_cost_center_created_event_updates_project_once() -> None:
     assert first_result.synthetic_cost_center_id == synthetic_cost_center_id
     assert first_result.analytic_cost_center_id == analytic_cost_center_id
     assert second_result.synthetic_cost_center_id == synthetic_cost_center_id
+    assert repository.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_approve_measurement_creates_accounts_payable_once() -> None:
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    event_repository = FakeEventRepository()
+    erp_client = FakeErpMeasurementClient()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-030",
+        name="Measurement project",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    repository.projects[(company_id, project.id)] = project
+    service = ConstructionProjectService(
+        repository=repository,
+        event_repository=event_repository,
+        erp_client=erp_client,
+    )
+
+    measurement = await service.create_measurement(
+        company_id=company_id,
+        project_id=project.id,
+        request=ConstructionMeasurementCreate(
+            code="MED-001",
+            measured_amount=Decimal("12500.50"),
+            due_date=date(2026, 5, 15),
+        ),
+    )
+
+    approved_first = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
+    approved_second = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
+
+    assert approved_first.status == ConstructionMeasurementStatus.APPROVED
+    assert approved_first.external_accounts_payable_id is not None
+    assert approved_first.external_accounts_payable_status == "OPEN"
+    assert approved_second.external_accounts_payable_id == approved_first.external_accounts_payable_id
+    assert len(erp_client.events) == 1
+    assert any(event.event_type == ConstructionEventType.MEASUREMENT_APPROVED for event in event_repository.outbox_events)
+
+
+@pytest.mark.asyncio
+async def test_rejected_or_draft_measurement_does_not_create_accounts_payable() -> None:
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    erp_client = FakeErpMeasurementClient()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-031",
+        name="Rejected measurement project",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    repository.projects[(company_id, project.id)] = project
+    service = ConstructionProjectService(repository=repository, erp_client=erp_client)
+
+    measurement = await service.create_measurement(
+        company_id=company_id,
+        project_id=project.id,
+        request=ConstructionMeasurementCreate(
+            code="MED-002",
+            measured_amount=Decimal("1000.00"),
+            due_date=date(2026, 5, 20),
+        ),
+    )
+    await service.reject_measurement(company_id=company_id, measurement_id=measurement.id)
+
+    assert len(erp_client.events) == 0
+    stored_measurement = await service.get_measurement(company_id=company_id, measurement_id=measurement.id)
+    assert stored_measurement.status == ConstructionMeasurementStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_apply_accounts_payable_updated_event_updates_measurement_once() -> None:
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    event_repository = FakeEventRepository()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-032",
+        name="AP sync project",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    measurement = ConstructionMeasurement(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        code="MED-003",
+        measured_amount=Decimal("3500.00"),
+        due_date=date(2026, 5, 25),
+        status=ConstructionMeasurementStatus.APPROVED,
+    )
+    repository.projects[(company_id, project.id)] = project
+    repository.measurements[(company_id, measurement.id)] = measurement
+    service = ConstructionProjectService(repository=repository, event_repository=event_repository)
+    accounts_payable_document_id = uuid4()
+    event = make_erp_accounts_payable_updated_event(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        accounts_payable_document_id=accounts_payable_document_id,
+        accounts_payable_status="PAID",
+    )
+
+    first_result = await service.apply_accounts_payable_updated_event(event=event)
+    second_result = await service.apply_accounts_payable_updated_event(event=event)
+
+    assert first_result.external_accounts_payable_id == accounts_payable_document_id
+    assert first_result.external_accounts_payable_status == "PAID"
+    assert second_result.external_accounts_payable_id == accounts_payable_document_id
     assert repository.commits == 1

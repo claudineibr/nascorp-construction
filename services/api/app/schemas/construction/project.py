@@ -178,3 +178,47 @@ class ConstructionSchedulePhaseResponse(BaseModel):
 class ConstructionSchedulePhaseListResponse(BaseModel):
     items: list[ConstructionSchedulePhaseResponse]
     total: int
+
+
+class ConstructionMeasurementCreate(BaseModel):
+    code: str = Field(..., min_length=1, max_length=50)
+    description: str | None = Field(default=None, max_length=1000)
+    measured_amount: Decimal = Field(..., gt=0)
+    due_date: date
+    supplier_person_id: UUID | None = None
+
+
+class ConstructionMeasurementUpdate(BaseModel):
+    code: str | None = Field(default=None, min_length=1, max_length=50)
+    description: str | None = Field(default=None, max_length=1000)
+    measured_amount: Decimal | None = Field(default=None, gt=0)
+    due_date: date | None = None
+    supplier_person_id: UUID | None = None
+
+
+class ConstructionMeasurementReject(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class ConstructionMeasurementResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    company_id: UUID
+    project_id: UUID
+    code: str
+    description: str | None = None
+    measured_amount: Decimal
+    due_date: date
+    supplier_person_id: UUID | None = None
+    status: str
+    approved_at: datetime | None = None
+    external_accounts_payable_id: UUID | None = None
+    external_accounts_payable_status: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConstructionMeasurementListResponse(BaseModel):
+    items: list[ConstructionMeasurementResponse]
+    total: int
