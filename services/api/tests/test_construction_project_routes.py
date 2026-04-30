@@ -33,7 +33,7 @@ class FakePermissionClient:
 
 
 class FakeProjectService:
-    async def create_project(self, *, company_id: UUID, request):
+    async def create_project(self, *, company_id: UUID, request, actor_user_id: UUID | None = None):
         now = datetime.now(tz=UTC)
         return SimpleNamespace(
             id=uuid4(),

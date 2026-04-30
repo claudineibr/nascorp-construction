@@ -24,6 +24,11 @@ async def get_permission_client() -> PermissionClient:
     return ErpPermissionClient()
 
 
+async def require_service_key(x_service_key: str = Header(..., alias="X-Service-Key")) -> None:
+    if not settings.erp_service_key or not hmac.compare_digest(x_service_key, settings.erp_service_key):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid service key")
+
+
 async def get_construction_context(
     authorization: str = Header(..., alias="Authorization"),
     x_company_id: UUID = Header(..., alias="X-Company-ID"),

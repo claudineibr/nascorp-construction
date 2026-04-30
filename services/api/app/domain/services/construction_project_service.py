@@ -1,4 +1,6 @@
-from uuid import UUID
+from datetime import UTC, date, datetime
+from typing import Any
+from uuid import UUID, uuid4
 
 from app.domain.constants import (
     BLOCK_STATUSES,
@@ -13,6 +15,14 @@ from app.domain.exceptions import (
     ConstructionInvalidValueError,
     ConstructionNotFoundError,
 )
+from app.domain.events.constants import (
+    ConstructionAggregateType,
+    ConstructionConsumerName,
+    ConstructionEventType,
+    ErpEventType,
+    EventProducer,
+)
+from app.domain.events.contracts import EventEnvelope
 from app.infrastructure.database.models import (
     ConstructionBlock,
     ConstructionProject,
@@ -20,6 +30,7 @@ from app.infrastructure.database.models import (
     ConstructionUnit,
 )
 from app.infrastructure.repository.construction_repository import ConstructionRepository
+from app.infrastructure.repository.event_repository import EventRepository
 from app.schemas.construction import (
     ConstructionBlockCreate,
     ConstructionBlockUpdate,
@@ -33,16 +44,24 @@ from app.schemas.construction import (
 
 
 class ConstructionProjectService:
-    def __init__(self, repository: ConstructionRepository) -> None:
+    def __init__(self, repository: ConstructionRepository, event_repository: EventRepository | None = None) -> None:
         self.repository = repository
+        self.event_repository = event_repository
 
-    async def create_project(self, *, company_id: UUID, request: ConstructionProjectCreate) -> ConstructionProject:
+    async def create_project(
+        self,
+        *,
+        company_id: UUID,
+        request: ConstructionProjectCreate,
+        actor_user_id: UUID | None = None,
+    ) -> ConstructionProject:
         self._ensure_known_value(value=request.status, allowed_values=PROJECT_STATUSES, field_name="status")
         existing_project = await self.repository.get_project_by_code(company_id=company_id, code=request.code)
         if existing_project:
             raise ConstructionDuplicateCodeError(resource_name="Construction project", code=request.code)
 
         project = ConstructionProject(
+            id=uuid4(),
             company_id=company_id,
             code=request.code.strip(),
             name=request.name.strip(),
@@ -53,6 +72,48 @@ class ConstructionProjectService:
             actual_end_date=request.actual_end_date,
         )
         await self.repository.add(project)
+        if self.event_repository is not None:
+            await self.event_repository.add_outbox_event(
+                event=self._build_project_created_event(project=project, actor_user_id=actor_user_id)
+            )
+
+        await self.repository.commit()
+        await self.repository.refresh(project)
+        return project
+
+    async def apply_cost_center_created_event(self, *, event: EventEnvelope) -> ConstructionProject:
+        if event.event_type != ErpEventType.COST_CENTER_CREATED:
+            raise ConstructionInvalidValueError(
+                message="Unsupported ERP event type for cost center confirmation.",
+                error_code="CONSTRUCTION_UNSUPPORTED_ERP_EVENT",
+            )
+
+        project_id = self._read_uuid_payload(payload=event.payload, field_name="construction_project_id")
+        project = await self.get_project(company_id=event.company_id, project_id=project_id)
+
+        if self.event_repository is not None:
+            should_process_event = await self.event_repository.mark_processed(
+                consumer_name=ConstructionConsumerName.COST_CENTER_CREATED,
+                event=event,
+            )
+            if not should_process_event:
+                return project
+
+        synthetic_cost_center_id = self._read_uuid_payload(payload=event.payload, field_name="synthetic_cost_center_id")
+        analytic_cost_center_id = self._read_uuid_payload(payload=event.payload, field_name="analytic_cost_center_id")
+        self._ensure_external_id_can_be_applied(
+            current_id=project.synthetic_cost_center_id,
+            next_id=synthetic_cost_center_id,
+            field_name="synthetic_cost_center_id",
+        )
+        self._ensure_external_id_can_be_applied(
+            current_id=project.analytic_cost_center_id,
+            next_id=analytic_cost_center_id,
+            field_name="analytic_cost_center_id",
+        )
+
+        project.synthetic_cost_center_id = synthetic_cost_center_id
+        project.analytic_cost_center_id = analytic_cost_center_id
         await self.repository.commit()
         await self.repository.refresh(project)
         return project
@@ -403,3 +464,64 @@ class ConstructionProjectService:
                 field_value = field_value.strip()
 
             setattr(entity, field_name, field_value)
+
+    @staticmethod
+    def _build_project_created_event(*, project: ConstructionProject, actor_user_id: UUID | None) -> EventEnvelope:
+        event_id = uuid4()
+        payload: dict[str, Any] = {
+            "construction_project_id": str(project.id),
+            "project_code": project.code,
+            "project_name": project.name,
+            "start_date": ConstructionProjectService._format_event_date(value=project.start_date),
+            "expected_end_date": ConstructionProjectService._format_event_date(value=project.expected_end_date),
+        }
+        if actor_user_id is not None:
+            payload["user_id"] = str(actor_user_id)
+
+        return EventEnvelope(
+            event_id=event_id,
+            event_type=ConstructionEventType.PROJECT_CREATED,
+            event_version=1,
+            company_id=project.company_id,
+            aggregate_id=project.id,
+            aggregate_type=ConstructionAggregateType.PROJECT,
+            occurred_at=datetime.now(tz=UTC),
+            producer=EventProducer.CONSTRUCTION_API,
+            correlation_id=event_id,
+            causation_id=None,
+            payload=payload,
+        )
+
+    @staticmethod
+    def _format_event_date(*, value: date | None) -> str | None:
+        if value is None:
+            return None
+
+        return value.isoformat()
+
+    @staticmethod
+    def _read_uuid_payload(*, payload: dict[str, Any], field_name: str) -> UUID:
+        value = payload.get(field_name)
+        if value is None:
+            raise ConstructionInvalidValueError(
+                message=f"ERP event payload is missing {field_name}.",
+                error_code="CONSTRUCTION_INVALID_ERP_EVENT_PAYLOAD",
+            )
+
+        try:
+            return UUID(str(value))
+        except ValueError as exc:
+            raise ConstructionInvalidValueError(
+                message=f"ERP event payload has an invalid {field_name}.",
+                error_code="CONSTRUCTION_INVALID_ERP_EVENT_PAYLOAD",
+            ) from exc
+
+    @staticmethod
+    def _ensure_external_id_can_be_applied(*, current_id: UUID | None, next_id: UUID, field_name: str) -> None:
+        if current_id is None or current_id == next_id:
+            return
+
+        raise ConstructionInvalidValueError(
+            message=f"Project already has a different {field_name}.",
+            error_code="CONSTRUCTION_EXTERNAL_ID_CONFLICT",
+        )
