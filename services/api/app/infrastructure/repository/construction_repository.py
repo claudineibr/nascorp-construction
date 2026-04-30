@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.infrastructure.database.models import (
     ConstructionBlock,
     ConstructionMeasurement,
+    ConstructionProcurementRequest,
     ConstructionProject,
     ConstructionSchedulePhase,
     ConstructionUnit,
@@ -229,5 +230,35 @@ class ConstructionRepository:
                 ConstructionMeasurement.project_id == project_id,
             )
             .order_by(ConstructionMeasurement.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def get_procurement_request(
+        self,
+        *,
+        company_id: UUID,
+        procurement_request_id: UUID,
+    ) -> ConstructionProcurementRequest | None:
+        result = await self.session.execute(
+            select(ConstructionProcurementRequest).where(
+                ConstructionProcurementRequest.company_id == company_id,
+                ConstructionProcurementRequest.id == procurement_request_id,
+            )
+        )
+        return result.scalars().first()
+
+    async def list_procurement_requests(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+    ) -> list[ConstructionProcurementRequest]:
+        result = await self.session.execute(
+            select(ConstructionProcurementRequest)
+            .where(
+                ConstructionProcurementRequest.company_id == company_id,
+                ConstructionProcurementRequest.project_id == project_id,
+            )
+            .order_by(ConstructionProcurementRequest.created_at.desc())
         )
         return list(result.scalars().all())

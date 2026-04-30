@@ -31,6 +31,14 @@ class ConstructionMeasurementStatus:
     REJECTED = "rejected"
 
 
+class ConstructionProcurementStatus:
+    DRAFT = "draft"
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    SENT_TO_ERP = "sent_to_erp"
+
+
 PROJECT_STATUS_TRANSITIONS = {
     ConstructionProjectStatus.DRAFT: {ConstructionProjectStatus.ACTIVE, ConstructionProjectStatus.CANCELLED},
     ConstructionProjectStatus.ACTIVE: {
@@ -62,3 +70,12 @@ MEASUREMENT_STATUSES = {
     ConstructionMeasurementStatus.APPROVED,
     ConstructionMeasurementStatus.REJECTED,
 }
+PROCUREMENT_STATUSES = {
+    ConstructionProcurementStatus.DRAFT,
+    ConstructionProcurementStatus.PENDING_APPROVAL,
+    ConstructionProcurementStatus.APPROVED,
+    ConstructionProcurementStatus.REJECTED,
+    ConstructionProcurementStatus.SENT_TO_ERP,
+}
+
+CONSTRUCTION_PROCUREMENT_APPROVAL_THRESHOLD = 50000

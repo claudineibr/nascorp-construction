@@ -22,6 +22,10 @@ from app.schemas.construction import (
     ConstructionProjectListResponse,
     ConstructionProjectResponse,
     ConstructionProjectUpdate,
+    ConstructionProcurementRequestCreate,
+    ConstructionProcurementRequestListResponse,
+    ConstructionProcurementRequestResponse,
+    ConstructionProcurementRequestUpdate,
     ConstructionMeasurementCreate,
     ConstructionMeasurementListResponse,
     ConstructionMeasurementReject,
@@ -449,6 +453,156 @@ async def delete_measurement(
 ) -> Response:
     try:
         await service.delete_measurement(company_id=ctx.company_id, measurement_id=measurement_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post(
+    "/projects/{project_id}/procurement-requests",
+    response_model=ConstructionProcurementRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_procurement_request(
+    project_id: UUID,
+    request_data: ConstructionProcurementRequestCreate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROCUREMENT, PermissionAction.CREATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionProcurementRequestResponse:
+    try:
+        procurement_request = await service.create_procurement_request(
+            company_id=ctx.company_id,
+            project_id=project_id,
+            request=request_data,
+        )
+        return ConstructionProcurementRequestResponse.model_validate(procurement_request)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get(
+    "/projects/{project_id}/procurement-requests",
+    response_model=ConstructionProcurementRequestListResponse,
+)
+async def list_procurement_requests(
+    project_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROCUREMENT, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionProcurementRequestListResponse:
+    try:
+        items = await service.list_procurement_requests(company_id=ctx.company_id, project_id=project_id)
+        return ConstructionProcurementRequestListResponse(
+            items=[ConstructionProcurementRequestResponse.model_validate(item) for item in items],
+            total=len(items),
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/procurement-requests/{procurement_request_id}", response_model=ConstructionProcurementRequestResponse)
+async def get_procurement_request(
+    procurement_request_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROCUREMENT, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionProcurementRequestResponse:
+    try:
+        procurement_request = await service.get_procurement_request(
+            company_id=ctx.company_id,
+            procurement_request_id=procurement_request_id,
+        )
+        return ConstructionProcurementRequestResponse.model_validate(procurement_request)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.patch("/procurement-requests/{procurement_request_id}", response_model=ConstructionProcurementRequestResponse)
+async def update_procurement_request(
+    procurement_request_id: UUID,
+    request_data: ConstructionProcurementRequestUpdate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROCUREMENT, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionProcurementRequestResponse:
+    try:
+        procurement_request = await service.update_procurement_request(
+            company_id=ctx.company_id,
+            procurement_request_id=procurement_request_id,
+            request=request_data,
+        )
+        return ConstructionProcurementRequestResponse.model_validate(procurement_request)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post(
+    "/procurement-requests/{procurement_request_id}/submit",
+    response_model=ConstructionProcurementRequestResponse,
+)
+async def submit_procurement_request(
+    procurement_request_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROCUREMENT, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionProcurementRequestResponse:
+    try:
+        procurement_request = await service.submit_procurement_request(
+            company_id=ctx.company_id,
+            procurement_request_id=procurement_request_id,
+            actor_user_id=ctx.user_id,
+        )
+        return ConstructionProcurementRequestResponse.model_validate(procurement_request)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post(
+    "/procurement-requests/{procurement_request_id}/approve",
+    response_model=ConstructionProcurementRequestResponse,
+)
+async def approve_procurement_request(
+    procurement_request_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROCUREMENT, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionProcurementRequestResponse:
+    try:
+        procurement_request = await service.approve_procurement_request(
+            company_id=ctx.company_id,
+            procurement_request_id=procurement_request_id,
+            actor_user_id=ctx.user_id,
+        )
+        return ConstructionProcurementRequestResponse.model_validate(procurement_request)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post(
+    "/procurement-requests/{procurement_request_id}/reject",
+    response_model=ConstructionProcurementRequestResponse,
+)
+async def reject_procurement_request(
+    procurement_request_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROCUREMENT, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionProcurementRequestResponse:
+    try:
+        procurement_request = await service.reject_procurement_request(
+            company_id=ctx.company_id,
+            procurement_request_id=procurement_request_id,
+        )
+        return ConstructionProcurementRequestResponse.model_validate(procurement_request)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.delete("/procurement-requests/{procurement_request_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_procurement_request(
+    procurement_request_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROCUREMENT, PermissionAction.DELETE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> Response:
+    try:
+        await service.delete_procurement_request(
+            company_id=ctx.company_id,
+            procurement_request_id=procurement_request_id,
+        )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc

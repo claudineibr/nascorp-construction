@@ -11,6 +11,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.domain.constants import (
     ConstructionBlockStatus,
     ConstructionMeasurementStatus,
+    ConstructionProcurementStatus,
     ConstructionProjectStatus,
     ConstructionSchedulePhaseStatus,
     ConstructionUnitStatus,
@@ -57,6 +58,10 @@ class ConstructionProject(Base):
         cascade="all, delete-orphan",
     )
     measurements: Mapped[list[ConstructionMeasurement]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+    procurement_requests: Mapped[list[ConstructionProcurementRequest]] = relationship(
         back_populates="project",
         cascade="all, delete-orphan",
     )
@@ -207,3 +212,36 @@ class ConstructionMeasurement(Base):
     )
 
     project: Mapped[ConstructionProject] = relationship(back_populates="measurements")
+
+
+class ConstructionProcurementRequest(Base):
+    __tablename__ = "construction_procurement_requests"
+    __table_args__ = (
+        {"schema": CONSTRUCTION_SCHEMA},
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    project_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(150), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    estimated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default=ConstructionProcurementStatus.DRAFT)
+    approved_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    external_procurement_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    external_procurement_status: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    project: Mapped[ConstructionProject] = relationship(back_populates="procurement_requests")

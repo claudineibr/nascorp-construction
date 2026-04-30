@@ -5,7 +5,9 @@ from uuid import UUID, uuid4
 
 from app.domain.constants import (
     BLOCK_STATUSES,
+    CONSTRUCTION_PROCUREMENT_APPROVAL_THRESHOLD,
     ConstructionMeasurementStatus,
+    ConstructionProcurementStatus,
     ConstructionUnitStatus,
     PROJECT_STATUS_TRANSITIONS,
     PROJECT_STATUSES,
@@ -29,6 +31,7 @@ from app.domain.events.contracts import EventEnvelope
 from app.infrastructure.database.models import (
     ConstructionBlock,
     ConstructionMeasurement,
+    ConstructionProcurementRequest,
     ConstructionProject,
     ConstructionSchedulePhase,
     ConstructionUnit,
@@ -40,6 +43,8 @@ from app.schemas.construction import (
     ConstructionBlockUpdate,
     ConstructionProjectCreate,
     ConstructionProjectUpdate,
+    ConstructionProcurementRequestCreate,
+    ConstructionProcurementRequestUpdate,
     ConstructionMeasurementCreate,
     ConstructionMeasurementUpdate,
     ConstructionSchedulePhaseCreate,
@@ -56,6 +61,9 @@ class ErpMeasurementClient(Protocol):
         raise NotImplementedError
 
     async def create_contract_and_receivables_from_unit_sale(self, *, event: EventEnvelope) -> EventEnvelope:
+        raise NotImplementedError
+
+    async def create_procurement_demand_from_request(self, *, event: EventEnvelope) -> EventEnvelope:
         raise NotImplementedError
 
 
@@ -473,6 +481,174 @@ class ConstructionProjectService:
         await self.repository.commit()
         await self.repository.refresh(unit)
         return unit
+
+    async def create_procurement_request(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        request: ConstructionProcurementRequestCreate,
+    ) -> ConstructionProcurementRequest:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        procurement_request = ConstructionProcurementRequest(
+            company_id=company_id,
+            project_id=project_id,
+            title=request.title.strip(),
+            description=request.description,
+            estimated_amount=request.estimated_amount,
+            status=ConstructionProcurementStatus.DRAFT,
+        )
+        await self.repository.add(procurement_request)
+        await self.repository.commit()
+        await self.repository.refresh(procurement_request)
+        return procurement_request
+
+    async def list_procurement_requests(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+    ) -> list[ConstructionProcurementRequest]:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        return await self.repository.list_procurement_requests(company_id=company_id, project_id=project_id)
+
+    async def get_procurement_request(
+        self,
+        *,
+        company_id: UUID,
+        procurement_request_id: UUID,
+    ) -> ConstructionProcurementRequest:
+        procurement_request = await self.repository.get_procurement_request(
+            company_id=company_id,
+            procurement_request_id=procurement_request_id,
+        )
+        if not procurement_request:
+            raise ConstructionNotFoundError(resource_name="Construction procurement request")
+
+        return procurement_request
+
+    async def update_procurement_request(
+        self,
+        *,
+        company_id: UUID,
+        procurement_request_id: UUID,
+        request: ConstructionProcurementRequestUpdate,
+    ) -> ConstructionProcurementRequest:
+        procurement_request = await self.get_procurement_request(
+            company_id=company_id,
+            procurement_request_id=procurement_request_id,
+        )
+        if procurement_request.status not in {
+            ConstructionProcurementStatus.DRAFT,
+            ConstructionProcurementStatus.REJECTED,
+        }:
+            raise ConstructionInvalidValueError(
+                message="Only draft or rejected procurement requests can be edited.",
+                error_code="CONSTRUCTION_PROCUREMENT_LOCKED",
+            )
+
+        updates = request.model_dump(exclude_unset=True)
+        self._apply_updates(entity=procurement_request, updates=updates)
+        await self.repository.commit()
+        await self.repository.refresh(procurement_request)
+        return procurement_request
+
+    async def submit_procurement_request(
+        self,
+        *,
+        company_id: UUID,
+        procurement_request_id: UUID,
+        actor_user_id: UUID | None,
+    ) -> ConstructionProcurementRequest:
+        procurement_request = await self.get_procurement_request(
+            company_id=company_id,
+            procurement_request_id=procurement_request_id,
+        )
+        if procurement_request.status not in {
+            ConstructionProcurementStatus.DRAFT,
+            ConstructionProcurementStatus.REJECTED,
+        }:
+            raise ConstructionInvalidValueError(
+                message="Procurement request cannot be submitted from current status.",
+                error_code="CONSTRUCTION_PROCUREMENT_INVALID_STATUS",
+            )
+
+        if procurement_request.estimated_amount >= Decimal(str(CONSTRUCTION_PROCUREMENT_APPROVAL_THRESHOLD)):
+            procurement_request.status = ConstructionProcurementStatus.PENDING_APPROVAL
+            await self.repository.commit()
+            await self.repository.refresh(procurement_request)
+            return procurement_request
+
+        procurement_request.status = ConstructionProcurementStatus.APPROVED
+        procurement_request.approved_by_user_id = actor_user_id
+        procurement_request.approved_at = datetime.now(tz=UTC)
+        await self._dispatch_procurement_request_to_erp(
+            procurement_request=procurement_request,
+            actor_user_id=actor_user_id,
+        )
+        await self.repository.commit()
+        await self.repository.refresh(procurement_request)
+        return procurement_request
+
+    async def approve_procurement_request(
+        self,
+        *,
+        company_id: UUID,
+        procurement_request_id: UUID,
+        actor_user_id: UUID | None,
+    ) -> ConstructionProcurementRequest:
+        procurement_request = await self.get_procurement_request(
+            company_id=company_id,
+            procurement_request_id=procurement_request_id,
+        )
+        if procurement_request.status != ConstructionProcurementStatus.PENDING_APPROVAL:
+            raise ConstructionInvalidValueError(
+                message="Only pending approval procurement requests can be approved.",
+                error_code="CONSTRUCTION_PROCUREMENT_INVALID_STATUS",
+            )
+
+        procurement_request.status = ConstructionProcurementStatus.APPROVED
+        procurement_request.approved_by_user_id = actor_user_id
+        procurement_request.approved_at = datetime.now(tz=UTC)
+        await self._dispatch_procurement_request_to_erp(
+            procurement_request=procurement_request,
+            actor_user_id=actor_user_id,
+        )
+        await self.repository.commit()
+        await self.repository.refresh(procurement_request)
+        return procurement_request
+
+    async def reject_procurement_request(
+        self,
+        *,
+        company_id: UUID,
+        procurement_request_id: UUID,
+    ) -> ConstructionProcurementRequest:
+        procurement_request = await self.get_procurement_request(
+            company_id=company_id,
+            procurement_request_id=procurement_request_id,
+        )
+        procurement_request.status = ConstructionProcurementStatus.REJECTED
+        await self.repository.commit()
+        await self.repository.refresh(procurement_request)
+        return procurement_request
+
+    async def delete_procurement_request(self, *, company_id: UUID, procurement_request_id: UUID) -> None:
+        procurement_request = await self.get_procurement_request(
+            company_id=company_id,
+            procurement_request_id=procurement_request_id,
+        )
+        if procurement_request.status not in {
+            ConstructionProcurementStatus.DRAFT,
+            ConstructionProcurementStatus.REJECTED,
+        }:
+            raise ConstructionInvalidValueError(
+                message="Only draft or rejected procurement requests can be deleted.",
+                error_code="CONSTRUCTION_PROCUREMENT_LOCKED",
+            )
+
+        await self.repository.delete(procurement_request)
+        await self.repository.commit()
 
     async def create_measurement(
         self,
@@ -919,6 +1095,80 @@ class ConstructionProjectService:
         receivable_status = payload.get("receivable_status")
         if receivable_status is not None:
             unit.external_receivable_status = str(receivable_status)
+
+    async def _dispatch_procurement_request_to_erp(
+        self,
+        *,
+        procurement_request: ConstructionProcurementRequest,
+        actor_user_id: UUID | None,
+    ) -> None:
+        request_event = self._build_procurement_requested_event(
+            procurement_request=procurement_request,
+            actor_user_id=actor_user_id,
+        )
+        if self.event_repository is not None:
+            await self.event_repository.add_outbox_event(event=request_event)
+
+        if self.erp_client is None:
+            return
+
+        erp_event = await self.erp_client.create_procurement_demand_from_request(event=request_event)
+        procurement_request.status = ConstructionProcurementStatus.SENT_TO_ERP
+        self._apply_procurement_snapshot_from_payload(
+            procurement_request=procurement_request,
+            payload=erp_event.payload,
+        )
+
+    @staticmethod
+    def _build_procurement_requested_event(
+        *,
+        procurement_request: ConstructionProcurementRequest,
+        actor_user_id: UUID | None,
+    ) -> EventEnvelope:
+        event_id = uuid4()
+        payload: dict[str, Any] = {
+            "construction_procurement_request_id": str(procurement_request.id),
+            "construction_project_id": str(procurement_request.project_id),
+            "title": procurement_request.title,
+            "description": procurement_request.description,
+            "estimated_amount": ConstructionProjectService._format_event_decimal(
+                value=procurement_request.estimated_amount
+            ),
+            "approval_threshold": CONSTRUCTION_PROCUREMENT_APPROVAL_THRESHOLD,
+        }
+        if actor_user_id is not None:
+            payload["user_id"] = str(actor_user_id)
+
+        return EventEnvelope(
+            event_id=event_id,
+            event_type=ConstructionEventType.PROCUREMENT_REQUESTED,
+            event_version=1,
+            company_id=procurement_request.company_id,
+            aggregate_id=procurement_request.id,
+            aggregate_type=ConstructionAggregateType.PROCUREMENT_REQUEST,
+            occurred_at=datetime.now(tz=UTC),
+            producer=EventProducer.CONSTRUCTION_API,
+            correlation_id=event_id,
+            causation_id=None,
+            payload=payload,
+        )
+
+    @staticmethod
+    def _apply_procurement_snapshot_from_payload(
+        *,
+        procurement_request: ConstructionProcurementRequest,
+        payload: dict[str, Any],
+    ) -> None:
+        external_procurement_id = payload.get("external_procurement_id")
+        if external_procurement_id is not None:
+            procurement_request.external_procurement_id = ConstructionProjectService._read_uuid_payload(
+                payload={"external_procurement_id": external_procurement_id},
+                field_name="external_procurement_id",
+            )
+
+        external_procurement_status = payload.get("external_procurement_status")
+        if external_procurement_status is not None:
+            procurement_request.external_procurement_status = str(external_procurement_status)
 
     @staticmethod
     def _format_event_date(*, value: date | None) -> str | None:

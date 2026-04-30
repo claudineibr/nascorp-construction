@@ -242,3 +242,38 @@ class ConstructionMeasurementResponse(BaseModel):
 class ConstructionMeasurementListResponse(BaseModel):
     items: list[ConstructionMeasurementResponse]
     total: int
+
+
+class ConstructionProcurementRequestCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=150)
+    description: str | None = Field(default=None, max_length=1000)
+    estimated_amount: Decimal = Field(..., gt=0)
+
+
+class ConstructionProcurementRequestUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=150)
+    description: str | None = Field(default=None, max_length=1000)
+    estimated_amount: Decimal | None = Field(default=None, gt=0)
+
+
+class ConstructionProcurementRequestResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    company_id: UUID
+    project_id: UUID
+    title: str
+    description: str | None = None
+    estimated_amount: Decimal
+    status: str
+    approved_by_user_id: UUID | None = None
+    approved_at: datetime | None = None
+    external_procurement_id: UUID | None = None
+    external_procurement_status: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConstructionProcurementRequestListResponse(BaseModel):
+    items: list[ConstructionProcurementRequestResponse]
+    total: int

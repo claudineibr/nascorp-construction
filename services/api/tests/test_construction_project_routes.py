@@ -122,6 +122,42 @@ class FakeProjectService:
             updated_at=now,
         )
 
+    async def create_procurement_request(self, *, company_id: UUID, project_id: UUID, request):
+        now = datetime.now(tz=UTC)
+        return SimpleNamespace(
+            id=uuid4(),
+            company_id=company_id,
+            project_id=project_id,
+            title=request.title,
+            description=request.description,
+            estimated_amount=request.estimated_amount,
+            status="draft",
+            approved_by_user_id=None,
+            approved_at=None,
+            external_procurement_id=None,
+            external_procurement_status=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+    async def submit_procurement_request(self, *, company_id: UUID, procurement_request_id: UUID, actor_user_id=None):
+        now = datetime.now(tz=UTC)
+        return SimpleNamespace(
+            id=procurement_request_id,
+            company_id=company_id,
+            project_id=uuid4(),
+            title="Facade package",
+            description=None,
+            estimated_amount="65000.00",
+            status="pending_approval",
+            approved_by_user_id=None,
+            approved_at=None,
+            external_procurement_id=None,
+            external_procurement_status=None,
+            created_at=now,
+            updated_at=now,
+        )
+
 
 def create_test_client(*, permissions: dict[str, int]) -> TestClient:
     security_module.settings.jwt_secret_key = TEST_SECRET
@@ -305,3 +341,45 @@ def test_confirm_unit_sale_returns_external_contract_snapshot() -> None:
     assert payload["status"] == "sold"
     assert payload["external_contract_status"] == "ACTIVE"
     assert payload["external_receivable_status"] == "OPEN"
+
+
+def test_create_procurement_request_requires_create_permission() -> None:
+    user_id = uuid4()
+    company_id = uuid4()
+    project_id = uuid4()
+    client = create_test_client(permissions={ConstructionFeature.PROCUREMENT: PermissionAction.READ})
+
+    response = client.post(
+        f"/v1/construction/projects/{project_id}/procurement-requests",
+        headers={
+            "Authorization": make_authorization_header(user_id=user_id),
+            "X-Company-ID": str(company_id),
+        },
+        json={
+            "title": "Concrete package",
+            "estimated_amount": "12000.00",
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_submit_procurement_request_accepts_update_permission() -> None:
+    user_id = uuid4()
+    company_id = uuid4()
+    procurement_request_id = uuid4()
+    client = create_test_client(permissions={ConstructionFeature.PROCUREMENT: PermissionAction.UPDATE})
+
+    response = client.post(
+        f"/v1/construction/procurement-requests/{procurement_request_id}/submit",
+        headers={
+            "Authorization": make_authorization_header(user_id=user_id),
+            "X-Company-ID": str(company_id),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == str(procurement_request_id)
+    assert payload["company_id"] == str(company_id)
+    assert payload["status"] == "pending_approval"

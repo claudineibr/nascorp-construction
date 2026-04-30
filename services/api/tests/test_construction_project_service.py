@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.domain.constants import ConstructionMeasurementStatus, ConstructionProjectStatus
+from app.domain.constants import ConstructionMeasurementStatus, ConstructionProcurementStatus, ConstructionProjectStatus
 from app.domain.exceptions import (
     ConstructionDuplicateCodeError,
     ConstructionInvalidStatusTransitionError,
@@ -13,9 +13,15 @@ from app.domain.exceptions import (
 from app.domain.events.constants import ConstructionEventType, ErpEventType
 from app.domain.events.contracts import EventEnvelope
 from app.domain.services import ConstructionProjectService
-from app.infrastructure.database.models import ConstructionMeasurement, ConstructionProject, ConstructionUnit
+from app.infrastructure.database.models import (
+    ConstructionMeasurement,
+    ConstructionProcurementRequest,
+    ConstructionProject,
+    ConstructionUnit,
+)
 from app.schemas.construction import (
     ConstructionMeasurementCreate,
+    ConstructionProcurementRequestCreate,
     ConstructionProjectCreate,
     ConstructionProjectUpdate,
     ConstructionUnitSaleConfirmRequest,
@@ -27,9 +33,13 @@ class FakeConstructionRepository:
         self.projects: dict[tuple[object, object], ConstructionProject] = {}
         self.measurements: dict[tuple[object, object], ConstructionMeasurement] = {}
         self.units: dict[tuple[object, object], ConstructionUnit] = {}
+        self.procurement_requests: dict[tuple[object, object], ConstructionProcurementRequest] = {}
         self.commits = 0
 
-    async def add(self, entity: ConstructionProject | ConstructionMeasurement | ConstructionUnit) -> None:
+    async def add(
+        self,
+        entity: ConstructionProject | ConstructionMeasurement | ConstructionUnit | ConstructionProcurementRequest,
+    ) -> None:
         if entity.id is None:
             entity.id = uuid4()
         if isinstance(entity, ConstructionProject):
@@ -40,12 +50,19 @@ class FakeConstructionRepository:
             self.units[(entity.company_id, entity.id)] = entity
             return
 
+        if isinstance(entity, ConstructionProcurementRequest):
+            self.procurement_requests[(entity.company_id, entity.id)] = entity
+            return
+
         self.measurements[(entity.company_id, entity.id)] = entity
 
     async def commit(self) -> None:
         self.commits += 1
 
-    async def refresh(self, entity: ConstructionProject | ConstructionMeasurement | ConstructionUnit) -> None:
+    async def refresh(
+        self,
+        entity: ConstructionProject | ConstructionMeasurement | ConstructionUnit | ConstructionProcurementRequest,
+    ) -> None:
         return None
 
     async def get_project(self, *, company_id, project_id):
@@ -65,13 +82,20 @@ class FakeConstructionRepository:
         items = [project for (stored_company_id, _), project in self.projects.items() if stored_company_id == company_id]
         return items[(page - 1) * page_size : page * page_size], len(items)
 
-    async def delete(self, entity: ConstructionProject | ConstructionMeasurement | ConstructionUnit) -> None:
+    async def delete(
+        self,
+        entity: ConstructionProject | ConstructionMeasurement | ConstructionUnit | ConstructionProcurementRequest,
+    ) -> None:
         if isinstance(entity, ConstructionProject):
             self.projects.pop((entity.company_id, entity.id), None)
             return
 
         if isinstance(entity, ConstructionUnit):
             self.units.pop((entity.company_id, entity.id), None)
+            return
+
+        if isinstance(entity, ConstructionProcurementRequest):
+            self.procurement_requests.pop((entity.company_id, entity.id), None)
             return
 
         self.measurements.pop((entity.company_id, entity.id), None)
@@ -114,6 +138,16 @@ class FakeConstructionRepository:
             measurement
             for (stored_company_id, _), measurement in self.measurements.items()
             if stored_company_id == company_id and measurement.project_id == project_id
+        ]
+
+    async def get_procurement_request(self, *, company_id, procurement_request_id):
+        return self.procurement_requests.get((company_id, procurement_request_id))
+
+    async def list_procurement_requests(self, *, company_id, project_id):
+        return [
+            procurement_request
+            for (stored_company_id, _), procurement_request in self.procurement_requests.items()
+            if stored_company_id == company_id and procurement_request.project_id == project_id
         ]
 
 
@@ -180,6 +214,27 @@ class FakeErpMeasurementClient:
                 "contract_status": "ACTIVE",
                 "external_receivable_id": str(uuid4()),
                 "receivable_status": "OPEN",
+            },
+        )
+
+    async def create_procurement_demand_from_request(self, *, event: EventEnvelope) -> EventEnvelope:
+        self.events.append(event)
+        event_id = uuid4()
+        return EventEnvelope(
+            event_id=event_id,
+            event_type=ErpEventType.PROCUREMENT_REQUEST_ACCEPTED,
+            event_version=1,
+            company_id=event.company_id,
+            aggregate_id=event.aggregate_id,
+            aggregate_type="construction_procurement_request",
+            occurred_at=datetime.now(tz=UTC),
+            producer="erp-api",
+            correlation_id=event.correlation_id,
+            causation_id=event.event_id,
+            payload={
+                "construction_procurement_request_id": str(event.aggregate_id),
+                "external_procurement_id": str(event.aggregate_id),
+                "external_procurement_status": "PENDING_REVIEW",
             },
         )
 
@@ -605,3 +660,81 @@ async def test_apply_contract_status_updated_event_cancellation_reverts_unit_to_
     assert first_result.external_contract_status == "CANCELED"
     assert second_result.status == "available"
     assert repository.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_procurement_request_over_threshold_requires_approval() -> None:
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-050",
+        name="Procurement project",
+        status=ConstructionProjectStatus.ACTIVE,
+    )
+    repository.projects[(company_id, project.id)] = project
+    service = ConstructionProjectService(repository=repository)
+
+    procurement_request = await service.create_procurement_request(
+        company_id=company_id,
+        project_id=project.id,
+        request=ConstructionProcurementRequestCreate(
+            title="Elevator package",
+            estimated_amount=Decimal("75000.00"),
+        ),
+    )
+    submitted = await service.submit_procurement_request(
+        company_id=company_id,
+        procurement_request_id=procurement_request.id,
+        actor_user_id=uuid4(),
+    )
+
+    assert submitted.status == ConstructionProcurementStatus.PENDING_APPROVAL
+    assert submitted.external_procurement_id is None
+
+
+@pytest.mark.asyncio
+async def test_approve_procurement_request_sends_demand_once() -> None:
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    event_repository = FakeEventRepository()
+    erp_client = FakeErpMeasurementClient()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-051",
+        name="Procurement integration",
+        status=ConstructionProjectStatus.ACTIVE,
+    )
+    repository.projects[(company_id, project.id)] = project
+    service = ConstructionProjectService(
+        repository=repository,
+        event_repository=event_repository,
+        erp_client=erp_client,
+    )
+
+    procurement_request = await service.create_procurement_request(
+        company_id=company_id,
+        project_id=project.id,
+        request=ConstructionProcurementRequestCreate(
+            title="Facade structure",
+            estimated_amount=Decimal("80000.00"),
+        ),
+    )
+    await service.submit_procurement_request(
+        company_id=company_id,
+        procurement_request_id=procurement_request.id,
+        actor_user_id=uuid4(),
+    )
+    approved = await service.approve_procurement_request(
+        company_id=company_id,
+        procurement_request_id=procurement_request.id,
+        actor_user_id=uuid4(),
+    )
+
+    assert approved.status == ConstructionProcurementStatus.SENT_TO_ERP
+    assert approved.external_procurement_id == procurement_request.id
+    assert approved.external_procurement_status == "PENDING_REVIEW"
+    assert any(event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED for event in event_repository.outbox_events)
+    assert len([event for event in erp_client.events if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED]) == 1
