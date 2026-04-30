@@ -1,62 +1,107 @@
 .page {
-  background: var(--color-background);
   color: var(--color-text);
-  display: grid;
-  gap: 18px;
-  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-family-display);
+  gap: 1.5rem;
 }
 
-.toolbar {
-  align-items: center;
+.pageHeader {
   display: flex;
-  gap: 16px;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.header {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
   justify-content: space-between;
 }
 
-.toolbar h1 {
-  font-size: 1.55rem;
-  line-height: 1.2;
-  margin: 4px 0 0;
+.left {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
 }
 
-.eyebrow {
+.breadcrumb {
+  align-items: center;
   color: var(--color-text-muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
+  display: flex;
+  font-size: 0.8rem;
+  gap: 0.25rem;
 }
 
-.toolbarActions {
+.breadcrumbItem {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.25rem;
+}
+
+.breadcrumbLink,
+.breadcrumbCurrent,
+.separator {
+  color: var(--color-text-muted);
+}
+
+.separator {
+  opacity: 0.6;
+}
+
+.title {
+  color: var(--color-text);
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 0;
+}
+
+.heroActions {
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  justify-content: flex-end;
+  gap: 0.5rem;
 }
 
 .primaryButton,
 .secondaryButton {
   align-items: center;
-  border-radius: 8px;
+  border: none;
+  border-radius: var(--radius-xl);
   cursor: pointer;
   display: inline-flex;
   font-weight: 700;
-  gap: 8px;
+  gap: 0.45rem;
   justify-content: center;
-  min-height: 40px;
-  padding: 0 14px;
+  min-height: 38px;
+  padding: 0.5rem 1.35rem;
+  text-decoration: none;
+  transition: transform var(--transition-normal) ease, box-shadow var(--transition-normal) ease;
 }
 
 .primaryButton {
-  background: var(--color-primary);
-  border: 1px solid var(--color-primary);
-  color: var(--color-primary-contrast);
+  background: var(--color-surface-muted);
+  border: 1px solid var(--border-primary);
+  color: var(--color-primary);
+  font-size: 0.85rem;
 }
 
 .secondaryButton {
   background: var(--color-surface-muted);
   border: 1px solid var(--color-border);
   color: var(--color-text);
+}
+
+.primaryButton:hover:not(:disabled) {
+  background: var(--color-primary-strong);
+  color: var(--color-text);
+}
+
+.secondaryButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-primary) 14%, var(--color-surface-muted));
+  border-color: color-mix(in srgb, var(--color-primary) 35%, var(--color-border));
 }
 
 .primaryButton:disabled,
@@ -65,131 +110,254 @@
   opacity: 0.55;
 }
 
-.summaryGrid {
+.metricsGrid {
   display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
-.summaryCard {
+.metricCard {
   align-items: center;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-xl);
   display: grid;
-  gap: 8px;
   grid-template-columns: auto 1fr;
-  min-height: 92px;
-  padding: 16px;
+  gap: 0.75rem;
+  padding: 0.9rem 1.1rem;
 }
 
-.summaryCard svg {
-  color: var(--color-primary);
-  grid-row: span 2;
-}
-
-.summaryCard span {
+.metricIconWrap {
+  align-items: center;
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-md);
   color: var(--color-text-muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0;
+  display: grid;
+  height: 38px;
+  justify-content: center;
+  width: 38px;
+}
+
+.metricContent {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.metricLabel {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  margin: 0;
   text-transform: uppercase;
 }
 
-.summaryCard strong {
-  font-size: 1.55rem;
-  line-height: 1;
+.metricValue {
+  color: var(--color-text);
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin: 0;
 }
 
-.workspace {
+.metricHint {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  margin: 0;
+}
+
+.success {
+  border-color: rgba(22, 163, 74, 0.35);
+}
+
+.success .metricIconWrap {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+}
+
+.warning {
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.warning .metricIconWrap {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+}
+
+.muted {
+  border-color: var(--color-border);
+}
+
+.filtersCard,
+.card {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
-  display: grid;
-  gap: 14px;
-  min-height: 360px;
-  padding: 16px;
-}
-
-.tabs {
-  align-items: center;
-  border-bottom: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
   display: flex;
-  gap: 6px;
-  overflow-x: auto;
-  padding-bottom: 10px;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1.1rem;
 }
 
-.tab,
-.tabActive {
-  align-items: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  display: inline-flex;
-  font-weight: 700;
-  gap: 8px;
-  min-height: 36px;
-  padding: 0 12px;
-  white-space: nowrap;
+.filtersGrid {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
-.tabActive {
-  background: var(--color-surface-muted);
-  border-color: var(--color-border);
+.filterControl {
   color: var(--color-text);
+  display: flex;
+  flex-direction: column;
+  font-size: 0.9rem;
+  font-weight: 600;
+  gap: 0.4rem;
 }
 
-.statePanel,
-.emptyPanel {
-  align-items: center;
+.filterControl input,
+.filterControl select {
   background: var(--color-surface-muted);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
-  color: var(--color-text-muted);
-  display: flex;
-  gap: 12px;
-  justify-content: center;
-  min-height: 248px;
-  padding: 18px;
+  border-radius: var(--radius-lg);
+  color: var(--color-text);
+  padding: 0.65rem 0.85rem;
 }
 
-.statePanel {
+.filterControl input:focus,
+.filterControl select:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-focus-ring);
+  outline: none;
+}
+
+.filtersFooter {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.tableCard {
+  gap: 0.5rem;
+}
+
+.tableHeaderRow {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: space-between;
 }
 
-.tableWrap {
+.tableHeaderRow h2 {
+  color: var(--color-text);
+  font-size: 1rem;
+  margin: 0;
+}
+
+.badgeMuted,
+.badgeSuccess {
+  align-items: center;
+  border-radius: var(--radius-full);
+  display: inline-flex;
+  font-size: 0.85rem;
+  font-weight: 700;
+  padding: 0.35rem 0.65rem;
+}
+
+.badgeMuted {
+  background: rgba(148, 163, 184, 0.2);
+  color: var(--color-text-muted);
+}
+
+.badgeSuccess {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+}
+
+.tableWrapper {
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
-  overflow: auto;
+  border-radius: var(--radius-lg);
+  height: 560px;
+  overflow-x: auto;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.empty {
+  align-items: center;
+  color: var(--color-text-muted);
+  display: flex;
+  gap: 0.5rem;
+  height: 100%;
+  justify-content: center;
+  padding: 1.5rem;
+  text-align: center;
 }
 
 .table {
+  background: var(--color-surface);
   border-collapse: collapse;
-  min-width: 720px;
+  min-width: 760px;
   width: 100%;
 }
 
 .table th,
 .table td {
   border-bottom: 1px solid var(--color-border);
-  padding: 12px 14px;
+  color: var(--color-text);
+  font-size: 0.95rem;
+  padding: 0.9rem 1rem;
   text-align: left;
 }
 
 .table th {
   background: var(--color-surface-muted);
-  color: var(--color-text-muted);
-  font-size: 0.78rem;
-  font-weight: 800;
-  letter-spacing: 0;
-  text-transform: uppercase;
+  font-weight: 700;
 }
 
-.table tr:last-child td {
-  border-bottom: 0;
+.table tbody tr:nth-child(even) {
+  background: var(--color-surface-muted);
+}
+
+.statusPill {
+  align-items: center;
+  border-radius: var(--radius-full);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 10px;
+}
+
+.statusdraft {
+  background: var(--status-open-bg);
+  color: var(--status-open-text);
+}
+
+.statusactive,
+.statuscompleted {
+  background: var(--status-paid-bg);
+  color: var(--status-paid-text);
+}
+
+.statuspaused {
+  background: var(--status-overdue-bg);
+  color: var(--status-overdue-text);
+}
+
+.statuscanceled {
+  background: var(--status-canceled-bg);
+  color: var(--status-canceled-text);
+}
+
+.paginationSlot {
+  align-items: flex-end;
+  display: flex;
+  min-height: 64px;
+}
+
+.paginationSummary {
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
 }
 
 .spinIcon {
@@ -208,23 +376,14 @@
 }
 
 @media (max-width: 760px) {
-  .toolbar {
+  .header {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .toolbarActions,
+  .heroActions,
   .primaryButton,
   .secondaryButton {
     width: 100%;
-  }
-
-  .summaryGrid {
-    grid-template-columns: 1fr;
-  }
-
-  .statePanel {
-    align-items: stretch;
-    flex-direction: column;
   }
 }

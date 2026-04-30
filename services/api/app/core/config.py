@@ -5,9 +5,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 API_ROOT = Path(__file__).resolve().parents[2]
-CONSTRUCTION_ROOT = Path(__file__).resolve().parents[4]
-EXTERNAL_ROOT = Path(__file__).resolve().parents[5]
-WORKSPACE_ROOT = Path(__file__).resolve().parents[6]
+CONSTRUCTION_ROOT = API_ROOT.parents[1] if len(API_ROOT.parents) > 1 else API_ROOT
+EXTERNAL_ROOT = API_ROOT.parents[2] if len(API_ROOT.parents) > 2 else CONSTRUCTION_ROOT
+WORKSPACE_ROOT = API_ROOT.parents[3] if len(API_ROOT.parents) > 3 else EXTERNAL_ROOT
 
 ENV_FILE_PATHS = (
     API_ROOT / ".env",
@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     event_queue_url: str | None = None
     dead_letter_queue_url: str | None = None
     erp_api_url: str = Field(default="http://127.0.0.1:8000", validation_alias=AliasChoices("CONSTRUCTION_ERP_API_URL", "ERP_API_URL"))
-    erp_service_key: str | None = Field(default=None, validation_alias=AliasChoices("CONSTRUCTION_ERP_SERVICE_KEY", "AI_AGENT_SERVICE_KEY"))
+    erp_service_key: str | None = Field(default=None, validation_alias=AliasChoices("CONSTRUCTION_ERP_SERVICE_KEY", "CONSTRUCTION_ERP_API_KEY"))
     jwt_secret_key: str | None = Field(default=None, validation_alias=AliasChoices("CONSTRUCTION_JWT_SECRET_KEY", "SECRET_KEY"))
     jwt_algorithm: str = "HS256"
 
