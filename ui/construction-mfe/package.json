@@ -10,9 +10,12 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "4.4.1",
+    "lucide-react": "^0.471.0",
     "react": "latest",
     "react-dom": "latest",
     "vite": "6.4.2"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@originjs/vite-plugin-federation": "^1.4.1"
+  }
 }
