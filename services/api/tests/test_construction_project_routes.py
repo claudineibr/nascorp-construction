@@ -207,6 +207,22 @@ def test_create_project_requires_company_header() -> None:
     assert response.status_code == 422
 
 
+def test_project_routes_accept_browser_preflight_from_erp_host() -> None:
+    client = create_test_client(permissions={ConstructionFeature.PROJECTS: PermissionAction.FULL})
+
+    response = client.options(
+        "/v1/construction/projects?page=1&page_size=20",
+        headers={
+            "Origin": "http://127.0.0.1:8001",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization,x-company-id",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:8001"
+
+
 def test_create_project_denies_missing_create_permission() -> None:
     user_id = uuid4()
     company_id = uuid4()

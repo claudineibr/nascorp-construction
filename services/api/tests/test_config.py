@@ -19,3 +19,9 @@ def test_settings_env_files_do_not_depend_on_current_working_directory(monkeypat
     settings = Settings()
 
     assert settings.model_config["env_file"] == ENV_FILE_PATHS
+
+
+def test_settings_parse_comma_separated_cors_origins() -> None:
+    settings = Settings(cors_allowed_origins="http://127.0.0.1:8001, http://localhost:8002")
+
+    assert settings.cors_allowed_origins == ["http://127.0.0.1:8001", "http://localhost:8002"]

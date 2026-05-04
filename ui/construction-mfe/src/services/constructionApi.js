@@ -15,6 +15,10 @@ export async function listConstructionProjects({ bridge, page = 1, pageSize = 20
   const apiBaseUrl = bridge?.constructionApiBaseUrl || DEFAULT_CONSTRUCTION_API_URL
   const path = `${apiBaseUrl}/v1/construction/projects?page=${page}&page_size=${pageSize}`
   const headers = bridge?.getAuthHeaders?.() ?? {}
+  if (!headers.Authorization || !headers["X-Company-ID"]) {
+    throw new Error("Contexto autenticado da empresa indisponível.")
+  }
+
   let response = await fetch(path, { headers })
 
   if (response.status === 401 && typeof bridge?.refreshToken === "function") {
