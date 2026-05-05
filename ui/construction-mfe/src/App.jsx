@@ -826,6 +826,32 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }, [activeTab, loadPersonSummaries, personSummaries.length])
 
+  useEffect(() => {
+    if (!["overview", "integrations"].includes(activeTab)) {
+      return
+    }
+
+    if (!activeProjectId) {
+      return
+    }
+
+    void Promise.all([
+      loadBlocks(),
+      loadSchedulePhases(),
+      loadUnits(),
+      loadMeasurements(),
+      loadProcurementRequests(),
+    ])
+  }, [
+    activeProjectId,
+    activeTab,
+    loadBlocks,
+    loadMeasurements,
+    loadProcurementRequests,
+    loadSchedulePhases,
+    loadUnits,
+  ])
+
   const handleFilterChange = (field, value) => {
     setFilters((currentFilters) => ({ ...currentFilters, [field]: value }))
   }
@@ -1195,6 +1221,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }
 
   const openReserveUnitModal = (unit) => {
+    if (!personSummaries.length) {
+      void loadPersonSummaries()
+    }
+
     setReserveTargetUnit(unit)
     setReserveUnitForm({
       ...defaultReserveUnitForm,
@@ -1267,6 +1297,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }
 
   const openSaleUnitModal = (unit) => {
+    if (!personSummaries.length) {
+      void loadPersonSummaries()
+    }
+
     setSaleTargetUnit(unit)
     setSaleUnitForm({
       ...defaultSaleUnitForm,
@@ -1326,6 +1360,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       return
     }
 
+    if (!personSummaries.length) {
+      void loadPersonSummaries()
+    }
+
     const nextSequenceNumber = measurements.length
       ? Math.max(...measurements.map((measurement) => Number(measurement.sequenceNumber || 0))) + 1
       : 1
@@ -1340,6 +1378,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }
 
   const openEditMeasurement = (measurement) => {
+    if (!personSummaries.length) {
+      void loadPersonSummaries()
+    }
+
     setMeasurementModalMode("edit")
     setEditingMeasurementId(measurement.id)
     setMeasurementForm({
@@ -1439,6 +1481,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }
 
   const handleApproveMeasurement = async (measurement) => {
+    const confirmed = window.confirm(`Deseja aprovar a medicao ${measurement.code}?`)
+    if (!confirmed) {
+      return
+    }
+
     try {
       await approveConstructionMeasurement({ bridge, measurementId: measurement.id })
       bridge?.feedback?.success?.("Medicao aprovada com sucesso.")
@@ -1498,6 +1545,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       return
     }
 
+    if (!personSummaries.length) {
+      void loadPersonSummaries()
+    }
+
     setProcurementModalMode("create")
     setEditingProcurementId(null)
     setProcurementForm(defaultProcurementForm)
@@ -1505,6 +1556,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }
 
   const openEditProcurement = (procurementRequest) => {
+    if (!personSummaries.length) {
+      void loadPersonSummaries()
+    }
+
     setProcurementModalMode("edit")
     setEditingProcurementId(procurementRequest.id)
     setProcurementForm(toFormProcurement(procurementRequest))
@@ -1585,6 +1640,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }
 
   const handleSubmitProcurement = async (procurementRequest) => {
+    const confirmed = window.confirm(`Deseja enviar a requisicao ${procurementRequest.code} para aprovacao?`)
+    if (!confirmed) {
+      return
+    }
+
     try {
       await submitConstructionProcurementRequest({
         bridge,
@@ -1598,6 +1658,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }
 
   const handleApproveProcurement = async (procurementRequest) => {
+    const confirmed = window.confirm(`Deseja aprovar a requisicao ${procurementRequest.code}?`)
+    if (!confirmed) {
+      return
+    }
+
     try {
       await approveConstructionProcurementRequest({
         bridge,
@@ -1769,12 +1834,15 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       {activeTab === "overview" && (
         <DomainCard
           title="Resumo operacional"
-          subtitle="Fundacao visual com CRUD de projetos, blocos, unidades e cronograma."
+          subtitle="Indicadores consolidados de obras, comercial, medicoes e suprimentos."
           content={
-            <p className={styles.textMuted}>
-              As etapas 2, 3 e 4 habilitaram o CRUD de projetos, blocos, cronograma e unidades com fluxos de reserva,
-              liberacao e confirmacao de venda.
-            </p>
+            <OverviewPanel
+              selectedProject={selectedProject}
+              units={units}
+              schedulePhases={schedulePhases}
+              measurements={measurements}
+              procurementRequests={procurementRequests}
+            />
           }
         />
       )}
@@ -2103,6 +2171,85 @@ function PhasePlaceholder({ title, phase }) {
       subtitle={`${phase}: implementacao funcional prevista nas proximas etapas.`}
       content={<div className={styles.empty}>Estrutura pronta para evolucao incremental.</div>}
     />
+  )
+}
+
+function OverviewPanel({ selectedProject, units, schedulePhases, measurements, procurementRequests }) {
+  if (!selectedProject) {
+    return <div className={styles.empty}>Selecione uma obra para visualizar os indicadores.</div>
+  }
+
+  const availableUnits = units.filter((unit) => unit.status === "available").length
+  const reservedUnits = units.filter((unit) => unit.status === "reserved").length
+  const soldUnits = units.filter((unit) => ["sold", "delivered"].includes(unit.status)).length
+  const scheduleAverage = schedulePhases.length
+    ? Number(
+        (
+          schedulePhases.reduce((total, phase) => total + Number(phase.progressPercent ?? 0), 0) /
+          schedulePhases.length
+        ).toFixed(1)
+      )
+    : 0
+
+  const approvedMeasurements = measurements.filter((measurement) => measurement.status === "approved").length
+  const paidMeasurements = measurements.filter((measurement) => measurement.status === "paid").length
+  const sentProcurementRequests = procurementRequests.filter(
+    (procurementRequest) => procurementRequest.status === "sent_to_erp"
+  ).length
+  const pendingProcurementApprovals = procurementRequests.filter(
+    (procurementRequest) => procurementRequest.status === "pending_approval"
+  ).length
+
+  const highlights = [
+    { label: "Unidades disponiveis", value: availableUnits, hint: `${reservedUnits} reservadas` },
+    { label: "Unidades vendidas", value: soldUnits, hint: `${units.length} no total` },
+    { label: "Progresso medio", value: `${scheduleAverage}%`, hint: `${schedulePhases.length} fase(s)` },
+    { label: "Medicoes aprovadas", value: approvedMeasurements, hint: `${paidMeasurements} pagas` },
+    {
+      label: "Requisicoes no ERP",
+      value: sentProcurementRequests,
+      hint: `${pendingProcurementApprovals} aguardando aprovacao`,
+    },
+  ]
+
+  const alerts = []
+  if (!selectedProject.analyticCostCenterId) {
+    alerts.push("Projeto sem centro de custo analitico vinculado.")
+  }
+  if (!schedulePhases.length) {
+    alerts.push("Cronograma ainda nao foi cadastrado para a obra selecionada.")
+  }
+  if (pendingProcurementApprovals > 0) {
+    alerts.push("Existem requisicoes aguardando aprovacao.")
+  }
+  if (measurements.some((measurement) => measurement.status === "rejected")) {
+    alerts.push("Existem medicoes rejeitadas aguardando ajuste.")
+  }
+
+  return (
+    <div className={styles.integrationPanel}>
+      <div className={styles.integrationGrid}>
+        {highlights.map((item) => (
+          <article key={item.label} className={styles.integrationCard}>
+            <h3>{item.label}</h3>
+            <p className={styles.metricValue}>{item.value}</p>
+            <p className={styles.metricHint}>{item.hint}</p>
+          </article>
+        ))}
+      </div>
+      <article className={styles.integrationCard}>
+        <h3>Alertas operacionais</h3>
+        {alerts.length ? (
+          <ul className={styles.alertList}>
+            {alerts.map((alert) => (
+              <li key={alert}>{alert}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className={styles.textMuted}>Sem alertas criticos para a obra selecionada.</p>
+        )}
+      </article>
+    </div>
   )
 }
 

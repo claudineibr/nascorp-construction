@@ -637,6 +637,16 @@
   margin: 0;
 }
 
+.alertList {
+  color: var(--color-text);
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.alertList li {
+  margin-bottom: 0.35rem;
+}
+
 .spinIcon {
   animation: spin 0.9s linear infinite;
   color: var(--color-primary);
