@@ -24,6 +24,8 @@ class ConstructionUnitStatus:
     AVAILABLE = "available"
     RESERVED = "reserved"
     SOLD = "sold"
+    DELIVERED = "delivered"
+    TERMINATED = "terminated"
     UNAVAILABLE = "unavailable"
 
 
@@ -74,6 +76,8 @@ UNIT_STATUSES = {
     ConstructionUnitStatus.AVAILABLE,
     ConstructionUnitStatus.RESERVED,
     ConstructionUnitStatus.SOLD,
+    ConstructionUnitStatus.DELIVERED,
+    ConstructionUnitStatus.TERMINATED,
     ConstructionUnitStatus.UNAVAILABLE,
 }
 SCHEDULE_PHASE_STATUSES = {

@@ -458,6 +458,23 @@
   color: var(--status-overdue-text);
 }
 
+.statusreserved {
+  background: var(--status-overdue-bg);
+  color: var(--status-overdue-text);
+}
+
+.statussold,
+.statusdelivered {
+  background: var(--status-paid-bg);
+  color: var(--status-paid-text);
+}
+
+.statusterminated,
+.statusunavailable {
+  background: var(--status-canceled-bg);
+  color: var(--status-canceled-text);
+}
+
 .statuscancelled,
 .statuscanceled {
   background: var(--status-canceled-bg);

@@ -130,6 +130,7 @@ class ConstructionUnit(Base):
     )
     code: Mapped[str] = mapped_column(String(50), nullable=False)
     unit_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    typology: Mapped[str | None] = mapped_column(String(80), nullable=True)
     floor: Mapped[str | None] = mapped_column(String(30), nullable=True)
     private_area: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     total_area: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)

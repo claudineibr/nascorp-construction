@@ -47,6 +47,31 @@ const toSchedulePhaseView = (phase) => ({
   updatedAt: phase.updated_at ?? null,
 })
 
+const toUnitView = (unit) => ({
+  id: unit.id,
+  companyId: unit.company_id,
+  projectId: unit.project_id,
+  blockId: unit.block_id ?? null,
+  code: unit.code,
+  unitType: unit.unit_type,
+  typology: unit.typology ?? "",
+  floor: unit.floor ?? "",
+  privateArea: unit.private_area ?? null,
+  totalArea: unit.total_area ?? null,
+  salePrice: unit.sale_price ?? null,
+  buyerPersonId: unit.buyer_person_id ?? null,
+  reservedAt: unit.reserved_at ?? null,
+  reservationExpiresAt: unit.reservation_expires_at ?? null,
+  soldAt: unit.sold_at ?? null,
+  externalContractId: unit.external_contract_id ?? null,
+  externalContractStatus: unit.external_contract_status ?? null,
+  externalReceivableId: unit.external_receivable_id ?? null,
+  externalReceivableStatus: unit.external_receivable_status ?? null,
+  status: unit.status,
+  createdAt: unit.created_at ?? null,
+  updatedAt: unit.updated_at ?? null,
+})
+
 const toNullableString = (value) => {
   if (typeof value !== "string") {
     return null
@@ -105,6 +130,27 @@ const toSchedulePhasePayload = (phaseData = {}) => ({
     phaseData.progressPercent === "" || phaseData.progressPercent === null
       ? 0
       : Number(phaseData.progressPercent),
+})
+
+const toNullableNumber = (value) => {
+  if (value === "" || value === null || value === undefined) {
+    return null
+  }
+
+  const parsedValue = Number(value)
+  return Number.isNaN(parsedValue) ? null : parsedValue
+}
+
+const toUnitPayload = (unitData = {}) => ({
+  code: String(unitData.code ?? "").trim(),
+  unit_type: String(unitData.unitType ?? "").trim(),
+  typology: toNullableString(unitData.typology),
+  block_id: toNullableString(unitData.blockId),
+  floor: toNullableString(unitData.floor),
+  private_area: toNullableNumber(unitData.privateArea),
+  total_area: toNullableNumber(unitData.totalArea),
+  sale_price: toNullableNumber(unitData.salePrice),
+  status: unitData.status,
 })
 
 async function requestJson({ bridge, path, method = "GET", body = null }) {
@@ -294,4 +340,93 @@ export async function deleteConstructionSchedulePhase({ bridge, phaseId }) {
   })
 }
 
-export { requestJson, toBlockPayload, toProjectPayload, toProjectView, toSchedulePhasePayload }
+export async function listConstructionUnits({ bridge, projectId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/units`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toUnitView),
+    total: payload.total ?? 0,
+  }
+}
+
+export async function createConstructionUnit({ bridge, projectId, unitData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/units`,
+    method: "POST",
+    body: toUnitPayload(unitData),
+  })
+
+  return toUnitView(payload)
+}
+
+export async function updateConstructionUnit({ bridge, unitId, unitData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}`,
+    method: "PATCH",
+    body: toUnitPayload(unitData),
+  })
+
+  return toUnitView(payload)
+}
+
+export async function deleteConstructionUnit({ bridge, unitId }) {
+  await requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}`,
+    method: "DELETE",
+  })
+}
+
+export async function reserveConstructionUnit({ bridge, unitId, reserveData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/reserve`,
+    method: "POST",
+    body: {
+      buyer_person_id: reserveData.buyerPersonId,
+      reservation_expires_at: toNullableString(reserveData.reservationExpiresAt),
+    },
+  })
+
+  return toUnitView(payload)
+}
+
+export async function releaseConstructionUnitReservation({ bridge, unitId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/release`,
+    method: "POST",
+  })
+
+  return toUnitView(payload)
+}
+
+export async function confirmConstructionUnitSale({ bridge, unitId, saleData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/confirm-sale`,
+    method: "POST",
+    body: {
+      buyer_person_id: saleData.buyerPersonId,
+      sale_price: toNullableNumber(saleData.salePrice),
+      first_due_date: saleData.firstDueDate,
+      installments: Number(saleData.installments || 1),
+    },
+  })
+
+  return toUnitView(payload)
+}
+
+export {
+  requestJson,
+  toBlockPayload,
+  toProjectPayload,
+  toProjectView,
+  toSchedulePhasePayload,
+  toUnitPayload,
+}

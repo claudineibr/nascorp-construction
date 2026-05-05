@@ -13,23 +13,32 @@ import {
   Plus,
   RefreshCw,
   Route,
+  ShoppingCart,
   Trash2,
+  Unlock,
 } from "lucide-react"
 import styles from "./App.module.css"
 import { resolveConstructionBridge } from "./bridge/constructionBridge.js"
 import {
+  confirmConstructionUnitSale,
   createConstructionBlock,
   createConstructionProject,
   createConstructionSchedulePhase,
+  createConstructionUnit,
   deleteConstructionBlock,
   deleteConstructionProject,
   deleteConstructionSchedulePhase,
+  deleteConstructionUnit,
   listConstructionBlocks,
   listConstructionProjects,
   listConstructionSchedulePhases,
+  listConstructionUnits,
+  releaseConstructionUnitReservation,
+  reserveConstructionUnit,
   updateConstructionBlock,
   updateConstructionProject,
   updateConstructionSchedulePhase,
+  updateConstructionUnit,
 } from "./services/constructionApi.js"
 
 const defaultFilters = {
@@ -73,6 +82,17 @@ const scheduleStatusOptions = [
 
 const scheduleStatusLabel = Object.fromEntries(scheduleStatusOptions.map((option) => [option.value, option.label]))
 
+const unitStatusOptions = [
+  { value: "available", label: "Disponivel" },
+  { value: "reserved", label: "Reservada" },
+  { value: "sold", label: "Vendida" },
+  { value: "delivered", label: "Entregue" },
+  { value: "terminated", label: "Distratada" },
+  { value: "unavailable", label: "Indisponivel" },
+]
+
+const unitStatusLabel = Object.fromEntries(unitStatusOptions.map((option) => [option.value, option.label]))
+
 const domainTabs = [
   { id: "overview", label: "Visao geral", icon: Building2 },
   { id: "projects", label: "Projetos", icon: Layers3 },
@@ -89,6 +109,7 @@ const statusOptions = Object.entries(statusLabel)
   .map(([value, label]) => ({ value, label }))
 
 const dateFormatter = new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" })
+const moneyFormatter = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" })
 
 const defaultProjectForm = {
   code: "",
@@ -125,6 +146,30 @@ const defaultSchedulePhaseForm = {
   actualStartDate: "",
   actualEndDate: "",
   progressPercent: "0",
+}
+
+const defaultUnitForm = {
+  code: "",
+  unitType: "",
+  typology: "",
+  blockId: "",
+  floor: "",
+  privateArea: "",
+  totalArea: "",
+  salePrice: "",
+  status: "available",
+}
+
+const defaultReserveUnitForm = {
+  buyerPersonId: "",
+  reservationExpiresAt: "",
+}
+
+const defaultSaleUnitForm = {
+  buyerPersonId: "",
+  salePrice: "",
+  firstDueDate: "",
+  installments: "1",
 }
 
 function toFormProject(project) {
@@ -168,6 +213,20 @@ function toFormSchedulePhase(phase) {
     actualEndDate: phase.actualEndDate ? String(phase.actualEndDate).slice(0, 10) : "",
     progressPercent:
       phase.progressPercent === null || phase.progressPercent === undefined ? "0" : String(phase.progressPercent),
+  }
+}
+
+function toFormUnit(unit) {
+  return {
+    code: unit.code ?? "",
+    unitType: unit.unitType ?? "",
+    typology: unit.typology ?? "",
+    blockId: unit.blockId ?? "",
+    floor: unit.floor ?? "",
+    privateArea: unit.privateArea === null || unit.privateArea === undefined ? "" : String(unit.privateArea),
+    totalArea: unit.totalArea === null || unit.totalArea === undefined ? "" : String(unit.totalArea),
+    salePrice: unit.salePrice === null || unit.salePrice === undefined ? "" : String(unit.salePrice),
+    status: unit.status ?? "available",
   }
 }
 
@@ -248,6 +307,47 @@ function requiredScheduleFieldError(formPhase) {
   return null
 }
 
+function requiredUnitFieldError(formUnit) {
+  if (!String(formUnit.code ?? "").trim()) {
+    return "Informe o codigo da unidade."
+  }
+
+  if (!String(formUnit.unitType ?? "").trim()) {
+    return "Informe o tipo da unidade."
+  }
+
+  if (!formUnit.status) {
+    return "Selecione o status da unidade."
+  }
+
+  return null
+}
+
+function requiredReserveFieldError(formReserve) {
+  if (!String(formReserve.buyerPersonId ?? "").trim()) {
+    return "Informe a pessoa compradora para reservar."
+  }
+
+  return null
+}
+
+function requiredSaleFieldError(formSale) {
+  if (!String(formSale.buyerPersonId ?? "").trim()) {
+    return "Informe a pessoa compradora para confirmar a venda."
+  }
+
+  if (!String(formSale.firstDueDate ?? "").trim()) {
+    return "Informe a data do primeiro vencimento."
+  }
+
+  const installments = Number(formSale.installments)
+  if (!Number.isInteger(installments) || installments <= 0 || installments > 120) {
+    return "Parcelas devem estar entre 1 e 120."
+  }
+
+  return null
+}
+
 export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const bridge = useMemo(() => providedBridge ?? resolveConstructionBridge(), [providedBridge])
   const [activeTab, setActiveTab] = useState("overview")
@@ -283,6 +383,25 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [schedulePhaseForm, setSchedulePhaseForm] = useState(defaultSchedulePhaseForm)
   const [submittingSchedule, setSubmittingSchedule] = useState(false)
 
+  const [units, setUnits] = useState([])
+  const [loadingUnits, setLoadingUnits] = useState(false)
+  const [unitError, setUnitError] = useState(null)
+  const [isUnitModalOpen, setIsUnitModalOpen] = useState(false)
+  const [unitModalMode, setUnitModalMode] = useState("create")
+  const [editingUnitId, setEditingUnitId] = useState(null)
+  const [unitForm, setUnitForm] = useState(defaultUnitForm)
+  const [submittingUnit, setSubmittingUnit] = useState(false)
+
+  const [isReserveModalOpen, setIsReserveModalOpen] = useState(false)
+  const [reserveUnitForm, setReserveUnitForm] = useState(defaultReserveUnitForm)
+  const [reserveTargetUnit, setReserveTargetUnit] = useState(null)
+  const [submittingReserve, setSubmittingReserve] = useState(false)
+
+  const [isSaleModalOpen, setIsSaleModalOpen] = useState(false)
+  const [saleUnitForm, setSaleUnitForm] = useState(defaultSaleUnitForm)
+  const [saleTargetUnit, setSaleTargetUnit] = useState(null)
+  const [submittingSale, setSubmittingSale] = useState(false)
+
   const loadProjects = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -294,8 +413,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       setProjects(result.items)
       setTotalProjects(result.total)
     } catch (requestError) {
-      const message = requestError?.message ?? "Nao foi possivel carregar as obras."
-      setError(message)
+      setError(requestError?.message ?? "Nao foi possivel carregar as obras.")
     } finally {
       setLoading(false)
     }
@@ -368,13 +486,13 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       },
       {
         label: "Unidades",
-        value: "0",
-        hint: "proximas fases",
+        value: units.length,
+        hint: "na obra selecionada",
         icon: Home,
         tone: "muted",
       },
     ]
-  }, [projects, totalProjects, visibleProjects.length])
+  }, [projects, totalProjects, units.length, visibleProjects.length])
 
   const hasActiveFilters = Object.values(filters).some(Boolean)
 
@@ -429,6 +547,27 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }, [activeProjectId, bridge])
 
+  const loadUnits = useCallback(async () => {
+    if (!activeProjectId) {
+      setUnits([])
+      return
+    }
+
+    setLoadingUnits(true)
+    setUnitError(null)
+    try {
+      const result = await listConstructionUnits({
+        bridge,
+        projectId: activeProjectId,
+      })
+      setUnits(result.items)
+    } catch (requestError) {
+      setUnitError(requestError?.message ?? "Nao foi possivel carregar as unidades.")
+    } finally {
+      setLoadingUnits(false)
+    }
+  }, [activeProjectId, bridge])
+
   useEffect(() => {
     if (activeTab !== "blocks") {
       return
@@ -444,6 +583,15 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
     void loadSchedulePhases()
   }, [activeTab, loadSchedulePhases])
+
+  useEffect(() => {
+    if (activeTab !== "units") {
+      return
+    }
+
+    void loadUnits()
+    void loadBlocks()
+  }, [activeTab, loadBlocks, loadUnits])
 
   const handleFilterChange = (field, value) => {
     setFilters((currentFilters) => ({ ...currentFilters, [field]: value }))
@@ -493,8 +641,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       const projectData = toApiProject(projectForm)
       if (projectModalMode === "create") {
         const createdProject = await createConstructionProject({ bridge, projectData })
-        bridge?.feedback?.success?.("Obra criada com sucesso.")
         setActiveProjectId(createdProject.id)
+        bridge?.feedback?.success?.("Obra criada com sucesso.")
       } else if (editingProjectId) {
         await updateConstructionProject({
           bridge,
@@ -713,6 +861,224 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
+  const openCreateUnit = () => {
+    if (!activeProjectId) {
+      bridge?.feedback?.warning?.("Selecione uma obra antes de criar unidades.")
+      return
+    }
+
+    setUnitModalMode("create")
+    setEditingUnitId(null)
+    setUnitForm(defaultUnitForm)
+    setIsUnitModalOpen(true)
+  }
+
+  const openEditUnit = (unit) => {
+    setUnitModalMode("edit")
+    setEditingUnitId(unit.id)
+    setUnitForm(toFormUnit(unit))
+    setIsUnitModalOpen(true)
+  }
+
+  const closeUnitModal = () => {
+    if (submittingUnit) {
+      return
+    }
+
+    setIsUnitModalOpen(false)
+    setEditingUnitId(null)
+    setUnitForm(defaultUnitForm)
+  }
+
+  const handleUnitFieldChange = (field, value) => {
+    setUnitForm((currentUnitForm) => ({ ...currentUnitForm, [field]: value }))
+  }
+
+  const handleUnitSubmit = async (event) => {
+    event.preventDefault()
+
+    const validationError = requiredUnitFieldError(unitForm)
+    if (validationError) {
+      bridge?.feedback?.warning?.(validationError)
+      return
+    }
+
+    if (!activeProjectId) {
+      bridge?.feedback?.warning?.("Selecione uma obra antes de salvar unidades.")
+      return
+    }
+
+    setSubmittingUnit(true)
+    try {
+      if (unitModalMode === "create") {
+        await createConstructionUnit({
+          bridge,
+          projectId: activeProjectId,
+          unitData: unitForm,
+        })
+        bridge?.feedback?.success?.("Unidade criada com sucesso.")
+      } else if (editingUnitId) {
+        await updateConstructionUnit({
+          bridge,
+          unitId: editingUnitId,
+          unitData: unitForm,
+        })
+        bridge?.feedback?.success?.("Unidade atualizada com sucesso.")
+      }
+
+      closeUnitModal()
+      await loadUnits()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel salvar a unidade.")
+    } finally {
+      setSubmittingUnit(false)
+    }
+  }
+
+  const handleDeleteUnit = async (unit) => {
+    const confirmed = window.confirm(`Deseja remover a unidade ${unit.code}?`)
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      await deleteConstructionUnit({
+        bridge,
+        unitId: unit.id,
+      })
+      bridge?.feedback?.success?.("Unidade removida com sucesso.")
+      await loadUnits()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover a unidade.")
+    }
+  }
+
+  const openReserveUnitModal = (unit) => {
+    setReserveTargetUnit(unit)
+    setReserveUnitForm({
+      ...defaultReserveUnitForm,
+      buyerPersonId: unit.buyerPersonId ?? "",
+      reservationExpiresAt: unit.reservationExpiresAt ? String(unit.reservationExpiresAt).slice(0, 10) : "",
+    })
+    setIsReserveModalOpen(true)
+  }
+
+  const closeReserveUnitModal = () => {
+    if (submittingReserve) {
+      return
+    }
+
+    setReserveTargetUnit(null)
+    setReserveUnitForm(defaultReserveUnitForm)
+    setIsReserveModalOpen(false)
+  }
+
+  const handleReserveUnitChange = (field, value) => {
+    setReserveUnitForm((currentForm) => ({ ...currentForm, [field]: value }))
+  }
+
+  const handleReserveUnitSubmit = async (event) => {
+    event.preventDefault()
+
+    if (!reserveTargetUnit) {
+      return
+    }
+
+    const validationError = requiredReserveFieldError(reserveUnitForm)
+    if (validationError) {
+      bridge?.feedback?.warning?.(validationError)
+      return
+    }
+
+    setSubmittingReserve(true)
+    try {
+      await reserveConstructionUnit({
+        bridge,
+        unitId: reserveTargetUnit.id,
+        reserveData: reserveUnitForm,
+      })
+      bridge?.feedback?.success?.("Unidade reservada com sucesso.")
+      closeReserveUnitModal()
+      await loadUnits()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel reservar a unidade.")
+    } finally {
+      setSubmittingReserve(false)
+    }
+  }
+
+  const handleReleaseUnit = async (unit) => {
+    const confirmed = window.confirm(`Deseja liberar a reserva da unidade ${unit.code}?`)
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      await releaseConstructionUnitReservation({
+        bridge,
+        unitId: unit.id,
+      })
+      bridge?.feedback?.success?.("Reserva liberada com sucesso.")
+      await loadUnits()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel liberar a reserva da unidade.")
+    }
+  }
+
+  const openSaleUnitModal = (unit) => {
+    setSaleTargetUnit(unit)
+    setSaleUnitForm({
+      ...defaultSaleUnitForm,
+      buyerPersonId: unit.buyerPersonId ?? "",
+      salePrice: unit.salePrice === null || unit.salePrice === undefined ? "" : String(unit.salePrice),
+    })
+    setIsSaleModalOpen(true)
+  }
+
+  const closeSaleUnitModal = () => {
+    if (submittingSale) {
+      return
+    }
+
+    setSaleTargetUnit(null)
+    setSaleUnitForm(defaultSaleUnitForm)
+    setIsSaleModalOpen(false)
+  }
+
+  const handleSaleUnitChange = (field, value) => {
+    setSaleUnitForm((currentForm) => ({ ...currentForm, [field]: value }))
+  }
+
+  const handleSaleUnitSubmit = async (event) => {
+    event.preventDefault()
+
+    if (!saleTargetUnit) {
+      return
+    }
+
+    const validationError = requiredSaleFieldError(saleUnitForm)
+    if (validationError) {
+      bridge?.feedback?.warning?.(validationError)
+      return
+    }
+
+    setSubmittingSale(true)
+    try {
+      await confirmConstructionUnitSale({
+        bridge,
+        unitId: saleTargetUnit.id,
+        saleData: saleUnitForm,
+      })
+      bridge?.feedback?.success?.("Venda confirmada com sucesso.")
+      closeSaleUnitModal()
+      await loadUnits()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel confirmar a venda da unidade.")
+    } finally {
+      setSubmittingSale(false)
+    }
+  }
+
   return (
     <main className={styles.page} data-theme={bridge?.theme ?? "light"}>
       <section className={styles.pageHeader}>
@@ -828,11 +1194,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       {activeTab === "overview" && (
         <DomainCard
           title="Resumo operacional"
-          subtitle="Fundacao visual com CRUD de projetos, blocos e cronograma."
+          subtitle="Fundacao visual com CRUD de projetos, blocos, unidades e cronograma."
           content={
             <p className={styles.textMuted}>
-              As etapas 2 e 3 habilitaram o CRUD completo de projetos, blocos e fases do cronograma com foco em
-              rastreabilidade operacional por obra.
+              As etapas 2, 3 e 4 habilitaram o CRUD de projetos, blocos, cronograma e unidades com fluxos de reserva,
+              liberacao e confirmacao de venda.
             </p>
           }
         />
@@ -887,6 +1253,37 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         />
       )}
 
+      {activeTab === "units" && (
+        <DomainCard
+          title="Unidades"
+          subtitle="Inventario comercial com reserva, liberacao e confirmacao de venda."
+          content={
+            <>
+              <ProjectScopeHeader
+                projects={projects}
+                activeProjectId={activeProjectId}
+                onProjectChange={setActiveProjectId}
+                selectedProject={selectedProject}
+                actionLabel="Nova unidade"
+                onAction={openCreateUnit}
+              />
+              <UnitsList
+                units={units}
+                blocks={blocks}
+                loading={loadingUnits}
+                error={unitError}
+                onRetry={loadUnits}
+                onEdit={openEditUnit}
+                onDelete={handleDeleteUnit}
+                onReserve={openReserveUnitModal}
+                onRelease={handleReleaseUnit}
+                onSale={openSaleUnitModal}
+              />
+            </>
+          }
+        />
+      )}
+
       {activeTab === "schedule" && (
         <DomainCard
           title="Cronograma"
@@ -914,7 +1311,6 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         />
       )}
 
-      {activeTab === "units" && <PhasePlaceholder title="Unidades" phase="Fase 4" />}
       {activeTab === "measurements" && <PhasePlaceholder title="Medicoes" phase="Fase 5" />}
       {activeTab === "procurement" && <PhasePlaceholder title="Requisicoes" phase="Fase 6" />}
       {activeTab === "integrations" && <PhasePlaceholder title="Integracoes" phase="Fase 7" />}
@@ -938,6 +1334,40 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           onChange={handleBlockFieldChange}
           onSubmit={handleBlockSubmit}
           loading={submittingBlock}
+        />
+      ) : null}
+
+      {isUnitModalOpen ? (
+        <UnitModal
+          mode={unitModalMode}
+          unitForm={unitForm}
+          blocks={blocks}
+          onClose={closeUnitModal}
+          onChange={handleUnitFieldChange}
+          onSubmit={handleUnitSubmit}
+          loading={submittingUnit}
+        />
+      ) : null}
+
+      {isReserveModalOpen ? (
+        <ReserveUnitModal
+          reserveForm={reserveUnitForm}
+          unit={reserveTargetUnit}
+          onClose={closeReserveUnitModal}
+          onChange={handleReserveUnitChange}
+          onSubmit={handleReserveUnitSubmit}
+          loading={submittingReserve}
+        />
+      ) : null}
+
+      {isSaleModalOpen ? (
+        <SaleUnitModal
+          saleForm={saleUnitForm}
+          unit={saleTargetUnit}
+          onClose={closeSaleUnitModal}
+          onChange={handleSaleUnitChange}
+          onSubmit={handleSaleUnitSubmit}
+          loading={submittingSale}
         />
       ) : null}
 
@@ -1179,6 +1609,131 @@ function BlocksList({ blocks, loading, error, onRetry, onEdit, onDelete }) {
               </td>
             </tr>
           ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function UnitsList({ units, blocks, loading, error, onRetry, onEdit, onDelete, onReserve, onRelease, onSale }) {
+  const blockNameById = useMemo(() => {
+    return Object.fromEntries(blocks.map((block) => [block.id, `${block.code} - ${block.name}`]))
+  }, [blocks])
+
+  if (loading) {
+    return (
+      <div className={styles.tableWrapper} aria-busy="true">
+        <div className={styles.empty}>
+          <RefreshCw className={styles.spinIcon} size={16} />
+          Carregando unidades...
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className={styles.tableWrapper}>
+        <div className={styles.empty}>
+          <span>{error}</span>
+          <button type="button" className={styles.secondaryButton} onClick={onRetry}>
+            <RefreshCw size={16} />
+            Tentar novamente
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (!units.length) {
+    return (
+      <div className={styles.tableWrapper}>
+        <div className={styles.empty}>Nenhuma unidade cadastrada para a obra selecionada.</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className={styles.tableWrapper}>
+      <table className={styles.table}>
+        <thead>
+          <tr>
+            <th>Codigo</th>
+            <th>Tipo</th>
+            <th>Bloco</th>
+            <th>Status</th>
+            <th>Preco</th>
+            <th>Contrato ERP</th>
+            <th>Acoes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {units.map((unit) => {
+            const canReserve = unit.status === "available"
+            const canRelease = unit.status === "reserved"
+            const canSale = unit.status === "available" || unit.status === "reserved"
+
+            return (
+              <tr key={unit.id}>
+                <td>{unit.code}</td>
+                <td>
+                  <strong>{unit.unitType}</strong>
+                  <div className={styles.rowSecondaryText}>{unit.typology || "-"}</div>
+                </td>
+                <td>{unit.blockId ? blockNameById[unit.blockId] ?? unit.blockId : "-"}</td>
+                <td>
+                  <span className={`${styles.statusPill} ${styles[`status${unit.status}`] || ""}`}>
+                    {unitStatusLabel[unit.status] ?? unit.status}
+                  </span>
+                </td>
+                <td>{formatMoney(unit.salePrice)}</td>
+                <td>
+                  {unit.externalContractId ? (
+                    <div>
+                      <div className={styles.rowSecondaryText}>{unit.externalContractStatus || "ativo"}</div>
+                      <span className={styles.badgeSuccess}>Vinculado</span>
+                    </div>
+                  ) : (
+                    <span className={styles.badgeMuted}>Pendente</span>
+                  )}
+                </td>
+                <td>
+                  <div className={styles.rowActions}>
+                    <button type="button" className={styles.iconButton} onClick={() => onEdit(unit)}>
+                      <Pencil size={14} />
+                      Editar
+                    </button>
+                    {canReserve ? (
+                      <button type="button" className={styles.iconButton} onClick={() => onReserve(unit)}>
+                        <Clock size={14} />
+                        Reservar
+                      </button>
+                    ) : null}
+                    {canRelease ? (
+                      <button type="button" className={styles.iconButton} onClick={() => onRelease(unit)}>
+                        <Unlock size={14} />
+                        Liberar
+                      </button>
+                    ) : null}
+                    {canSale ? (
+                      <button type="button" className={styles.iconButton} onClick={() => onSale(unit)}>
+                        <ShoppingCart size={14} />
+                        Vender
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className={`${styles.iconButton} ${styles.dangerButton}`}
+                      onClick={() => onDelete(unit)}
+                    >
+                      <Trash2 size={14} />
+                      Excluir
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
@@ -1518,6 +2073,242 @@ function BlockModal({ mode, blockForm, onClose, onChange, onSubmit, loading }) {
   )
 }
 
+function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loading }) {
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label={mode === "create" ? "Nova unidade" : "Editar unidade"}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>{mode === "create" ? "Nova unidade" : "Editar unidade"}</h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <div className={styles.formGrid}>
+            <label className={styles.filterControl}>
+              <span>Codigo*</span>
+              <input
+                type="text"
+                value={unitForm.code}
+                onChange={(event) => onChange("code", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Tipo*</span>
+              <input
+                type="text"
+                value={unitForm.unitType}
+                onChange={(event) => onChange("unitType", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Tipologia</span>
+              <input
+                type="text"
+                value={unitForm.typology}
+                onChange={(event) => onChange("typology", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Bloco</span>
+              <select value={unitForm.blockId} onChange={(event) => onChange("blockId", event.target.value)}>
+                <option value="">Sem bloco</option>
+                {blocks.map((block) => (
+                  <option key={block.id} value={block.id}>
+                    {block.code} - {block.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={styles.filterControl}>
+              <span>Andar</span>
+              <input type="text" value={unitForm.floor} onChange={(event) => onChange("floor", event.target.value)} />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Area privativa</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={unitForm.privateArea}
+                onChange={(event) => onChange("privateArea", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Area total</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={unitForm.totalArea}
+                onChange={(event) => onChange("totalArea", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Preco de venda</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={unitForm.salePrice}
+                onChange={(event) => onChange("salePrice", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Status*</span>
+              <select value={unitForm.status} onChange={(event) => onChange("status", event.target.value)} required>
+                {unitStatusOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading}>
+              {loading ? "Salvando..." : mode === "create" ? "Criar unidade" : "Salvar alteracoes"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+function ReserveUnitModal({ reserveForm, unit, onClose, onChange, onSubmit, loading }) {
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Reservar unidade"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>Reservar unidade {unit?.code}</h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <div className={styles.formGrid}>
+            <label className={styles.filterControl}>
+              <span>Comprador (ID)*</span>
+              <input
+                type="text"
+                value={reserveForm.buyerPersonId}
+                onChange={(event) => onChange("buyerPersonId", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Expira em</span>
+              <input
+                type="date"
+                value={reserveForm.reservationExpiresAt}
+                onChange={(event) => onChange("reservationExpiresAt", event.target.value)}
+              />
+            </label>
+          </div>
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading}>
+              {loading ? "Reservando..." : "Reservar unidade"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+function SaleUnitModal({ saleForm, unit, onClose, onChange, onSubmit, loading }) {
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Confirmar venda da unidade"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>Confirmar venda da unidade {unit?.code}</h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <div className={styles.formGrid}>
+            <label className={styles.filterControl}>
+              <span>Comprador (ID)*</span>
+              <input
+                type="text"
+                value={saleForm.buyerPersonId}
+                onChange={(event) => onChange("buyerPersonId", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Preco da venda</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={saleForm.salePrice}
+                onChange={(event) => onChange("salePrice", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Primeiro vencimento*</span>
+              <input
+                type="date"
+                value={saleForm.firstDueDate}
+                onChange={(event) => onChange("firstDueDate", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Parcelas*</span>
+              <input
+                type="number"
+                min="1"
+                max="120"
+                value={saleForm.installments}
+                onChange={(event) => onChange("installments", event.target.value)}
+                required
+              />
+            </label>
+          </div>
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading}>
+              {loading ? "Confirmando..." : "Confirmar venda"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  )
+}
+
 function SchedulePhaseModal({ mode, schedulePhaseForm, onClose, onChange, onSubmit, loading }) {
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
@@ -1637,4 +2428,12 @@ function formatDate(value) {
   }
 
   return dateFormatter.format(parsedDate)
+}
+
+function formatMoney(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "-"
+  }
+
+  return moneyFormatter.format(Number(value))
 }

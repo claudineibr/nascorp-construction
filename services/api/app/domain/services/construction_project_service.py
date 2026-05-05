@@ -311,6 +311,7 @@ class ConstructionProjectService:
             block_id=request.block_id,
             code=request.code.strip(),
             unit_type=request.unit_type.strip(),
+            typology=request.typology.strip() if request.typology else None,
             floor=request.floor,
             private_area=request.private_area,
             total_area=request.total_area,
