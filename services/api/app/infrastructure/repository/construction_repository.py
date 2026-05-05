@@ -260,6 +260,22 @@ class ConstructionRepository:
         )
         return result.scalars().first()
 
+    async def get_procurement_request_by_code(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        code: str,
+    ) -> ConstructionProcurementRequest | None:
+        result = await self.session.execute(
+            select(ConstructionProcurementRequest).where(
+                ConstructionProcurementRequest.company_id == company_id,
+                ConstructionProcurementRequest.project_id == project_id,
+                ConstructionProcurementRequest.code == code,
+            )
+        )
+        return result.scalars().first()
+
     async def list_procurement_requests(
         self,
         *,

@@ -506,13 +506,32 @@ class ConstructionProjectService:
         request: ConstructionProcurementRequestCreate,
     ) -> ConstructionProcurementRequest:
         await self.get_project(company_id=company_id, project_id=project_id)
+        procurement_code = (request.code or "").strip()
+        if procurement_code:
+            existing_request = await self.repository.get_procurement_request_by_code(
+                company_id=company_id,
+                project_id=project_id,
+                code=procurement_code,
+            )
+            if existing_request:
+                raise ConstructionDuplicateCodeError(
+                    resource_name="Construction procurement request",
+                    code=procurement_code,
+                )
+        else:
+            procurement_code = self._generate_procurement_code()
+
         procurement_request = ConstructionProcurementRequest(
             company_id=company_id,
             project_id=project_id,
+            code=procurement_code,
             title=request.title.strip(),
             description=request.description,
             estimated_amount=request.estimated_amount,
+            needed_by_date=request.needed_by_date,
+            supplier_person_id=request.supplier_person_id,
             status=ConstructionProcurementStatus.DRAFT,
+            rejection_reason=None,
         )
         await self.repository.add(procurement_request)
         await self.repository.commit()
@@ -564,6 +583,29 @@ class ConstructionProjectService:
             )
 
         updates = request.model_dump(exclude_unset=True)
+        next_code = updates.get("code")
+        if next_code is not None:
+            next_code = next_code.strip()
+            if not next_code:
+                raise ConstructionInvalidValueError(
+                    message="Procurement request code cannot be empty.",
+                    error_code="CONSTRUCTION_PROCUREMENT_INVALID_CODE",
+                )
+
+            if next_code != procurement_request.code:
+                existing_request = await self.repository.get_procurement_request_by_code(
+                    company_id=company_id,
+                    project_id=procurement_request.project_id,
+                    code=next_code,
+                )
+                if existing_request and existing_request.id != procurement_request.id:
+                    raise ConstructionDuplicateCodeError(
+                        resource_name="Construction procurement request",
+                        code=next_code,
+                    )
+
+            updates["code"] = next_code
+
         self._apply_updates(entity=procurement_request, updates=updates)
         await self.repository.commit()
         await self.repository.refresh(procurement_request)
@@ -598,6 +640,7 @@ class ConstructionProjectService:
         procurement_request.status = ConstructionProcurementStatus.APPROVED
         procurement_request.approved_by_user_id = actor_user_id
         procurement_request.approved_at = datetime.now(tz=UTC)
+        procurement_request.rejection_reason = None
         await self._dispatch_procurement_request_to_erp(
             procurement_request=procurement_request,
             actor_user_id=actor_user_id,
@@ -626,6 +669,7 @@ class ConstructionProjectService:
         procurement_request.status = ConstructionProcurementStatus.APPROVED
         procurement_request.approved_by_user_id = actor_user_id
         procurement_request.approved_at = datetime.now(tz=UTC)
+        procurement_request.rejection_reason = None
         await self._dispatch_procurement_request_to_erp(
             procurement_request=procurement_request,
             actor_user_id=actor_user_id,
@@ -639,12 +683,14 @@ class ConstructionProjectService:
         *,
         company_id: UUID,
         procurement_request_id: UUID,
+        reason: str | None = None,
     ) -> ConstructionProcurementRequest:
         procurement_request = await self.get_procurement_request(
             company_id=company_id,
             procurement_request_id=procurement_request_id,
         )
         procurement_request.status = ConstructionProcurementStatus.REJECTED
+        procurement_request.rejection_reason = reason.strip() if reason else None
         await self.repository.commit()
         await self.repository.refresh(procurement_request)
         return procurement_request
@@ -1215,10 +1261,15 @@ class ConstructionProjectService:
         payload: dict[str, Any] = {
             "construction_procurement_request_id": str(procurement_request.id),
             "construction_project_id": str(procurement_request.project_id),
+            "code": procurement_request.code,
             "title": procurement_request.title,
             "description": procurement_request.description,
             "estimated_amount": ConstructionProjectService._format_event_decimal(
                 value=procurement_request.estimated_amount
+            ),
+            "needed_by_date": ConstructionProjectService._format_event_date(value=procurement_request.needed_by_date),
+            "supplier_person_id": (
+                str(procurement_request.supplier_person_id) if procurement_request.supplier_person_id else None
             ),
             "approval_threshold": CONSTRUCTION_PROCUREMENT_APPROVAL_THRESHOLD,
         }
@@ -1266,6 +1317,10 @@ class ConstructionProjectService:
     @staticmethod
     def _format_event_decimal(*, value: Decimal) -> str:
         return format(value, "f")
+
+    @staticmethod
+    def _generate_procurement_code() -> str:
+        return f"REQ-{uuid4().hex[:8].upper()}"
 
     @staticmethod
     def _read_uuid_payload(*, payload: dict[str, Any], field_name: str) -> UUID:

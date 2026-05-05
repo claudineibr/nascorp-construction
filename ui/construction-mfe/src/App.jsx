@@ -20,28 +20,35 @@ import {
 import styles from "./App.module.css"
 import { resolveConstructionBridge } from "./bridge/constructionBridge.js"
 import {
+  approveConstructionProcurementRequest,
   approveConstructionMeasurement,
   confirmConstructionUnitSale,
   createConstructionBlock,
   createConstructionMeasurement,
+  createConstructionProcurementRequest,
   createConstructionProject,
   createConstructionSchedulePhase,
   createConstructionUnit,
   deleteConstructionBlock,
   deleteConstructionMeasurement,
+  deleteConstructionProcurementRequest,
   deleteConstructionProject,
   deleteConstructionSchedulePhase,
   deleteConstructionUnit,
   listConstructionBlocks,
   listConstructionMeasurements,
+  listConstructionProcurementRequests,
   listConstructionProjects,
   listConstructionSchedulePhases,
   listConstructionUnits,
+  rejectConstructionProcurementRequest,
   rejectConstructionMeasurement,
   releaseConstructionUnitReservation,
   reserveConstructionUnit,
+  submitConstructionProcurementRequest,
   updateConstructionBlock,
   updateConstructionMeasurement,
+  updateConstructionProcurementRequest,
   updateConstructionProject,
   updateConstructionSchedulePhase,
   updateConstructionUnit,
@@ -109,6 +116,16 @@ const measurementStatusOptions = [
 ]
 
 const measurementStatusLabel = Object.fromEntries(measurementStatusOptions.map((option) => [option.value, option.label]))
+
+const procurementStatusOptions = [
+  { value: "draft", label: "Rascunho" },
+  { value: "pending_approval", label: "Aguardando aprovacao" },
+  { value: "approved", label: "Aprovada" },
+  { value: "rejected", label: "Rejeitada" },
+  { value: "sent_to_erp", label: "Enviada ao ERP" },
+]
+
+const procurementStatusLabel = Object.fromEntries(procurementStatusOptions.map((option) => [option.value, option.label]))
 
 const domainTabs = [
   { id: "overview", label: "Visao geral", icon: Building2 },
@@ -209,6 +226,19 @@ const defaultMeasurementRejectForm = {
   reason: "",
 }
 
+const defaultProcurementForm = {
+  code: "",
+  title: "",
+  description: "",
+  estimatedAmount: "",
+  neededByDate: "",
+  supplierPersonId: "",
+}
+
+const defaultProcurementRejectForm = {
+  reason: "",
+}
+
 function toFormProject(project) {
   return {
     code: project.code ?? "",
@@ -287,6 +317,20 @@ function toApiProject(formProject) {
       state: formProject.addressState,
       zip_code: formProject.addressZipCode,
     },
+  }
+}
+
+function toFormProcurement(procurementRequest) {
+  return {
+    code: procurementRequest.code ?? "",
+    title: procurementRequest.title ?? "",
+    description: procurementRequest.description ?? "",
+    estimatedAmount:
+      procurementRequest.estimatedAmount === null || procurementRequest.estimatedAmount === undefined
+        ? ""
+        : String(procurementRequest.estimatedAmount),
+    neededByDate: procurementRequest.neededByDate ? String(procurementRequest.neededByDate).slice(0, 10) : "",
+    supplierPersonId: procurementRequest.supplierPersonId ?? "",
   }
 }
 
@@ -402,6 +446,19 @@ function requiredMeasurementFieldError(formMeasurement) {
   return null
 }
 
+function requiredProcurementFieldError(formProcurement) {
+  if (!String(formProcurement.title ?? "").trim()) {
+    return "Informe o titulo da requisicao."
+  }
+
+  const estimatedAmount = Number(formProcurement.estimatedAmount || 0)
+  if (Number.isNaN(estimatedAmount) || estimatedAmount <= 0) {
+    return "Informe o valor estimado da requisicao."
+  }
+
+  return null
+}
+
 export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const bridge = useMemo(() => providedBridge ?? resolveConstructionBridge(), [providedBridge])
   const [activeTab, setActiveTab] = useState("overview")
@@ -467,6 +524,18 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [rejectMeasurementTarget, setRejectMeasurementTarget] = useState(null)
   const [rejectMeasurementForm, setRejectMeasurementForm] = useState(defaultMeasurementRejectForm)
   const [submittingMeasurementReject, setSubmittingMeasurementReject] = useState(false)
+
+  const [procurementRequests, setProcurementRequests] = useState([])
+  const [loadingProcurement, setLoadingProcurement] = useState(false)
+  const [procurementError, setProcurementError] = useState(null)
+  const [isProcurementModalOpen, setIsProcurementModalOpen] = useState(false)
+  const [procurementModalMode, setProcurementModalMode] = useState("create")
+  const [editingProcurementId, setEditingProcurementId] = useState(null)
+  const [procurementForm, setProcurementForm] = useState(defaultProcurementForm)
+  const [submittingProcurement, setSubmittingProcurement] = useState(false)
+  const [rejectProcurementTarget, setRejectProcurementTarget] = useState(null)
+  const [rejectProcurementForm, setRejectProcurementForm] = useState(defaultProcurementRejectForm)
+  const [submittingProcurementReject, setSubmittingProcurementReject] = useState(false)
 
   const loadProjects = useCallback(async () => {
     setLoading(true)
@@ -655,6 +724,27 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }, [activeProjectId, bridge])
 
+  const loadProcurementRequests = useCallback(async () => {
+    if (!activeProjectId) {
+      setProcurementRequests([])
+      return
+    }
+
+    setLoadingProcurement(true)
+    setProcurementError(null)
+    try {
+      const result = await listConstructionProcurementRequests({
+        bridge,
+        projectId: activeProjectId,
+      })
+      setProcurementRequests(result.items)
+    } catch (requestError) {
+      setProcurementError(requestError?.message ?? "Nao foi possivel carregar as requisicoes.")
+    } finally {
+      setLoadingProcurement(false)
+    }
+  }, [activeProjectId, bridge])
+
   useEffect(() => {
     if (activeTab !== "blocks") {
       return
@@ -687,6 +777,14 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
     void loadMeasurements()
   }, [activeTab, loadMeasurements])
+
+  useEffect(() => {
+    if (activeTab !== "procurement") {
+      return
+    }
+
+    void loadProcurementRequests()
+  }, [activeTab, loadProcurementRequests])
 
   const handleFilterChange = (field, value) => {
     setFilters((currentFilters) => ({ ...currentFilters, [field]: value }))
@@ -1346,6 +1444,168 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
+  const openCreateProcurement = () => {
+    if (!activeProjectId) {
+      bridge?.feedback?.warning?.("Selecione uma obra antes de criar requisicoes.")
+      return
+    }
+
+    setProcurementModalMode("create")
+    setEditingProcurementId(null)
+    setProcurementForm(defaultProcurementForm)
+    setIsProcurementModalOpen(true)
+  }
+
+  const openEditProcurement = (procurementRequest) => {
+    setProcurementModalMode("edit")
+    setEditingProcurementId(procurementRequest.id)
+    setProcurementForm(toFormProcurement(procurementRequest))
+    setIsProcurementModalOpen(true)
+  }
+
+  const closeProcurementModal = () => {
+    if (submittingProcurement) {
+      return
+    }
+
+    setIsProcurementModalOpen(false)
+    setEditingProcurementId(null)
+    setProcurementForm(defaultProcurementForm)
+  }
+
+  const handleProcurementFieldChange = (field, value) => {
+    setProcurementForm((currentForm) => ({ ...currentForm, [field]: value }))
+  }
+
+  const handleProcurementSubmit = async (event) => {
+    event.preventDefault()
+
+    const validationError = requiredProcurementFieldError(procurementForm)
+    if (validationError) {
+      bridge?.feedback?.warning?.(validationError)
+      return
+    }
+
+    if (!activeProjectId) {
+      bridge?.feedback?.warning?.("Selecione uma obra antes de salvar requisicoes.")
+      return
+    }
+
+    setSubmittingProcurement(true)
+    try {
+      if (procurementModalMode === "create") {
+        await createConstructionProcurementRequest({
+          bridge,
+          projectId: activeProjectId,
+          procurementData: procurementForm,
+        })
+        bridge?.feedback?.success?.("Requisicao criada com sucesso.")
+      } else if (editingProcurementId) {
+        await updateConstructionProcurementRequest({
+          bridge,
+          procurementRequestId: editingProcurementId,
+          procurementData: procurementForm,
+        })
+        bridge?.feedback?.success?.("Requisicao atualizada com sucesso.")
+      }
+
+      closeProcurementModal()
+      await loadProcurementRequests()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel salvar a requisicao.")
+    } finally {
+      setSubmittingProcurement(false)
+    }
+  }
+
+  const handleDeleteProcurement = async (procurementRequest) => {
+    const confirmed = window.confirm(`Deseja remover a requisicao ${procurementRequest.code}?`)
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      await deleteConstructionProcurementRequest({
+        bridge,
+        procurementRequestId: procurementRequest.id,
+      })
+      bridge?.feedback?.success?.("Requisicao removida com sucesso.")
+      await loadProcurementRequests()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover a requisicao.")
+    }
+  }
+
+  const handleSubmitProcurement = async (procurementRequest) => {
+    try {
+      await submitConstructionProcurementRequest({
+        bridge,
+        procurementRequestId: procurementRequest.id,
+      })
+      bridge?.feedback?.success?.("Requisicao enviada para aprovacao.")
+      await loadProcurementRequests()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel enviar a requisicao.")
+    }
+  }
+
+  const handleApproveProcurement = async (procurementRequest) => {
+    try {
+      await approveConstructionProcurementRequest({
+        bridge,
+        procurementRequestId: procurementRequest.id,
+      })
+      bridge?.feedback?.success?.("Requisicao aprovada com sucesso.")
+      await loadProcurementRequests()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel aprovar a requisicao.")
+    }
+  }
+
+  const openRejectProcurement = (procurementRequest) => {
+    setRejectProcurementTarget(procurementRequest)
+    setRejectProcurementForm({
+      reason: procurementRequest.rejectionReason ?? "",
+    })
+  }
+
+  const closeRejectProcurementModal = () => {
+    if (submittingProcurementReject) {
+      return
+    }
+
+    setRejectProcurementTarget(null)
+    setRejectProcurementForm(defaultProcurementRejectForm)
+  }
+
+  const handleRejectProcurementChange = (field, value) => {
+    setRejectProcurementForm((currentForm) => ({ ...currentForm, [field]: value }))
+  }
+
+  const handleRejectProcurementSubmit = async (event) => {
+    event.preventDefault()
+
+    if (!rejectProcurementTarget) {
+      return
+    }
+
+    setSubmittingProcurementReject(true)
+    try {
+      await rejectConstructionProcurementRequest({
+        bridge,
+        procurementRequestId: rejectProcurementTarget.id,
+        reason: rejectProcurementForm.reason,
+      })
+      bridge?.feedback?.success?.("Requisicao rejeitada com sucesso.")
+      closeRejectProcurementModal()
+      await loadProcurementRequests()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel rejeitar a requisicao.")
+    } finally {
+      setSubmittingProcurementReject(false)
+    }
+  }
+
   return (
     <main className={styles.page} data-theme={bridge?.theme ?? "light"}>
       <section className={styles.pageHeader}>
@@ -1606,7 +1866,35 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           }
         />
       )}
-      {activeTab === "procurement" && <PhasePlaceholder title="Requisicoes" phase="Fase 6" />}
+      {activeTab === "procurement" && (
+        <DomainCard
+          title="Requisicoes"
+          subtitle="Solicitacoes de compra com fluxo de envio, aprovacao e integracao ERP."
+          content={
+            <>
+              <ProjectScopeHeader
+                projects={projects}
+                activeProjectId={activeProjectId}
+                onProjectChange={setActiveProjectId}
+                selectedProject={selectedProject}
+                actionLabel="Nova requisicao"
+                onAction={openCreateProcurement}
+              />
+              <ProcurementList
+                procurementRequests={procurementRequests}
+                loading={loadingProcurement}
+                error={procurementError}
+                onRetry={loadProcurementRequests}
+                onEdit={openEditProcurement}
+                onDelete={handleDeleteProcurement}
+                onSubmit={handleSubmitProcurement}
+                onApprove={handleApproveProcurement}
+                onReject={openRejectProcurement}
+              />
+            </>
+          }
+        />
+      )}
       {activeTab === "integrations" && <PhasePlaceholder title="Integracoes" phase="Fase 7" />}
 
       {isProjectModalOpen ? (
@@ -1684,6 +1972,28 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           onChange={handleRejectMeasurementChange}
           onSubmit={handleRejectMeasurementSubmit}
           loading={submittingMeasurementReject}
+        />
+      ) : null}
+
+      {isProcurementModalOpen ? (
+        <ProcurementModal
+          mode={procurementModalMode}
+          procurementForm={procurementForm}
+          onClose={closeProcurementModal}
+          onChange={handleProcurementFieldChange}
+          onSubmit={handleProcurementSubmit}
+          loading={submittingProcurement}
+        />
+      ) : null}
+
+      {rejectProcurementTarget ? (
+        <RejectProcurementModal
+          procurementRequest={rejectProcurementTarget}
+          rejectForm={rejectProcurementForm}
+          onClose={closeRejectProcurementModal}
+          onChange={handleRejectProcurementChange}
+          onSubmit={handleRejectProcurementSubmit}
+          loading={submittingProcurementReject}
         />
       ) : null}
 
@@ -2260,6 +2570,268 @@ function MeasurementsList({ measurements, loading, error, onRetry, onEdit, onDel
           })}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+function ProcurementList({
+  procurementRequests,
+  loading,
+  error,
+  onRetry,
+  onEdit,
+  onDelete,
+  onSubmit,
+  onApprove,
+  onReject,
+}) {
+  if (loading) {
+    return (
+      <div className={styles.tableWrapper} aria-busy="true">
+        <div className={styles.empty}>
+          <RefreshCw className={styles.spinIcon} size={16} />
+          Carregando requisicoes...
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className={styles.tableWrapper}>
+        <div className={styles.empty}>
+          <span>{error}</span>
+          <button type="button" className={styles.secondaryButton} onClick={onRetry}>
+            <RefreshCw size={16} />
+            Tentar novamente
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (!procurementRequests.length) {
+    return (
+      <div className={styles.tableWrapper}>
+        <div className={styles.empty}>Nenhuma requisicao cadastrada para a obra selecionada.</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className={styles.tableWrapper}>
+      <table className={styles.table}>
+        <thead>
+          <tr>
+            <th>Codigo</th>
+            <th>Requisicao</th>
+            <th>Status</th>
+            <th>Valor estimado</th>
+            <th>Necessidade</th>
+            <th>Integracao ERP</th>
+            <th>Acoes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {procurementRequests.map((procurementRequest) => {
+            const canSubmit = ["draft", "rejected"].includes(procurementRequest.status)
+            const canApprove = procurementRequest.status === "pending_approval"
+            const canReject = ["pending_approval", "draft"].includes(procurementRequest.status)
+            const canEdit = ["draft", "rejected"].includes(procurementRequest.status)
+            const canDelete = ["draft", "rejected"].includes(procurementRequest.status)
+
+            return (
+              <tr key={procurementRequest.id}>
+                <td>{procurementRequest.code}</td>
+                <td>
+                  <strong>{procurementRequest.title}</strong>
+                  <div className={styles.rowSecondaryText}>{procurementRequest.description || "-"}</div>
+                </td>
+                <td>
+                  <span className={`${styles.statusPill} ${styles[`status${procurementRequest.status}`] || ""}`}>
+                    {procurementStatusLabel[procurementRequest.status] ?? procurementRequest.status}
+                  </span>
+                </td>
+                <td>{formatMoney(procurementRequest.estimatedAmount)}</td>
+                <td>{formatDate(procurementRequest.neededByDate)}</td>
+                <td>
+                  {procurementRequest.externalProcurementId ? (
+                    <div>
+                      <div className={styles.rowSecondaryText}>{procurementRequest.externalProcurementStatus || "ativa"}</div>
+                      <span className={styles.badgeSuccess}>Vinculada</span>
+                    </div>
+                  ) : (
+                    <span className={styles.badgeMuted}>Pendente</span>
+                  )}
+                </td>
+                <td>
+                  <div className={styles.rowActions}>
+                    {canEdit ? (
+                      <button type="button" className={styles.iconButton} onClick={() => onEdit(procurementRequest)}>
+                        <Pencil size={14} />
+                        Editar
+                      </button>
+                    ) : null}
+                    {canSubmit ? (
+                      <button type="button" className={styles.iconButton} onClick={() => onSubmit(procurementRequest)}>
+                        <RefreshCw size={14} />
+                        Enviar
+                      </button>
+                    ) : null}
+                    {canApprove ? (
+                      <button type="button" className={styles.iconButton} onClick={() => onApprove(procurementRequest)}>
+                        <CheckCircle size={14} />
+                        Aprovar
+                      </button>
+                    ) : null}
+                    {canReject ? (
+                      <button type="button" className={styles.iconButton} onClick={() => onReject(procurementRequest)}>
+                        <Clock size={14} />
+                        Rejeitar
+                      </button>
+                    ) : null}
+                    {canDelete ? (
+                      <button
+                        type="button"
+                        className={`${styles.iconButton} ${styles.dangerButton}`}
+                        onClick={() => onDelete(procurementRequest)}
+                      >
+                        <Trash2 size={14} />
+                        Excluir
+                      </button>
+                    ) : null}
+                  </div>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function ProcurementModal({ mode, procurementForm, onClose, onChange, onSubmit, loading }) {
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label={mode === "create" ? "Nova requisicao" : "Editar requisicao"}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>{mode === "create" ? "Nova requisicao" : "Editar requisicao"}</h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <div className={styles.formGrid}>
+            <label className={styles.filterControl}>
+              <span>Codigo</span>
+              <input
+                type="text"
+                value={procurementForm.code}
+                onChange={(event) => onChange("code", event.target.value)}
+                placeholder="Opcional - gerado automaticamente"
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Titulo*</span>
+              <input
+                type="text"
+                value={procurementForm.title}
+                onChange={(event) => onChange("title", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Valor estimado*</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={procurementForm.estimatedAmount}
+                onChange={(event) => onChange("estimatedAmount", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Necessario ate</span>
+              <input
+                type="date"
+                value={procurementForm.neededByDate}
+                onChange={(event) => onChange("neededByDate", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Fornecedor (ID)</span>
+              <input
+                type="text"
+                value={procurementForm.supplierPersonId}
+                onChange={(event) => onChange("supplierPersonId", event.target.value)}
+              />
+            </label>
+            <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
+              <span>Descricao</span>
+              <textarea
+                className={styles.textarea}
+                value={procurementForm.description}
+                onChange={(event) => onChange("description", event.target.value)}
+              />
+            </label>
+          </div>
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading}>
+              {loading ? "Salvando..." : mode === "create" ? "Criar requisicao" : "Salvar alteracoes"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+function RejectProcurementModal({ procurementRequest, rejectForm, onClose, onChange, onSubmit, loading }) {
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Rejeitar requisicao"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>Rejeitar requisicao {procurementRequest?.code}</h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <label className={styles.filterControl}>
+            <span>Motivo da rejeicao</span>
+            <textarea
+              className={styles.textarea}
+              value={rejectForm.reason}
+              onChange={(event) => onChange("reason", event.target.value)}
+            />
+          </label>
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading}>
+              {loading ? "Rejeitando..." : "Rejeitar requisicao"}
+            </button>
+          </footer>
+        </form>
+      </section>
     </div>
   )
 }

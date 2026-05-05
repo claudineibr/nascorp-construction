@@ -24,6 +24,7 @@ from app.schemas.construction import (
     ConstructionProjectUpdate,
     ConstructionProcurementRequestCreate,
     ConstructionProcurementRequestListResponse,
+    ConstructionProcurementRequestReject,
     ConstructionProcurementRequestResponse,
     ConstructionProcurementRequestUpdate,
     ConstructionMeasurementCreate,
@@ -582,6 +583,7 @@ async def approve_procurement_request(
 )
 async def reject_procurement_request(
     procurement_request_id: UUID,
+    request_data: ConstructionProcurementRequestReject,
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROCUREMENT, PermissionAction.UPDATE)),
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionProcurementRequestResponse:
@@ -589,6 +591,7 @@ async def reject_procurement_request(
         procurement_request = await service.reject_procurement_request(
             company_id=ctx.company_id,
             procurement_request_id=procurement_request_id,
+            reason=request_data.reason,
         )
         return ConstructionProcurementRequestResponse.model_validate(procurement_request)
     except ConstructionDomainError as exc:

@@ -98,6 +98,26 @@ const toMeasurementView = (measurement) => ({
   updatedAt: measurement.updated_at ?? null,
 })
 
+const toProcurementView = (procurementRequest) => ({
+  id: procurementRequest.id,
+  companyId: procurementRequest.company_id,
+  projectId: procurementRequest.project_id,
+  code: procurementRequest.code,
+  title: procurementRequest.title,
+  description: procurementRequest.description ?? "",
+  estimatedAmount: procurementRequest.estimated_amount,
+  neededByDate: procurementRequest.needed_by_date ?? null,
+  supplierPersonId: procurementRequest.supplier_person_id ?? null,
+  status: procurementRequest.status,
+  rejectionReason: procurementRequest.rejection_reason ?? null,
+  approvedByUserId: procurementRequest.approved_by_user_id ?? null,
+  approvedAt: procurementRequest.approved_at ?? null,
+  externalProcurementId: procurementRequest.external_procurement_id ?? null,
+  externalProcurementStatus: procurementRequest.external_procurement_status ?? null,
+  createdAt: procurementRequest.created_at ?? null,
+  updatedAt: procurementRequest.updated_at ?? null,
+})
+
 const toNullableString = (value) => {
   if (typeof value !== "string") {
     return null
@@ -193,6 +213,15 @@ const toMeasurementPayload = (measurementData = {}) => ({
   supplier_person_id: toNullableString(measurementData.supplierPersonId),
   document_type: toNullableString(measurementData.documentType),
   document_number: toNullableString(measurementData.documentNumber),
+})
+
+const toProcurementPayload = (procurementData = {}) => ({
+  code: toNullableString(procurementData.code),
+  title: String(procurementData.title ?? "").trim(),
+  description: toNullableString(procurementData.description),
+  estimated_amount: toNullableNumber(procurementData.estimatedAmount),
+  needed_by_date: toNullableString(procurementData.neededByDate),
+  supplier_person_id: toNullableString(procurementData.supplierPersonId),
 })
 
 async function requestJson({ bridge, path, method = "GET", body = null }) {
@@ -529,9 +558,85 @@ export async function deleteConstructionMeasurement({ bridge, measurementId }) {
   })
 }
 
+export async function listConstructionProcurementRequests({ bridge, projectId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/procurement-requests`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toProcurementView),
+    total: payload.total ?? 0,
+  }
+}
+
+export async function createConstructionProcurementRequest({ bridge, projectId, procurementData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/procurement-requests`,
+    method: "POST",
+    body: toProcurementPayload(procurementData),
+  })
+
+  return toProcurementView(payload)
+}
+
+export async function updateConstructionProcurementRequest({ bridge, procurementRequestId, procurementData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/procurement-requests/${procurementRequestId}`,
+    method: "PATCH",
+    body: toProcurementPayload(procurementData),
+  })
+
+  return toProcurementView(payload)
+}
+
+export async function submitConstructionProcurementRequest({ bridge, procurementRequestId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/procurement-requests/${procurementRequestId}/submit`,
+    method: "POST",
+  })
+
+  return toProcurementView(payload)
+}
+
+export async function approveConstructionProcurementRequest({ bridge, procurementRequestId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/procurement-requests/${procurementRequestId}/approve`,
+    method: "POST",
+  })
+
+  return toProcurementView(payload)
+}
+
+export async function rejectConstructionProcurementRequest({ bridge, procurementRequestId, reason }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/procurement-requests/${procurementRequestId}/reject`,
+    method: "POST",
+    body: {
+      reason: toNullableString(reason),
+    },
+  })
+
+  return toProcurementView(payload)
+}
+
+export async function deleteConstructionProcurementRequest({ bridge, procurementRequestId }) {
+  await requestJson({
+    bridge,
+    path: `/v1/construction/procurement-requests/${procurementRequestId}`,
+    method: "DELETE",
+  })
+}
+
 export {
   requestJson,
   toBlockPayload,
+  toProcurementPayload,
   toProjectPayload,
   toProjectView,
   toSchedulePhasePayload,

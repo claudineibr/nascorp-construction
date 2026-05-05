@@ -455,13 +455,15 @@
 
 .statussubmitted,
 .statusin_approval,
+.statuspending_approval,
 .statusrejected {
   background: var(--status-overdue-bg);
   color: var(--status-overdue-text);
 }
 
 .statusapproved,
-.statuspaid {
+.statuspaid,
+.statussent_to_erp {
   background: var(--status-paid-bg);
   color: var(--status-paid-text);
 }

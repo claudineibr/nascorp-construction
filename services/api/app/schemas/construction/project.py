@@ -290,15 +290,25 @@ class ConstructionMeasurementListResponse(BaseModel):
 
 
 class ConstructionProcurementRequestCreate(BaseModel):
+    code: str | None = Field(default=None, min_length=1, max_length=50)
     title: str = Field(..., min_length=1, max_length=150)
     description: str | None = Field(default=None, max_length=1000)
     estimated_amount: Decimal = Field(..., gt=0)
+    needed_by_date: date | None = None
+    supplier_person_id: UUID | None = None
 
 
 class ConstructionProcurementRequestUpdate(BaseModel):
+    code: str | None = Field(default=None, min_length=1, max_length=50)
     title: str | None = Field(default=None, min_length=1, max_length=150)
     description: str | None = Field(default=None, max_length=1000)
     estimated_amount: Decimal | None = Field(default=None, gt=0)
+    needed_by_date: date | None = None
+    supplier_person_id: UUID | None = None
+
+
+class ConstructionProcurementRequestReject(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class ConstructionProcurementRequestResponse(BaseModel):
@@ -307,10 +317,14 @@ class ConstructionProcurementRequestResponse(BaseModel):
     id: UUID
     company_id: UUID
     project_id: UUID
+    code: str
     title: str
     description: str | None = None
     estimated_amount: Decimal
+    needed_by_date: date | None = None
+    supplier_person_id: UUID | None = None
     status: str
+    rejection_reason: str | None = None
     approved_by_user_id: UUID | None = None
     approved_at: datetime | None = None
     external_procurement_id: UUID | None = None
