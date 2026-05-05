@@ -199,6 +199,45 @@
   padding: 1.1rem;
 }
 
+.tabCard {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: 0.75rem;
+}
+
+.tabList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.tabButton {
+  align-items: center;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.84rem;
+  font-weight: 700;
+  gap: 0.35rem;
+  min-height: 34px;
+  padding: 0.35rem 0.8rem;
+}
+
+.tabButton:hover {
+  border-color: color-mix(in srgb, var(--color-primary) 35%, var(--color-border));
+  color: var(--color-text);
+}
+
+.tabButtonActive {
+  background: color-mix(in srgb, var(--color-primary) 12%, var(--color-surface-muted));
+  border-color: color-mix(in srgb, var(--color-primary) 40%, var(--color-border));
+  color: var(--color-primary);
+}
+
 .filtersGrid {
   display: grid;
   gap: 0.9rem;
@@ -251,6 +290,12 @@
   color: var(--color-text);
   font-size: 1rem;
   margin: 0;
+}
+
+.textMuted {
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  margin: 0.25rem 0 0;
 }
 
 .badgeMuted,
@@ -379,6 +424,15 @@
   .header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .tabList {
+    width: 100%;
+  }
+
+  .tabButton {
+    justify-content: center;
+    width: 100%;
   }
 
   .heroActions,

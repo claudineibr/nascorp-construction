@@ -1,5 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Building2, CheckCircle, Clock, Home, Plus, RefreshCw } from "lucide-react"
+import {
+  Building2,
+  CheckCircle,
+  Clock,
+  FileCog,
+  HandCoins,
+  Home,
+  Layers3,
+  ListChecks,
+  PackageSearch,
+  Plus,
+  RefreshCw,
+  Route,
+} from "lucide-react"
 import styles from "./App.module.css"
 import { resolveConstructionBridge } from "./bridge/constructionBridge.js"
 import { listConstructionProjects } from "./services/constructionApi.js"
@@ -15,15 +28,27 @@ const statusLabel = {
   draft: "Rascunho",
   active: "Ativa",
   paused: "Pausada",
-  completed: "Concluída",
+  completed: "Concluida",
   canceled: "Cancelada",
 }
+
+const domainTabs = [
+  { id: "overview", label: "Visao geral", icon: Building2 },
+  { id: "projects", label: "Projetos", icon: Layers3 },
+  { id: "blocks", label: "Blocos/Torres", icon: Route },
+  { id: "units", label: "Unidades", icon: Home },
+  { id: "schedule", label: "Cronograma", icon: ListChecks },
+  { id: "measurements", label: "Medicoes", icon: HandCoins },
+  { id: "procurement", label: "Requisicoes", icon: PackageSearch },
+  { id: "integrations", label: "Integracoes", icon: FileCog },
+]
 
 const statusOptions = Object.entries(statusLabel).map(([value, label]) => ({ value, label }))
 const dateFormatter = new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" })
 
 export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const bridge = useMemo(() => providedBridge ?? resolveConstructionBridge(), [providedBridge])
+  const [activeTab, setActiveTab] = useState("overview")
   const [filters, setFilters] = useState(defaultFilters)
   const [projects, setProjects] = useState([])
   const [totalProjects, setTotalProjects] = useState(0)
@@ -34,16 +59,19 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     setLoading(true)
     setError(null)
     try {
-      const result = await listConstructionProjects({ bridge })
+      const result = await listConstructionProjects({
+        bridge,
+        search: filters.search,
+      })
       setProjects(result.items)
       setTotalProjects(result.total)
     } catch (requestError) {
-      const message = requestError?.message ?? "Não foi possível carregar as obras."
+      const message = requestError?.message ?? "Nao foi possivel carregar as obras."
       setError(message)
     } finally {
       setLoading(false)
     }
-  }, [bridge])
+  }, [bridge, filters.search])
 
   useEffect(() => {
     void loadProjects()
@@ -87,14 +115,14 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       {
         label: "Centros pendentes",
         value: pendingCostCenters,
-        hint: "sem vínculo analítico",
+        hint: "sem vinculo analitico",
         icon: Clock,
         tone: "warning",
       },
       {
         label: "Unidades",
         value: "0",
-        hint: "próxima etapa",
+        hint: "proximas fases",
         icon: Home,
         tone: "muted",
       },
@@ -110,7 +138,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const clearFilters = () => setFilters(defaultFilters)
 
   const showCreateWarning = () => {
-    bridge?.feedback?.warning?.("O formulário de nova obra ainda não está disponível.")
+    bridge?.feedback?.warning?.("A criacao completa sera habilitada na Fase 2.")
   }
 
   return (
@@ -118,8 +146,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       <section className={styles.pageHeader}>
         <div className={styles.header}>
           <div className={styles.left}>
-            <nav className={styles.breadcrumb} aria-label="Navegação">
-              <span className={styles.breadcrumbLink}>Início</span>
+            <nav className={styles.breadcrumb} aria-label="Navegacao">
+              <span className={styles.breadcrumbLink}>Inicio</span>
               <span className={styles.breadcrumbItem}>
                 <span className={styles.separator}>/</span>
                 <span className={styles.breadcrumbCurrent}>Obras</span>
@@ -158,6 +186,25 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         </div>
       </section>
 
+      <section className={styles.tabCard}>
+        <div className={styles.tabList}>
+          {domainTabs.map((tab) => {
+            const Icon = tab.icon
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                className={`${styles.tabButton} ${activeTab === tab.id ? styles.tabButtonActive : ""}`}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                <Icon size={16} />
+                {tab.label}
+              </button>
+            )
+          })}
+        </div>
+      </section>
+
       <section className={styles.filtersCard}>
         <div className={styles.filtersGrid}>
           <label className={styles.filterControl}>
@@ -166,7 +213,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
               type="text"
               value={filters.search}
               onChange={(event) => handleFilterChange("search", event.target.value)}
-              placeholder="Código ou nome da obra"
+              placeholder="Codigo ou nome da obra"
             />
           </label>
           <label className={styles.filterControl}>
@@ -181,7 +228,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
             </select>
           </label>
           <label className={styles.filterControl}>
-            <span>Início inicial</span>
+            <span>Inicio inicial</span>
             <input
               type="date"
               value={filters.startDate}
@@ -189,7 +236,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
             />
           </label>
           <label className={styles.filterControl}>
-            <span>Início final</span>
+            <span>Inicio final</span>
             <input
               type="date"
               value={filters.endDate}
@@ -206,19 +253,64 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         ) : null}
       </section>
 
-      <div className={`${styles.card} ${styles.tableCard}`}>
-        <div className={styles.tableHeaderRow}>
-          <h2>Projetos</h2>
-          <span className={styles.badgeMuted}>{visibleProjects.length} registros</span>
-        </div>
-        <ProjectList projects={visibleProjects} loading={loading} error={error} onRetry={loadProjects} />
-        <div className={styles.paginationSlot}>
-          <span className={styles.paginationSummary}>
-            Mostrando {visibleProjects.length} de {totalProjects} obras
-          </span>
+      {activeTab === "overview" && (
+        <DomainCard
+          title="Resumo operacional"
+          subtitle="Base pronta para CRUD completo por dominio."
+          content={
+            <p className={styles.textMuted}>
+              A Fase 1 preparou client centralizado, abas de dominio e estrutura visual para evoluir os CRUDs das
+              proximas fases sem acoplamento com internals do ERP.
+            </p>
+          }
+        />
+      )}
+
+      {activeTab === "projects" && (
+        <DomainCard
+          title="Projetos"
+          subtitle="Listagem ativa. Criacao e edicao completas entram na Fase 2."
+          content={<ProjectList projects={visibleProjects} loading={loading} error={error} onRetry={loadProjects} />}
+          footer={
+            <span className={styles.paginationSummary}>
+              Mostrando {visibleProjects.length} de {totalProjects} obras
+            </span>
+          }
+        />
+      )}
+
+      {activeTab === "blocks" && <PhasePlaceholder title="Blocos e Torres" phase="Fase 3" />}
+      {activeTab === "units" && <PhasePlaceholder title="Unidades" phase="Fase 4" />}
+      {activeTab === "schedule" && <PhasePlaceholder title="Cronograma" phase="Fase 3" />}
+      {activeTab === "measurements" && <PhasePlaceholder title="Medicoes" phase="Fase 5" />}
+      {activeTab === "procurement" && <PhasePlaceholder title="Requisicoes" phase="Fase 6" />}
+      {activeTab === "integrations" && <PhasePlaceholder title="Integracoes" phase="Fase 7" />}
+    </main>
+  )
+}
+
+function DomainCard({ title, subtitle, content, footer = null }) {
+  return (
+    <div className={`${styles.card} ${styles.tableCard}`}>
+      <div className={styles.tableHeaderRow}>
+        <div>
+          <h2>{title}</h2>
+          {subtitle ? <p className={styles.textMuted}>{subtitle}</p> : null}
         </div>
       </div>
-    </main>
+      {content}
+      {footer ? <div className={styles.paginationSlot}>{footer}</div> : null}
+    </div>
+  )
+}
+
+function PhasePlaceholder({ title, phase }) {
+  return (
+    <DomainCard
+      title={title}
+      subtitle={`${phase}: implementacao funcional prevista nas proximas etapas.`}
+      content={<div className={styles.empty}>Estrutura pronta para evolucao incremental.</div>}
+    />
   )
 }
 
@@ -261,12 +353,12 @@ function ProjectList({ projects, loading, error, onRetry }) {
       <table className={styles.table}>
         <thead>
           <tr>
-            <th>Código</th>
+            <th>Codigo</th>
             <th>Obra</th>
             <th>Status</th>
-            <th>Início</th>
-            <th>Previsão</th>
-            <th>Centro analítico</th>
+            <th>Inicio</th>
+            <th>Previsao</th>
+            <th>Centro analitico</th>
           </tr>
         </thead>
         <tbody>
