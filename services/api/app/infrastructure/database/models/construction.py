@@ -23,8 +23,14 @@ from app.infrastructure.database.base import Base, CONSTRUCTION_SCHEMA
 class ConstructionProject(Base):
     __tablename__ = "construction_projects"
     __table_args__ = (
-        UniqueConstraint("company_id", "code", name="uq_construction_projects_company_code"),
-        {"schema": CONSTRUCTION_SCHEMA},
+        UniqueConstraint(
+            "company_id", 
+            "code", 
+            name="uq_construction_projects_company_code"
+            ),
+        {
+            "schema": CONSTRUCTION_SCHEMA
+            },
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)

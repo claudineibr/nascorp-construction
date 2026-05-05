@@ -4,6 +4,7 @@ export function resolveConstructionBridge() {
 
 function createStandaloneBridge() {
   const constructionApiBaseUrl = import.meta.env.VITE_CONSTRUCTION_API_URL || "http://127.0.0.1:8010"
+  const erpApiBaseUrl = import.meta.env.VITE_ERP_API_URL || import.meta.env.REACT_APP_API_URL || "http://127.0.0.1:8000"
   const token = window.localStorage?.getItem("construction:token") ?? null
   const companyId = window.localStorage?.getItem("construction:companyId") ?? null
   const theme = document.documentElement.getAttribute("data-theme") || "light"
@@ -12,6 +13,7 @@ function createStandaloneBridge() {
     version: "standalone",
     token,
     constructionApiBaseUrl,
+    erpApiBaseUrl,
     companyContext: {
       companyId,
       companyName: "",

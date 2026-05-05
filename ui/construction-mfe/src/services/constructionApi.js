@@ -1,4 +1,7 @@
 const DEFAULT_CONSTRUCTION_API_URL = "http://127.0.0.1:8010"
+const DEFAULT_ERP_API_URL = "http://127.0.0.1:8000"
+
+const stripNonDigits = (value) => String(value ?? "").replace(/\D/g, "")
 
 const toProjectView = (project) => ({
   id: project.id,
@@ -127,6 +130,14 @@ const toPersonSummaryView = (person) => ({
   isActive: person.is_active !== false,
 })
 
+const toAddressView = (address) => ({
+  zipCode: address.zip_code ?? "",
+  street: address.street ?? "",
+  district: address.neighborhood ?? "",
+  city: address.city ?? "",
+  state: address.state ?? "",
+})
+
 const toNullableString = (value) => {
   if (typeof value !== "string") {
     return null
@@ -233,8 +244,8 @@ const toProcurementPayload = (procurementData = {}) => ({
   supplier_person_id: toNullableString(procurementData.supplierPersonId),
 })
 
-async function requestJson({ bridge, path, method = "GET", body = null }) {
-  const apiBaseUrl = bridge?.constructionApiBaseUrl || DEFAULT_CONSTRUCTION_API_URL
+async function requestJson({ bridge, path, method = "GET", body = null, baseUrl = null }) {
+  const apiBaseUrl = baseUrl || bridge?.constructionApiBaseUrl || DEFAULT_CONSTRUCTION_API_URL
   const headers = {
     ...(bridge?.getAuthHeaders?.() ?? {}),
   }
@@ -267,12 +278,19 @@ async function requestJson({ bridge, path, method = "GET", body = null }) {
 
   if (!response.ok) {
     const fallback = "Não foi possível concluir a requisição do módulo de obras."
+    let errorMessage = fallback
     try {
       const payload = await response.json()
-      throw new Error(payload?.detail?.message || payload?.message || fallback)
+      const payloadDetails = payload?.details
+      errorMessage =
+        payload?.detail?.message ||
+        payload?.message ||
+        (typeof payloadDetails === "string" ? payloadDetails : payloadDetails?.message) ||
+        fallback
     } catch {
-      throw new Error(fallback)
+      errorMessage = fallback
     }
+    throw new Error(errorMessage)
   }
 
   if (response.status === 204) {
@@ -280,6 +298,22 @@ async function requestJson({ bridge, path, method = "GET", body = null }) {
   }
 
   return response.json()
+}
+
+export async function fetchConstructionAddressByZip({ bridge, zipCode }) {
+  const normalizedZip = stripNonDigits(zipCode).slice(0, 8)
+  if (normalizedZip.length !== 8) {
+    throw new Error("Informe um CEP válido com 8 dígitos.")
+  }
+
+  const erpApiBaseUrl = bridge?.erpApiBaseUrl || import.meta.env.VITE_ERP_API_URL || DEFAULT_ERP_API_URL
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/address/${normalizedZip}`,
+    baseUrl: erpApiBaseUrl,
+  })
+
+  return toAddressView(payload)
 }
 
 export async function listConstructionProjects({ bridge, page = 1, pageSize = 20, search = "" } = {}) {

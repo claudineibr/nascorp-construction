@@ -35,6 +35,7 @@ import {
   deleteConstructionProject,
   deleteConstructionSchedulePhase,
   deleteConstructionUnit,
+  fetchConstructionAddressByZip,
   listConstructionBlocks,
   listConstructionMeasurements,
   listConstructionPersonSummaries,
@@ -145,6 +146,19 @@ const statusOptions = Object.entries(statusLabel)
 
 const dateFormatter = new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" })
 const moneyFormatter = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" })
+
+const stripNonDigits = (value) => String(value ?? "").replace(/\D/g, "")
+
+const maskZip = (value) => {
+  const digits = stripNonDigits(value).slice(0, 8)
+  if (digits.length <= 5) {
+    return digits
+  }
+
+  return `${digits.slice(0, 5)}-${digits.slice(5)}`
+}
+
+const normalizeZip = (value) => stripNonDigits(value).slice(0, 8)
 
 const defaultProjectForm = {
   code: "",
@@ -257,7 +271,7 @@ function toFormProject(project) {
     addressDistrict: project.address?.district ?? "",
     addressCity: project.address?.city ?? "",
     addressState: project.address?.state ?? "",
-    addressZipCode: project.address?.zip_code ?? "",
+    addressZipCode: maskZip(project.address?.zip_code ?? ""),
   }
 }
 
@@ -316,7 +330,7 @@ function toApiProject(formProject) {
       district: formProject.addressDistrict,
       city: formProject.addressCity,
       state: formProject.addressState,
-      zip_code: formProject.addressZipCode,
+      zip_code: normalizeZip(formProject.addressZipCode),
     },
   }
 }
@@ -476,6 +490,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [editingProjectId, setEditingProjectId] = useState(null)
   const [projectForm, setProjectForm] = useState(defaultProjectForm)
   const [submittingProject, setSubmittingProject] = useState(false)
+  const [projectZipLookup, setProjectZipLookup] = useState({ loading: false, error: null })
 
   const [blocks, setBlocks] = useState([])
   const [loadingBlocks, setLoadingBlocks] = useState(false)
@@ -867,16 +882,26 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const clearFilters = () => setFilters(defaultFilters)
 
   const openCreateProject = () => {
+    if (!personSummaries.length) {
+      void loadPersonSummaries()
+    }
+
     setProjectModalMode("create")
     setEditingProjectId(null)
     setProjectForm(defaultProjectForm)
+    setProjectZipLookup({ loading: false, error: null })
     setIsProjectModalOpen(true)
   }
 
   const openEditProject = (project) => {
+    if (!personSummaries.length) {
+      void loadPersonSummaries()
+    }
+
     setProjectModalMode("edit")
     setEditingProjectId(project.id)
     setProjectForm(toFormProject(project))
+    setProjectZipLookup({ loading: false, error: null })
     setIsProjectModalOpen(true)
   }
 
@@ -888,10 +913,48 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     setIsProjectModalOpen(false)
     setEditingProjectId(null)
     setProjectForm(defaultProjectForm)
+    setProjectZipLookup({ loading: false, error: null })
   }
 
   const handleProjectFieldChange = (field, value) => {
-    setProjectForm((currentProjectForm) => ({ ...currentProjectForm, [field]: value }))
+    const nextValue = field === "addressZipCode" ? maskZip(value) : value
+    setProjectForm((currentProjectForm) => ({ ...currentProjectForm, [field]: nextValue }))
+
+    if (field === "addressZipCode") {
+      setProjectZipLookup({ loading: false, error: null })
+    }
+  }
+
+  const handleProjectZipLookup = async () => {
+    const normalizedZip = normalizeZip(projectForm.addressZipCode)
+    if (!normalizedZip) {
+      setProjectZipLookup({ loading: false, error: null })
+      return
+    }
+
+    if (normalizedZip.length !== 8) {
+      setProjectZipLookup({ loading: false, error: "Informe um CEP válido com 8 dígitos." })
+      return
+    }
+
+    setProjectZipLookup({ loading: true, error: null })
+    try {
+      const address = await fetchConstructionAddressByZip({ bridge, zipCode: normalizedZip })
+      setProjectForm((currentProjectForm) => ({
+        ...currentProjectForm,
+        addressZipCode: maskZip(address.zipCode || normalizedZip),
+        addressStreet: address.street || currentProjectForm.addressStreet,
+        addressDistrict: address.district || currentProjectForm.addressDistrict,
+        addressCity: address.city || currentProjectForm.addressCity,
+        addressState: address.state || currentProjectForm.addressState,
+      }))
+      setProjectZipLookup({ loading: false, error: null })
+    } catch (requestError) {
+      setProjectZipLookup({
+        loading: false,
+        error: requestError?.message ?? "Nao foi possivel buscar o CEP.",
+      })
+    }
   }
 
   const handleProjectSubmit = async (event) => {
@@ -2035,8 +2098,13 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         <ProjectModal
           mode={projectModalMode}
           projectForm={projectForm}
+          people={personSummaries}
+          loadingPeople={loadingPersonSummaries}
+          personLookupError={personLookupError}
+          zipLookup={projectZipLookup}
           onClose={closeProjectModal}
           onChange={handleProjectFieldChange}
+          onZipLookup={handleProjectZipLookup}
           onSubmit={handleProjectSubmit}
           loading={submittingProject}
         />
@@ -3228,25 +3296,36 @@ function RejectMeasurementModal({ measurement, rejectForm, onClose, onChange, on
   )
 }
 
-function PersonIdInput({ label, value, onChange, people, required = false }) {
+function PersonIdInput({
+  label,
+  value,
+  onChange,
+  people = [],
+  required = false,
+  loading = false,
+  error = null,
+  emptyLabel = "Selecione uma pessoa",
+}) {
+  const hasSelectedPerson = people.some((person) => person.id === value)
+
   return (
     <label className={styles.filterControl}>
       <span>{label}</span>
-      <input
-        type="text"
+      <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        list="construction-person-summaries"
         required={required}
-        placeholder="Digite ou selecione uma pessoa"
-      />
-      <datalist id="construction-person-summaries">
+        disabled={loading}
+      >
+        <option value="">{loading ? "Carregando pessoas..." : emptyLabel}</option>
+        {value && !hasSelectedPerson ? <option value={value}>Pessoa selecionada</option> : null}
         {people.map((person) => (
           <option key={person.id} value={person.id}>
-            {person.name}
+            {person.name}{person.document ? ` - ${person.document}` : ""}
           </option>
         ))}
-      </datalist>
+      </select>
+      {error ? <small className={styles.formError}>{error}</small> : null}
     </label>
   )
 }
@@ -3314,7 +3393,19 @@ function IntegrationPanel({
   )
 }
 
-function ProjectModal({ mode, projectForm, onClose, onChange, onSubmit, loading }) {
+function ProjectModal({
+  mode,
+  projectForm,
+  people,
+  loadingPeople,
+  personLookupError,
+  zipLookup,
+  onClose,
+  onChange,
+  onZipLookup,
+  onSubmit,
+  loading,
+}) {
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
       <section
@@ -3374,15 +3465,15 @@ function ProjectModal({ mode, projectForm, onClose, onChange, onSubmit, loading 
                 ))}
               </select>
             </label>
-            <label className={styles.filterControl}>
-              <span>Pessoa responsavel (ID)</span>
-              <input
-                type="text"
-                value={projectForm.customerPersonId}
-                onChange={(event) => onChange("customerPersonId", event.target.value)}
-                placeholder="UUID da pessoa no ERP"
-              />
-            </label>
+            <PersonIdInput
+              label="Cliente/Contratante ERP"
+              value={projectForm.customerPersonId}
+              onChange={(value) => onChange("customerPersonId", value)}
+              people={people}
+              loading={loadingPeople}
+              error={personLookupError}
+              emptyLabel="Sem cliente vinculado"
+            />
             <label className={styles.filterControl}>
               <span>CNPJ SPE</span>
               <input
@@ -3474,7 +3565,12 @@ function ProjectModal({ mode, projectForm, onClose, onChange, onSubmit, loading 
                 type="text"
                 value={projectForm.addressZipCode}
                 onChange={(event) => onChange("addressZipCode", event.target.value)}
+                onBlur={onZipLookup}
+                inputMode="numeric"
+                placeholder="00000-000"
               />
+              {zipLookup?.loading ? <small className={styles.fieldHint}>Buscando CEP...</small> : null}
+              {zipLookup?.error ? <small className={styles.formError}>{zipLookup.error}</small> : null}
             </label>
           </div>
 
