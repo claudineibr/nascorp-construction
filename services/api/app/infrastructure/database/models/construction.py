@@ -5,7 +5,7 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.constants import (
@@ -13,6 +13,7 @@ from app.domain.constants import (
     ConstructionMeasurementStatus,
     ConstructionProcurementStatus,
     ConstructionProjectStatus,
+    ConstructionProjectType,
     ConstructionSchedulePhaseStatus,
     ConstructionUnitStatus,
 )
@@ -32,6 +33,14 @@ class ConstructionProject(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default=ConstructionProjectStatus.DRAFT)
+    project_type: Mapped[str] = mapped_column(
+        String(40),
+        nullable=False,
+        default=ConstructionProjectType.RESIDENTIAL_VERTICAL,
+    )
+    customer_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    cnpj_spe: Mapped[str | None] = mapped_column(String(18), nullable=True)
+    address_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     expected_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     actual_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -85,6 +94,7 @@ class ConstructionBlock(Base):
     code: Mapped[str] = mapped_column(String(50), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default=ConstructionBlockStatus.ACTIVE)
+    floors_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

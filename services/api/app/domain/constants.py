@@ -6,6 +6,15 @@ class ConstructionProjectStatus:
     CANCELLED = "cancelled"
 
 
+class ConstructionProjectType:
+    RESIDENTIAL_VERTICAL = "residential_vertical"
+    RESIDENTIAL_HORIZONTAL = "residential_horizontal"
+    COMMERCIAL = "commercial"
+    MIXED_USE = "mixed_use"
+    INFRASTRUCTURE = "infrastructure"
+    INDUSTRIAL = "industrial"
+
+
 class ConstructionBlockStatus:
     ACTIVE = "active"
     INACTIVE = "inactive"
@@ -52,6 +61,14 @@ PROJECT_STATUS_TRANSITIONS = {
 }
 
 PROJECT_STATUSES = set(PROJECT_STATUS_TRANSITIONS)
+PROJECT_TYPES = {
+    ConstructionProjectType.RESIDENTIAL_VERTICAL,
+    ConstructionProjectType.RESIDENTIAL_HORIZONTAL,
+    ConstructionProjectType.COMMERCIAL,
+    ConstructionProjectType.MIXED_USE,
+    ConstructionProjectType.INFRASTRUCTURE,
+    ConstructionProjectType.INDUSTRIAL,
+}
 BLOCK_STATUSES = {ConstructionBlockStatus.ACTIVE, ConstructionBlockStatus.INACTIVE}
 UNIT_STATUSES = {
     ConstructionUnitStatus.AVAILABLE,

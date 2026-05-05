@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -7,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.domain.constants import (
     ConstructionBlockStatus,
     ConstructionProjectStatus,
+    ConstructionProjectType,
     ConstructionSchedulePhaseStatus,
     ConstructionUnitStatus,
 )
@@ -17,6 +19,10 @@ class ConstructionProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
     status: str = ConstructionProjectStatus.DRAFT
+    project_type: str = ConstructionProjectType.RESIDENTIAL_VERTICAL
+    customer_person_id: UUID | None = None
+    cnpj_spe: str | None = Field(default=None, max_length=18)
+    address_json: dict[str, Any] | None = None
     start_date: date | None = None
     expected_end_date: date | None = None
     actual_end_date: date | None = None
@@ -27,6 +33,10 @@ class ConstructionProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     status: str | None = None
+    project_type: str | None = None
+    customer_person_id: UUID | None = None
+    cnpj_spe: str | None = Field(default=None, max_length=18)
+    address_json: dict[str, Any] | None = None
     start_date: date | None = None
     expected_end_date: date | None = None
     actual_end_date: date | None = None
@@ -43,6 +53,10 @@ class ConstructionProjectResponse(BaseModel):
     name: str
     description: str | None = None
     status: str
+    project_type: str
+    customer_person_id: UUID | None = None
+    cnpj_spe: str | None = None
+    address_json: dict[str, Any] | None = None
     start_date: date | None = None
     expected_end_date: date | None = None
     actual_end_date: date | None = None
@@ -64,12 +78,14 @@ class ConstructionBlockCreate(BaseModel):
     code: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=1, max_length=255)
     status: str = ConstructionBlockStatus.ACTIVE
+    floors_count: int | None = Field(default=None, ge=0)
 
 
 class ConstructionBlockUpdate(BaseModel):
     code: str | None = Field(default=None, min_length=1, max_length=50)
     name: str | None = Field(default=None, min_length=1, max_length=255)
     status: str | None = None
+    floors_count: int | None = Field(default=None, ge=0)
 
 
 class ConstructionBlockResponse(BaseModel):
@@ -81,6 +97,7 @@ class ConstructionBlockResponse(BaseModel):
     code: str
     name: str
     status: str
+    floors_count: int | None = None
     created_at: datetime
     updated_at: datetime
 

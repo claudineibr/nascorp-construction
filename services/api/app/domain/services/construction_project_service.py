@@ -8,6 +8,7 @@ from app.domain.constants import (
     CONSTRUCTION_PROCUREMENT_APPROVAL_THRESHOLD,
     ConstructionMeasurementStatus,
     ConstructionProcurementStatus,
+    PROJECT_TYPES,
     ConstructionUnitStatus,
     PROJECT_STATUS_TRANSITIONS,
     PROJECT_STATUSES,
@@ -86,6 +87,7 @@ class ConstructionProjectService:
         actor_user_id: UUID | None = None,
     ) -> ConstructionProject:
         self._ensure_known_value(value=request.status, allowed_values=PROJECT_STATUSES, field_name="status")
+        self._ensure_known_value(value=request.project_type, allowed_values=PROJECT_TYPES, field_name="project_type")
         existing_project = await self.repository.get_project_by_code(company_id=company_id, code=request.code)
         if existing_project:
             raise ConstructionDuplicateCodeError(resource_name="Construction project", code=request.code)
@@ -97,6 +99,10 @@ class ConstructionProjectService:
             name=request.name.strip(),
             description=request.description,
             status=request.status,
+            project_type=request.project_type,
+            customer_person_id=request.customer_person_id,
+            cnpj_spe=request.cnpj_spe.strip() if request.cnpj_spe else None,
+            address_json=request.address_json,
             start_date=request.start_date,
             expected_end_date=request.expected_end_date,
             actual_end_date=request.actual_end_date,
@@ -183,6 +189,14 @@ class ConstructionProjectService:
         if next_status is not None:
             self._ensure_project_status_transition(current_status=project.status, next_status=next_status)
 
+        next_project_type = updates.get("project_type")
+        if next_project_type is not None:
+            self._ensure_known_value(
+                value=next_project_type,
+                allowed_values=PROJECT_TYPES,
+                field_name="project_type",
+            )
+
         next_code = updates.get("code")
         if next_code is not None and next_code != project.code:
             existing_project = await self.repository.get_project_by_code(company_id=company_id, code=next_code)
@@ -222,6 +236,7 @@ class ConstructionProjectService:
             code=request.code.strip(),
             name=request.name.strip(),
             status=request.status,
+            floors_count=request.floors_count,
         )
         await self.repository.add(block)
         await self.repository.commit()
@@ -963,6 +978,10 @@ class ConstructionProjectService:
             "construction_project_id": str(project.id),
             "project_code": project.code,
             "project_name": project.name,
+            "project_type": project.project_type,
+            "customer_person_id": str(project.customer_person_id) if project.customer_person_id else None,
+            "cnpj_spe": project.cnpj_spe,
+            "address": project.address_json,
             "start_date": ConstructionProjectService._format_event_date(value=project.start_date),
             "expected_end_date": ConstructionProjectService._format_event_date(value=project.expected_end_date),
         }
