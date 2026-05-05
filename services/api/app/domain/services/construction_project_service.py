@@ -58,6 +58,17 @@ from app.schemas.construction import (
 
 
 class ErpMeasurementClient(Protocol):
+    async def list_person_summaries(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        search: str | None,
+        page: int,
+        page_size: int,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
     async def create_accounts_payable_from_measurement(self, *, event: EventEnvelope) -> EventEnvelope:
         raise NotImplementedError
 
@@ -164,6 +175,29 @@ class ConstructionProjectService:
     ) -> tuple[list[ConstructionProject], int]:
         return await self.repository.list_projects(
             company_id=company_id,
+            search=search,
+            page=page,
+            page_size=page_size,
+        )
+
+    async def list_person_summaries(
+        self,
+        *,
+        company_id: UUID,
+        actor_user_id: UUID | None,
+        search: str | None,
+        page: int,
+        page_size: int,
+    ) -> dict[str, Any]:
+        if self.erp_client is None:
+            raise ConstructionInvalidValueError(
+                message="ERP integration client is unavailable for person lookup.",
+                error_code="CONSTRUCTION_ERP_INTEGRATION_UNAVAILABLE",
+            )
+
+        return await self.erp_client.list_person_summaries(
+            company_id=company_id,
+            user_id=actor_user_id,
             search=search,
             page=page,
             page_size=page_size,

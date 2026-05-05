@@ -18,6 +18,7 @@ from app.schemas.construction import (
     ConstructionBlockListResponse,
     ConstructionBlockResponse,
     ConstructionBlockUpdate,
+    ConstructionPersonSummaryListResponse,
     ConstructionProjectCreate,
     ConstructionProjectListResponse,
     ConstructionProjectResponse,
@@ -105,6 +106,27 @@ async def list_projects(
         page_size=page_size,
         total_pages=ceil(total / page_size) if total else 0,
     )
+
+
+@router.get("/person-summaries", response_model=ConstructionPersonSummaryListResponse)
+async def list_person_summaries(
+    search: str | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=50),
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionPersonSummaryListResponse:
+    try:
+        payload = await service.list_person_summaries(
+            company_id=ctx.company_id,
+            actor_user_id=ctx.user_id,
+            search=search,
+            page=page,
+            page_size=page_size,
+        )
+        return ConstructionPersonSummaryListResponse.model_validate(payload)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
 
 
 @router.get("/projects/{project_id}", response_model=ConstructionProjectResponse)

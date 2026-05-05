@@ -74,6 +74,23 @@ class ConstructionProjectListResponse(BaseModel):
     total_pages: int
 
 
+class ConstructionPersonSummaryResponse(BaseModel):
+    id: UUID
+    name: str
+    document: str | None = None
+    primary_phone: str | None = None
+    primary_email: str | None = None
+    is_active: bool = True
+
+
+class ConstructionPersonSummaryListResponse(BaseModel):
+    items: list[ConstructionPersonSummaryResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
 class ConstructionBlockCreate(BaseModel):
     code: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=1, max_length=255)

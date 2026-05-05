@@ -590,6 +590,53 @@
   font-size: 0.85rem;
 }
 
+.integrationPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.integrationGrid {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.integrationCard {
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.85rem;
+}
+
+.integrationCard h3 {
+  font-size: 0.95rem;
+  margin: 0;
+}
+
+.inlineForm {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.inlineForm input {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  color: var(--color-text);
+  flex: 1;
+  padding: 0.65rem 0.85rem;
+}
+
+.formError {
+  color: var(--color-danger-text);
+  font-size: 0.8rem;
+  margin: 0;
+}
+
 .spinIcon {
   animation: spin 0.9s linear infinite;
   color: var(--color-primary);

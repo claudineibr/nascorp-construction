@@ -118,6 +118,15 @@ const toProcurementView = (procurementRequest) => ({
   updatedAt: procurementRequest.updated_at ?? null,
 })
 
+const toPersonSummaryView = (person) => ({
+  id: person.id,
+  name: person.name,
+  document: person.document ?? null,
+  primaryPhone: person.primary_phone ?? null,
+  primaryEmail: person.primary_email ?? null,
+  isActive: person.is_active !== false,
+})
+
 const toNullableString = (value) => {
   if (typeof value !== "string") {
     return null
@@ -290,6 +299,35 @@ export async function listConstructionProjects({ bridge, page = 1, pageSize = 20
 
   return {
     items: (payload.items ?? []).map(toProjectView),
+    total: payload.total ?? 0,
+    page: payload.page ?? page,
+    pageSize: payload.page_size ?? pageSize,
+    totalPages: payload.total_pages ?? 0,
+  }
+}
+
+export async function listConstructionPersonSummaries({
+  bridge,
+  search = "",
+  page = 1,
+  pageSize = 50,
+} = {}) {
+  const query = new URLSearchParams({
+    page: String(page),
+    page_size: String(pageSize),
+  })
+
+  if (search.trim()) {
+    query.set("search", search.trim())
+  }
+
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/person-summaries?${query.toString()}`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toPersonSummaryView),
     total: payload.total ?? 0,
     page: payload.page ?? page,
     pageSize: payload.page_size ?? pageSize,

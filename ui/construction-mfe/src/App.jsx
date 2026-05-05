@@ -37,6 +37,7 @@ import {
   deleteConstructionUnit,
   listConstructionBlocks,
   listConstructionMeasurements,
+  listConstructionPersonSummaries,
   listConstructionProcurementRequests,
   listConstructionProjects,
   listConstructionSchedulePhases,
@@ -537,6 +538,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [rejectProcurementForm, setRejectProcurementForm] = useState(defaultProcurementRejectForm)
   const [submittingProcurementReject, setSubmittingProcurementReject] = useState(false)
 
+  const [personLookupQuery, setPersonLookupQuery] = useState("")
+  const [personSummaries, setPersonSummaries] = useState([])
+  const [loadingPersonSummaries, setLoadingPersonSummaries] = useState(false)
+  const [personLookupError, setPersonLookupError] = useState(null)
+
   const loadProjects = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -745,6 +751,27 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }, [activeProjectId, bridge])
 
+  const loadPersonSummaries = useCallback(
+    async (search = "") => {
+      setLoadingPersonSummaries(true)
+      setPersonLookupError(null)
+      try {
+        const result = await listConstructionPersonSummaries({
+          bridge,
+          search,
+          page: 1,
+          pageSize: 50,
+        })
+        setPersonSummaries(result.items)
+      } catch (requestError) {
+        setPersonLookupError(requestError?.message ?? "Nao foi possivel carregar o cadastro de pessoas.")
+      } finally {
+        setLoadingPersonSummaries(false)
+      }
+    },
+    [bridge]
+  )
+
   useEffect(() => {
     if (activeTab !== "blocks") {
       return
@@ -784,10 +811,31 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
 
     void loadProcurementRequests()
-  }, [activeTab, loadProcurementRequests])
+    if (!personSummaries.length) {
+      void loadPersonSummaries()
+    }
+  }, [activeTab, loadPersonSummaries, loadProcurementRequests, personSummaries.length])
+
+  useEffect(() => {
+    if (!["units", "measurements"].includes(activeTab)) {
+      return
+    }
+
+    if (!personSummaries.length) {
+      void loadPersonSummaries()
+    }
+  }, [activeTab, loadPersonSummaries, personSummaries.length])
 
   const handleFilterChange = (field, value) => {
     setFilters((currentFilters) => ({ ...currentFilters, [field]: value }))
+  }
+
+  const handlePersonLookupQueryChange = (value) => {
+    setPersonLookupQuery(value)
+  }
+
+  const handlePersonLookupSearch = async () => {
+    await loadPersonSummaries(personLookupQuery)
   }
 
   const clearFilters = () => setFilters(defaultFilters)
@@ -1895,7 +1943,25 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           }
         />
       )}
-      {activeTab === "integrations" && <PhasePlaceholder title="Integracoes" phase="Fase 7" />}
+      {activeTab === "integrations" && (
+        <DomainCard
+          title="Integracoes"
+          subtitle="Referencias ERP para pessoas, financeiro e compras sincronizadas no modulo."
+          content={
+            <IntegrationPanel
+              personLookupQuery={personLookupQuery}
+              onPersonLookupQueryChange={handlePersonLookupQueryChange}
+              onPersonLookupSearch={handlePersonLookupSearch}
+              loadingPeople={loadingPersonSummaries}
+              personLookupError={personLookupError}
+              people={personSummaries}
+              measurements={measurements}
+              procurementRequests={procurementRequests}
+              units={units}
+            />
+          }
+        />
+      )}
 
       {isProjectModalOpen ? (
         <ProjectModal
@@ -1935,6 +2001,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         <ReserveUnitModal
           reserveForm={reserveUnitForm}
           unit={reserveTargetUnit}
+          people={personSummaries}
           onClose={closeReserveUnitModal}
           onChange={handleReserveUnitChange}
           onSubmit={handleReserveUnitSubmit}
@@ -1946,6 +2013,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         <SaleUnitModal
           saleForm={saleUnitForm}
           unit={saleTargetUnit}
+          people={personSummaries}
           onClose={closeSaleUnitModal}
           onChange={handleSaleUnitChange}
           onSubmit={handleSaleUnitSubmit}
@@ -1957,6 +2025,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         <MeasurementModal
           mode={measurementModalMode}
           measurementForm={measurementForm}
+          people={personSummaries}
           onClose={closeMeasurementModal}
           onChange={handleMeasurementFieldChange}
           onSubmit={handleMeasurementSubmit}
@@ -1979,6 +2048,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         <ProcurementModal
           mode={procurementModalMode}
           procurementForm={procurementForm}
+          people={personSummaries}
           onClose={closeProcurementModal}
           onChange={handleProcurementFieldChange}
           onSubmit={handleProcurementSubmit}
@@ -2711,7 +2781,7 @@ function ProcurementList({
   )
 }
 
-function ProcurementModal({ mode, procurementForm, onClose, onChange, onSubmit, loading }) {
+function ProcurementModal({ mode, procurementForm, people, onClose, onChange, onSubmit, loading }) {
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
       <section
@@ -2766,14 +2836,12 @@ function ProcurementModal({ mode, procurementForm, onClose, onChange, onSubmit, 
                 onChange={(event) => onChange("neededByDate", event.target.value)}
               />
             </label>
-            <label className={styles.filterControl}>
-              <span>Fornecedor (ID)</span>
-              <input
-                type="text"
-                value={procurementForm.supplierPersonId}
-                onChange={(event) => onChange("supplierPersonId", event.target.value)}
-              />
-            </label>
+            <PersonIdInput
+              label="Fornecedor (ID)"
+              value={procurementForm.supplierPersonId}
+              onChange={(value) => onChange("supplierPersonId", value)}
+              people={people}
+            />
             <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
               <span>Descricao</span>
               <textarea
@@ -2836,7 +2904,7 @@ function RejectProcurementModal({ procurementRequest, rejectForm, onClose, onCha
   )
 }
 
-function MeasurementModal({ mode, measurementForm, onClose, onChange, onSubmit, loading }) {
+function MeasurementModal({ mode, measurementForm, people, onClose, onChange, onSubmit, loading }) {
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
       <section
@@ -2889,14 +2957,12 @@ function MeasurementModal({ mode, measurementForm, onClose, onChange, onSubmit, 
                 onChange={(event) => onChange("competenceDate", event.target.value)}
               />
             </label>
-            <label className={styles.filterControl}>
-              <span>Fornecedor (ID)</span>
-              <input
-                type="text"
-                value={measurementForm.supplierPersonId}
-                onChange={(event) => onChange("supplierPersonId", event.target.value)}
-              />
-            </label>
+            <PersonIdInput
+              label="Fornecedor (ID)"
+              value={measurementForm.supplierPersonId}
+              onChange={(value) => onChange("supplierPersonId", value)}
+              people={people}
+            />
             <label className={styles.filterControl}>
               <span>Vencimento*</span>
               <input
@@ -3011,6 +3077,92 @@ function RejectMeasurementModal({ measurement, rejectForm, onClose, onChange, on
           </footer>
         </form>
       </section>
+    </div>
+  )
+}
+
+function PersonIdInput({ label, value, onChange, people, required = false }) {
+  return (
+    <label className={styles.filterControl}>
+      <span>{label}</span>
+      <input
+        type="text"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        list="construction-person-summaries"
+        required={required}
+        placeholder="Digite ou selecione uma pessoa"
+      />
+      <datalist id="construction-person-summaries">
+        {people.map((person) => (
+          <option key={person.id} value={person.id}>
+            {person.name}
+          </option>
+        ))}
+      </datalist>
+    </label>
+  )
+}
+
+function IntegrationPanel({
+  personLookupQuery,
+  onPersonLookupQueryChange,
+  onPersonLookupSearch,
+  loadingPeople,
+  personLookupError,
+  people,
+  measurements,
+  procurementRequests,
+  units,
+}) {
+  const linkedMeasurements = measurements.filter((measurement) => measurement.externalAccountsPayableId).length
+  const linkedProcurementRequests = procurementRequests.filter(
+    (procurementRequest) => procurementRequest.externalProcurementId
+  ).length
+  const linkedUnitContracts = units.filter((unit) => unit.externalContractId).length
+
+  return (
+    <div className={styles.integrationPanel}>
+      <div className={styles.integrationGrid}>
+        <article className={styles.integrationCard}>
+          <h3>Pessoas ERP</h3>
+          <p className={styles.textMuted}>Lookup para vincular comprador e fornecedor nos fluxos operacionais.</p>
+          <div className={styles.inlineForm}>
+            <input
+              type="text"
+              value={personLookupQuery}
+              onChange={(event) => onPersonLookupQueryChange(event.target.value)}
+              placeholder="Buscar por nome, documento ou telefone"
+            />
+            <button type="button" className={styles.secondaryButton} onClick={onPersonLookupSearch} disabled={loadingPeople}>
+              {loadingPeople ? "Buscando..." : "Buscar"}
+            </button>
+          </div>
+          {personLookupError ? <p className={styles.formError}>{personLookupError}</p> : null}
+          <p className={styles.rowSecondaryText}>{people.length} pessoa(s) carregada(s)</p>
+        </article>
+
+        <article className={styles.integrationCard}>
+          <h3>Financeiro ERP</h3>
+          <p className={styles.textMuted}>Sincronizacao de medicoes aprovadas com contas a pagar.</p>
+          <p className={styles.metricValue}>{linkedMeasurements}</p>
+          <p className={styles.metricHint}>medicoes com documento financeiro vinculado</p>
+        </article>
+
+        <article className={styles.integrationCard}>
+          <h3>Compras ERP</h3>
+          <p className={styles.textMuted}>Requisicoes enviadas para a fila de compras.</p>
+          <p className={styles.metricValue}>{linkedProcurementRequests}</p>
+          <p className={styles.metricHint}>requisicoes vinculadas externamente</p>
+        </article>
+
+        <article className={styles.integrationCard}>
+          <h3>Contratos ERP</h3>
+          <p className={styles.textMuted}>Unidades vendidas com contrato e recebiveis vinculados.</p>
+          <p className={styles.metricValue}>{linkedUnitContracts}</p>
+          <p className={styles.metricHint}>unidades com contrato sincronizado</p>
+        </article>
+      </div>
     </div>
   )
 }
@@ -3377,7 +3529,7 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
   )
 }
 
-function ReserveUnitModal({ reserveForm, unit, onClose, onChange, onSubmit, loading }) {
+function ReserveUnitModal({ reserveForm, unit, people, onClose, onChange, onSubmit, loading }) {
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
       <section
@@ -3395,15 +3547,13 @@ function ReserveUnitModal({ reserveForm, unit, onClose, onChange, onSubmit, load
         </header>
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <div className={styles.formGrid}>
-            <label className={styles.filterControl}>
-              <span>Comprador (ID)*</span>
-              <input
-                type="text"
-                value={reserveForm.buyerPersonId}
-                onChange={(event) => onChange("buyerPersonId", event.target.value)}
-                required
-              />
-            </label>
+            <PersonIdInput
+              label="Comprador (ID)*"
+              value={reserveForm.buyerPersonId}
+              onChange={(value) => onChange("buyerPersonId", value)}
+              people={people}
+              required
+            />
             <label className={styles.filterControl}>
               <span>Expira em</span>
               <input
@@ -3427,7 +3577,7 @@ function ReserveUnitModal({ reserveForm, unit, onClose, onChange, onSubmit, load
   )
 }
 
-function SaleUnitModal({ saleForm, unit, onClose, onChange, onSubmit, loading }) {
+function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, loading }) {
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
       <section
@@ -3445,15 +3595,13 @@ function SaleUnitModal({ saleForm, unit, onClose, onChange, onSubmit, loading })
         </header>
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <div className={styles.formGrid}>
-            <label className={styles.filterControl}>
-              <span>Comprador (ID)*</span>
-              <input
-                type="text"
-                value={saleForm.buyerPersonId}
-                onChange={(event) => onChange("buyerPersonId", event.target.value)}
-                required
-              />
-            </label>
+            <PersonIdInput
+              label="Comprador (ID)*"
+              value={saleForm.buyerPersonId}
+              onChange={(value) => onChange("buyerPersonId", value)}
+              people={people}
+              required
+            />
             <label className={styles.filterControl}>
               <span>Preco da venda</span>
               <input
