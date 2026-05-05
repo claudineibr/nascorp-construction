@@ -10,7 +10,7 @@ from app.domain.events.contracts import EventEnvelope
 
 class JsonEventSerializer:
     def serialize(self, event: EventEnvelope) -> str:
-        return json.dumps(self._to_dict(event), separators=(",", ":"), sort_keys=True)
+        return json.dumps(self.to_dict(event=event), separators=(",", ":"), sort_keys=True)
 
     def deserialize(self, value: str) -> EventEnvelope:
         data = json.loads(value)
@@ -28,7 +28,7 @@ class JsonEventSerializer:
             payload=data["payload"],
         )
 
-    def _to_dict(self, event: EventEnvelope) -> dict[str, Any]:
+    def to_dict(self, *, event: EventEnvelope) -> dict[str, Any]:
         return {
             "event_id": str(event.event_id),
             "event_type": event.event_type,

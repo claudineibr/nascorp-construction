@@ -10,9 +10,9 @@ from app.domain.exceptions import (
     ConstructionInvalidStatusTransitionError,
     ConstructionNotFoundError,
 )
-from app.domain.events.constants import ConstructionEventType, ErpEventType
+from app.domain.events.constants import ConstructionEventType, ConstructionIntegrationMode, ErpEventType
 from app.domain.events.contracts import EventEnvelope
-from app.domain.services import ConstructionProjectService
+from app.domain.services import ConstructionIntegrationDispatcher, ConstructionProjectService
 from app.infrastructure.database.models import (
     ConstructionMeasurement,
     ConstructionProcurementRequest,
@@ -220,6 +220,18 @@ class FakeErpMeasurementClient:
                 "accounts_payable_status": "OPEN",
             },
         )
+
+    async def deliver_event(self, *, event: EventEnvelope) -> EventEnvelope:
+        if event.event_type == ConstructionEventType.MEASUREMENT_APPROVED:
+            return await self.create_accounts_payable_from_measurement(event=event)
+
+        if event.event_type == ConstructionEventType.UNIT_SOLD:
+            return await self.create_contract_and_receivables_from_unit_sale(event=event)
+
+        if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED:
+            return await self.create_procurement_demand_from_request(event=event)
+
+        raise AssertionError(f"Unsupported fake ERP event type: {event.event_type}")
 
     async def create_contract_and_receivables_from_unit_sale(self, *, event: EventEnvelope) -> EventEnvelope:
         self.events.append(event)
@@ -518,6 +530,51 @@ async def test_approve_measurement_creates_accounts_payable_once() -> None:
     assert approved_second.external_accounts_payable_id == approved_first.external_accounts_payable_id
     assert len(erp_client.events) == 1
     assert any(event.event_type == ConstructionEventType.MEASUREMENT_APPROVED for event in event_repository.outbox_events)
+
+
+@pytest.mark.asyncio
+async def test_async_integration_mode_records_measurement_without_http_delivery() -> None:
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    event_repository = FakeEventRepository()
+    erp_client = FakeErpMeasurementClient()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-033",
+        name="Async measurement project",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    repository.projects[(company_id, project.id)] = project
+    dispatcher = ConstructionIntegrationDispatcher(
+        event_repository=event_repository,
+        event_transport=erp_client,
+        integration_mode=ConstructionIntegrationMode.ASYNC_IN_MEMORY,
+    )
+    service = ConstructionProjectService(
+        repository=repository,
+        event_repository=event_repository,
+        erp_client=erp_client,
+        integration_dispatcher=dispatcher,
+    )
+
+    measurement = await service.create_measurement(
+        company_id=company_id,
+        project_id=project.id,
+        request=ConstructionMeasurementCreate(
+            code="MED-ASYNC-001",
+            measured_amount=Decimal("12500.50"),
+            due_date=date(2026, 5, 15),
+        ),
+    )
+    approved_measurement = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
+
+    assert approved_measurement.status == ConstructionMeasurementStatus.APPROVED
+    assert approved_measurement.external_accounts_payable_id is None
+    assert len(erp_client.events) == 0
+    assert len(event_repository.outbox_events) == 1
+    assert event_repository.outbox_events[0].event_type == ConstructionEventType.MEASUREMENT_APPROVED
 
 
 @pytest.mark.asyncio

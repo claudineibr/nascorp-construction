@@ -3,6 +3,8 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.domain.events.constants import ConstructionIntegrationMode
+
 
 API_ROOT = Path(__file__).resolve().parents[2]
 CONSTRUCTION_ROOT = API_ROOT.parents[1] if len(API_ROOT.parents) > 1 else API_ROOT
@@ -34,6 +36,10 @@ class Settings(BaseSettings):
     )
     event_queue_url: str | None = None
     dead_letter_queue_url: str | None = None
+    integration_mode: str = Field(
+        default=ConstructionIntegrationMode.SYNC_HTTP,
+        validation_alias=AliasChoices("CONSTRUCTION_INTEGRATION_MODE", "INTEGRATION_MODE"),
+    )
     erp_api_url: str = Field(default="http://127.0.0.1:8000", validation_alias=AliasChoices("CONSTRUCTION_ERP_API_URL", "ERP_API_URL"))
     erp_service_key: str | None = Field(default=None, validation_alias=AliasChoices("CONSTRUCTION_ERP_SERVICE_KEY", "CONSTRUCTION_ERP_API_KEY"))
     jwt_secret_key: str | None = Field(default=None, validation_alias=AliasChoices("CONSTRUCTION_JWT_SECRET_KEY", "SECRET_KEY"))
@@ -54,6 +60,16 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
 
         return value
+
+    @field_validator("integration_mode")
+    @classmethod
+    def normalize_integration_mode(cls, value: str) -> str:
+        normalized_value = value.strip().lower()
+        if normalized_value not in ConstructionIntegrationMode.ALL_MODES:
+            allowed_values = ", ".join(sorted(ConstructionIntegrationMode.ALL_MODES))
+            raise ValueError(f"Invalid construction integration mode. Allowed values: {allowed_values}.")
+
+        return normalized_value
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE_PATHS,

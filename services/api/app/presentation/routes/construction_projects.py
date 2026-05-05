@@ -11,6 +11,7 @@ from app.domain.permissions import ConstructionFeature, PermissionAction
 from app.domain.services import ConstructionProjectService
 from app.infrastructure.clients import ErpConstructionClient
 from app.infrastructure.database.session import get_session
+from app.infrastructure.events import create_construction_integration_dispatcher
 from app.infrastructure.repository.construction_repository import ConstructionRepository
 from app.infrastructure.repository.event_repository import EventRepository
 from app.schemas.construction import (
@@ -57,10 +58,15 @@ async def get_project_service(
     session: AsyncSession = Depends(get_session),
     erp_client: ErpConstructionClient = Depends(get_erp_construction_client),
 ) -> ConstructionProjectService:
+    event_repository = EventRepository(session=session)
     return ConstructionProjectService(
         repository=ConstructionRepository(session=session),
-        event_repository=EventRepository(session=session),
+        event_repository=event_repository,
         erp_client=erp_client,
+        integration_dispatcher=create_construction_integration_dispatcher(
+            event_repository=event_repository,
+            event_transport=erp_client,
+        ),
     )
 
 

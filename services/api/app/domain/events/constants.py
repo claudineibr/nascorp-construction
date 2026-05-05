@@ -5,6 +5,15 @@ class EventStatus:
     DEAD_LETTER = "dead_letter"
 
 
+class ConstructionIntegrationMode:
+    SYNC_HTTP = "sync_http"
+    ASYNC_IN_MEMORY = "async_in_memory"
+    ASYNC_SQS = "async_sqs"
+
+    ALL_MODES = {SYNC_HTTP, ASYNC_IN_MEMORY, ASYNC_SQS}
+    ASYNC_MODES = {ASYNC_IN_MEMORY, ASYNC_SQS}
+
+
 class EventProducer:
     CONSTRUCTION_API = "construction-api"
     ERP_API = "erp-api"

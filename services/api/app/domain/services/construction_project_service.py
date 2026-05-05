@@ -29,6 +29,7 @@ from app.domain.events.constants import (
     EventProducer,
 )
 from app.domain.events.contracts import EventEnvelope
+from app.domain.services.construction_integration_dispatcher import ConstructionIntegrationDispatchResult
 from app.infrastructure.database.models import (
     ConstructionBlock,
     ConstructionMeasurement,
@@ -78,6 +79,14 @@ class ErpMeasurementClient(Protocol):
     async def create_procurement_demand_from_request(self, *, event: EventEnvelope) -> EventEnvelope:
         raise NotImplementedError
 
+    async def deliver_event(self, *, event: EventEnvelope) -> EventEnvelope:
+        raise NotImplementedError
+
+
+class ConstructionEventDispatcher(Protocol):
+    async def dispatch(self, *, event: EventEnvelope):
+        raise NotImplementedError
+
 
 class ConstructionProjectService:
     def __init__(
@@ -85,10 +94,12 @@ class ConstructionProjectService:
         repository: ConstructionRepository,
         event_repository: EventRepository | None = None,
         erp_client: ErpMeasurementClient | None = None,
+        integration_dispatcher: ConstructionEventDispatcher | None = None,
     ) -> None:
         self.repository = repository
         self.event_repository = event_repository
         self.erp_client = erp_client
+        self.integration_dispatcher = integration_dispatcher
 
     async def create_project(
         self,
@@ -492,11 +503,9 @@ class ConstructionProjectService:
             installments=request.installments,
             actor_user_id=actor_user_id,
         )
-        if self.event_repository is not None:
-            await self.event_repository.add_outbox_event(event=sale_event)
-
-        if self.erp_client is not None and unit.external_contract_id is None:
-            erp_event = await self.erp_client.create_contract_and_receivables_from_unit_sale(event=sale_event)
+        dispatch_result = await self._dispatch_integration_event(event=sale_event)
+        if dispatch_result is not None and dispatch_result.response_event is not None:
+            erp_event = dispatch_result.response_event
             self._apply_contract_snapshot_from_payload(unit=unit, payload=erp_event.payload)
 
         await self.repository.commit()
@@ -927,11 +936,9 @@ class ConstructionProjectService:
             analytic_cost_center_id=project.analytic_cost_center_id,
             actor_user_id=actor_user_id,
         )
-        if self.event_repository is not None:
-            await self.event_repository.add_outbox_event(event=approval_event)
-
-        if self.erp_client is not None and measurement.external_accounts_payable_id is None:
-            erp_event = await self.erp_client.create_accounts_payable_from_measurement(event=approval_event)
+        dispatch_result = await self._dispatch_integration_event(event=approval_event)
+        if dispatch_result is not None and dispatch_result.response_event is not None:
+            erp_event = dispatch_result.response_event
             self._apply_accounts_payable_snapshot_from_payload(
                 measurement=measurement,
                 payload=erp_event.payload,
@@ -1272,17 +1279,29 @@ class ConstructionProjectService:
             procurement_request=procurement_request,
             actor_user_id=actor_user_id,
         )
+        procurement_request.status = ConstructionProcurementStatus.SENT_TO_ERP
+        dispatch_result = await self._dispatch_integration_event(event=request_event)
+        if dispatch_result is not None and dispatch_result.response_event is not None:
+            self._apply_procurement_snapshot_from_payload(
+                procurement_request=procurement_request,
+                payload=dispatch_result.response_event.payload,
+            )
+
+    async def _dispatch_integration_event(self, *, event: EventEnvelope):
+        if self.integration_dispatcher is not None:
+            return await self.integration_dispatcher.dispatch(event=event)
+
         if self.event_repository is not None:
-            await self.event_repository.add_outbox_event(event=request_event)
+            await self.event_repository.add_outbox_event(event=event)
 
         if self.erp_client is None:
-            return
+            return None
 
-        erp_event = await self.erp_client.create_procurement_demand_from_request(event=request_event)
-        procurement_request.status = ConstructionProcurementStatus.SENT_TO_ERP
-        self._apply_procurement_snapshot_from_payload(
-            procurement_request=procurement_request,
-            payload=erp_event.payload,
+        response_event = await self.erp_client.deliver_event(event=event)
+        return ConstructionIntegrationDispatchResult(
+            event=event,
+            response_event=response_event,
+            integration_mode="sync_http",
         )
 
     @staticmethod

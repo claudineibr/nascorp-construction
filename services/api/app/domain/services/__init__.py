@@ -1,5 +1,6 @@
 from app.domain.services.construction_cost_center_integration_service import ConstructionCostCenterIntegrationService
+from app.domain.services.construction_integration_dispatcher import ConstructionIntegrationDispatcher
 from app.domain.services.construction_project_service import ConstructionProjectService
 
 
-__all__ = ["ConstructionCostCenterIntegrationService", "ConstructionProjectService"]
+__all__ = ["ConstructionCostCenterIntegrationService", "ConstructionIntegrationDispatcher", "ConstructionProjectService"]
