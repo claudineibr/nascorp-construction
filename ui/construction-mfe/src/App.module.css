@@ -278,6 +278,29 @@
   gap: 0.5rem;
 }
 
+.scopeHeader {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  justify-content: space-between;
+  margin-bottom: 0.25rem;
+}
+
+.scopeContent {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+}
+
+.scopeMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-bottom: 0.15rem;
+}
+
 .tableHeaderRow {
   align-items: center;
   display: flex;
@@ -417,6 +440,17 @@
 .statuscompleted {
   background: var(--status-paid-bg);
   color: var(--status-paid-text);
+}
+
+.statusinactive,
+.statusplanned {
+  background: var(--status-open-bg);
+  color: var(--status-open-text);
+}
+
+.statusin_progress {
+  background: var(--status-overdue-bg);
+  color: var(--status-overdue-text);
 }
 
 .statuspaused {
@@ -566,6 +600,16 @@
 
   .rowActions {
     flex-direction: column;
+  }
+
+  .scopeHeader,
+  .scopeContent,
+  .scopeMeta {
+    width: 100%;
+  }
+
+  .scopeMeta {
+    align-items: flex-start;
   }
 
   .iconButton {

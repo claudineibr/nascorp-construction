@@ -19,6 +19,34 @@ const toProjectView = (project) => ({
   updatedAt: project.updated_at ?? null,
 })
 
+const toBlockView = (block) => ({
+  id: block.id,
+  companyId: block.company_id,
+  projectId: block.project_id,
+  code: block.code,
+  name: block.name,
+  status: block.status,
+  floorsCount: block.floors_count ?? null,
+  createdAt: block.created_at ?? null,
+  updatedAt: block.updated_at ?? null,
+})
+
+const toSchedulePhaseView = (phase) => ({
+  id: phase.id,
+  companyId: phase.company_id,
+  projectId: phase.project_id,
+  name: phase.name,
+  sequenceOrder: phase.sequence_order,
+  status: phase.status,
+  plannedStartDate: phase.planned_start_date ?? null,
+  plannedEndDate: phase.planned_end_date ?? null,
+  actualStartDate: phase.actual_start_date ?? null,
+  actualEndDate: phase.actual_end_date ?? null,
+  progressPercent: Number(phase.progress_percent ?? 0),
+  createdAt: phase.created_at ?? null,
+  updatedAt: phase.updated_at ?? null,
+})
+
 const toNullableString = (value) => {
   if (typeof value !== "string") {
     return null
@@ -56,6 +84,27 @@ const toProjectPayload = (projectData = {}) => ({
   start_date: toNullableString(projectData.startDate),
   expected_end_date: toNullableString(projectData.expectedEndDate),
   actual_end_date: toNullableString(projectData.actualEndDate),
+})
+
+const toBlockPayload = (blockData = {}) => ({
+  code: String(blockData.code ?? "").trim(),
+  name: String(blockData.name ?? "").trim(),
+  status: blockData.status,
+  floors_count: blockData.floorsCount === "" || blockData.floorsCount === null ? null : Number(blockData.floorsCount),
+})
+
+const toSchedulePhasePayload = (phaseData = {}) => ({
+  name: String(phaseData.name ?? "").trim(),
+  sequence_order: Number(phaseData.sequenceOrder),
+  status: phaseData.status,
+  planned_start_date: toNullableString(phaseData.plannedStartDate),
+  planned_end_date: toNullableString(phaseData.plannedEndDate),
+  actual_start_date: toNullableString(phaseData.actualStartDate),
+  actual_end_date: toNullableString(phaseData.actualEndDate),
+  progress_percent:
+    phaseData.progressPercent === "" || phaseData.progressPercent === null
+      ? 0
+      : Number(phaseData.progressPercent),
 })
 
 async function requestJson({ bridge, path, method = "GET", body = null }) {
@@ -161,4 +210,88 @@ export async function deleteConstructionProject({ bridge, projectId }) {
   })
 }
 
-export { requestJson, toProjectPayload, toProjectView }
+export async function listConstructionBlocks({ bridge, projectId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/blocks`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toBlockView),
+    total: payload.total ?? 0,
+  }
+}
+
+export async function createConstructionBlock({ bridge, projectId, blockData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/blocks`,
+    method: "POST",
+    body: toBlockPayload(blockData),
+  })
+
+  return toBlockView(payload)
+}
+
+export async function updateConstructionBlock({ bridge, blockId, blockData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/blocks/${blockId}`,
+    method: "PATCH",
+    body: toBlockPayload(blockData),
+  })
+
+  return toBlockView(payload)
+}
+
+export async function deleteConstructionBlock({ bridge, blockId }) {
+  await requestJson({
+    bridge,
+    path: `/v1/construction/blocks/${blockId}`,
+    method: "DELETE",
+  })
+}
+
+export async function listConstructionSchedulePhases({ bridge, projectId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/schedule-phases`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toSchedulePhaseView),
+    total: payload.total ?? 0,
+  }
+}
+
+export async function createConstructionSchedulePhase({ bridge, projectId, phaseData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/schedule-phases`,
+    method: "POST",
+    body: toSchedulePhasePayload(phaseData),
+  })
+
+  return toSchedulePhaseView(payload)
+}
+
+export async function updateConstructionSchedulePhase({ bridge, phaseId, phaseData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/schedule-phases/${phaseId}`,
+    method: "PATCH",
+    body: toSchedulePhasePayload(phaseData),
+  })
+
+  return toSchedulePhaseView(payload)
+}
+
+export async function deleteConstructionSchedulePhase({ bridge, phaseId }) {
+  await requestJson({
+    bridge,
+    path: `/v1/construction/schedule-phases/${phaseId}`,
+    method: "DELETE",
+  })
+}
+
+export { requestJson, toBlockPayload, toProjectPayload, toProjectView, toSchedulePhasePayload }
