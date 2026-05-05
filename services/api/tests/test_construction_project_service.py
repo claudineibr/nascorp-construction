@@ -133,6 +133,19 @@ class FakeConstructionRepository:
             None,
         )
 
+    async def get_next_measurement_sequence(self, *, company_id, project_id):
+        sequences = [
+            int(measurement.sequence_number)
+            for (stored_company_id, _), measurement in self.measurements.items()
+            if stored_company_id == company_id
+            and measurement.project_id == project_id
+            and measurement.sequence_number is not None
+        ]
+        if not sequences:
+            return 1
+
+        return max(sequences) + 1
+
     async def list_measurements(self, *, company_id, project_id):
         return [
             measurement
@@ -142,6 +155,20 @@ class FakeConstructionRepository:
 
     async def get_procurement_request(self, *, company_id, procurement_request_id):
         return self.procurement_requests.get((company_id, procurement_request_id))
+
+    async def get_procurement_request_by_code(self, *, company_id, project_id, code):
+        return next(
+            (
+                procurement_request
+                for (stored_company_id, _), procurement_request in self.procurement_requests.items()
+                if (
+                    stored_company_id == company_id
+                    and procurement_request.project_id == project_id
+                    and procurement_request.code == code
+                )
+            ),
+            None,
+        )
 
     async def list_procurement_requests(self, *, company_id, project_id):
         return [
