@@ -682,12 +682,42 @@ class ConstructionProjectService:
         if existing_measurement:
             raise ConstructionDuplicateCodeError(resource_name="Construction measurement", code=request.code)
 
+        sequence_number = request.sequence_number
+        if sequence_number is None:
+            sequence_number = await self.repository.get_next_measurement_sequence(
+                company_id=company_id,
+                project_id=project_id,
+            )
+
+        gross_amount = request.gross_amount or request.measured_amount
+        if gross_amount is None or gross_amount <= Decimal("0"):
+            raise ConstructionInvalidValueError(
+                message="Measurement gross amount is required.",
+                error_code="CONSTRUCTION_MEASUREMENT_GROSS_REQUIRED",
+            )
+
+        retentions_amount = request.retentions_amount or Decimal("0")
+        net_amount = request.net_amount or request.measured_amount or (gross_amount - retentions_amount)
+        if net_amount <= Decimal("0"):
+            raise ConstructionInvalidValueError(
+                message="Measurement net amount must be greater than zero.",
+                error_code="CONSTRUCTION_MEASUREMENT_NET_INVALID",
+            )
+
         measurement = ConstructionMeasurement(
             company_id=company_id,
             project_id=project_id,
             code=request.code.strip(),
+            sequence_number=sequence_number,
+            measurement_type=request.measurement_type.strip() if request.measurement_type else None,
+            competence_date=request.competence_date,
             description=request.description,
-            measured_amount=request.measured_amount,
+            gross_amount=gross_amount,
+            retentions_amount=retentions_amount,
+            net_amount=net_amount,
+            document_type=request.document_type.strip() if request.document_type else None,
+            document_number=request.document_number.strip() if request.document_number else None,
+            measured_amount=net_amount,
             due_date=request.due_date,
             supplier_person_id=request.supplier_person_id,
             status=ConstructionMeasurementStatus.DRAFT,
@@ -733,12 +763,46 @@ class ConstructionProjectService:
             if existing_measurement and existing_measurement.id != measurement.id:
                 raise ConstructionDuplicateCodeError(resource_name="Construction measurement", code=next_code)
 
+        gross_amount = updates.get("gross_amount", measurement.gross_amount)
+        retentions_amount = updates.get("retentions_amount", measurement.retentions_amount)
+        net_amount = updates.get("net_amount", measurement.net_amount)
+        measured_amount = updates.get("measured_amount", measurement.measured_amount)
+
+        if gross_amount is None:
+            gross_amount = measured_amount
+
+        if retentions_amount is None:
+            retentions_amount = Decimal("0")
+
+        if net_amount is None:
+            if "gross_amount" in updates or "retentions_amount" in updates:
+                net_amount = gross_amount - retentions_amount
+            else:
+                net_amount = measured_amount
+
+        if net_amount is None or net_amount <= Decimal("0"):
+            raise ConstructionInvalidValueError(
+                message="Measurement net amount must be greater than zero.",
+                error_code="CONSTRUCTION_MEASUREMENT_NET_INVALID",
+            )
+
+        updates["gross_amount"] = gross_amount
+        updates["retentions_amount"] = retentions_amount
+        updates["net_amount"] = net_amount
+        updates["measured_amount"] = net_amount
+
         self._apply_updates(entity=measurement, updates=updates)
         await self.repository.commit()
         await self.repository.refresh(measurement)
         return measurement
 
-    async def reject_measurement(self, *, company_id: UUID, measurement_id: UUID) -> ConstructionMeasurement:
+    async def reject_measurement(
+        self,
+        *,
+        company_id: UUID,
+        measurement_id: UUID,
+        reason: str | None = None,
+    ) -> ConstructionMeasurement:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
         if measurement.status == ConstructionMeasurementStatus.APPROVED:
             raise ConstructionInvalidValueError(
@@ -747,6 +811,7 @@ class ConstructionProjectService:
             )
 
         measurement.status = ConstructionMeasurementStatus.REJECTED
+        measurement.rejection_reason = reason.strip() if reason else None
         await self.repository.commit()
         await self.repository.refresh(measurement)
         return measurement
@@ -773,6 +838,7 @@ class ConstructionProjectService:
             )
 
         measurement.status = ConstructionMeasurementStatus.APPROVED
+        measurement.rejection_reason = None
         if measurement.approved_at is None:
             measurement.approved_at = datetime.now(tz=UTC)
 

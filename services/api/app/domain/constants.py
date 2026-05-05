@@ -38,8 +38,11 @@ class ConstructionSchedulePhaseStatus:
 
 class ConstructionMeasurementStatus:
     DRAFT = "draft"
+    SUBMITTED = "submitted"
+    IN_APPROVAL = "in_approval"
     APPROVED = "approved"
     REJECTED = "rejected"
+    PAID = "paid"
 
 
 class ConstructionProcurementStatus:
@@ -88,8 +91,11 @@ SCHEDULE_PHASE_STATUSES = {
 }
 MEASUREMENT_STATUSES = {
     ConstructionMeasurementStatus.DRAFT,
+    ConstructionMeasurementStatus.SUBMITTED,
+    ConstructionMeasurementStatus.IN_APPROVAL,
     ConstructionMeasurementStatus.APPROVED,
     ConstructionMeasurementStatus.REJECTED,
+    ConstructionMeasurementStatus.PAID,
 }
 PROCUREMENT_STATUSES = {
     ConstructionProcurementStatus.DRAFT,

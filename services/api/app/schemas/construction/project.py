@@ -222,18 +222,34 @@ class ConstructionSchedulePhaseListResponse(BaseModel):
 
 class ConstructionMeasurementCreate(BaseModel):
     code: str = Field(..., min_length=1, max_length=50)
+    sequence_number: int | None = Field(default=None, ge=1)
+    measurement_type: str | None = Field(default=None, max_length=30)
+    competence_date: date | None = None
     description: str | None = Field(default=None, max_length=1000)
-    measured_amount: Decimal = Field(..., gt=0)
+    gross_amount: Decimal | None = Field(default=None, gt=0)
+    retentions_amount: Decimal | None = Field(default=Decimal("0"), ge=0)
+    net_amount: Decimal | None = Field(default=None, gt=0)
+    measured_amount: Decimal | None = Field(default=None, gt=0)
     due_date: date
     supplier_person_id: UUID | None = None
+    document_type: str | None = Field(default=None, max_length=40)
+    document_number: str | None = Field(default=None, max_length=60)
 
 
 class ConstructionMeasurementUpdate(BaseModel):
     code: str | None = Field(default=None, min_length=1, max_length=50)
+    sequence_number: int | None = Field(default=None, ge=1)
+    measurement_type: str | None = Field(default=None, max_length=30)
+    competence_date: date | None = None
     description: str | None = Field(default=None, max_length=1000)
+    gross_amount: Decimal | None = Field(default=None, gt=0)
+    retentions_amount: Decimal | None = Field(default=None, ge=0)
+    net_amount: Decimal | None = Field(default=None, gt=0)
     measured_amount: Decimal | None = Field(default=None, gt=0)
     due_date: date | None = None
     supplier_person_id: UUID | None = None
+    document_type: str | None = Field(default=None, max_length=40)
+    document_number: str | None = Field(default=None, max_length=60)
 
 
 class ConstructionMeasurementReject(BaseModel):
@@ -247,11 +263,20 @@ class ConstructionMeasurementResponse(BaseModel):
     company_id: UUID
     project_id: UUID
     code: str
+    sequence_number: int | None = None
+    measurement_type: str | None = None
+    competence_date: date | None = None
     description: str | None = None
+    gross_amount: Decimal | None = None
+    retentions_amount: Decimal | None = None
+    net_amount: Decimal | None = None
+    document_type: str | None = None
+    document_number: str | None = None
     measured_amount: Decimal
     due_date: date
     supplier_person_id: UUID | None = None
     status: str
+    rejection_reason: str | None = None
     approved_at: datetime | None = None
     external_accounts_payable_id: UUID | None = None
     external_accounts_payable_status: str | None = None

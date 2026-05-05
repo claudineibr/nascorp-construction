@@ -208,6 +208,19 @@ class ConstructionRepository:
         )
         return result.scalars().first()
 
+    async def get_next_measurement_sequence(self, *, company_id: UUID, project_id: UUID) -> int:
+        result = await self.session.execute(
+            select(func.max(ConstructionMeasurement.sequence_number)).where(
+                ConstructionMeasurement.company_id == company_id,
+                ConstructionMeasurement.project_id == project_id,
+            )
+        )
+        current_sequence = result.scalar_one_or_none()
+        if current_sequence is None:
+            return 1
+
+        return int(current_sequence) + 1
+
     async def get_measurement_by_external_accounts_payable_id(
         self,
         *,

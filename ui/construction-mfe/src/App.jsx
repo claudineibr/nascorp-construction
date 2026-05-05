@@ -20,22 +20,28 @@ import {
 import styles from "./App.module.css"
 import { resolveConstructionBridge } from "./bridge/constructionBridge.js"
 import {
+  approveConstructionMeasurement,
   confirmConstructionUnitSale,
   createConstructionBlock,
+  createConstructionMeasurement,
   createConstructionProject,
   createConstructionSchedulePhase,
   createConstructionUnit,
   deleteConstructionBlock,
+  deleteConstructionMeasurement,
   deleteConstructionProject,
   deleteConstructionSchedulePhase,
   deleteConstructionUnit,
   listConstructionBlocks,
+  listConstructionMeasurements,
   listConstructionProjects,
   listConstructionSchedulePhases,
   listConstructionUnits,
+  rejectConstructionMeasurement,
   releaseConstructionUnitReservation,
   reserveConstructionUnit,
   updateConstructionBlock,
+  updateConstructionMeasurement,
   updateConstructionProject,
   updateConstructionSchedulePhase,
   updateConstructionUnit,
@@ -92,6 +98,17 @@ const unitStatusOptions = [
 ]
 
 const unitStatusLabel = Object.fromEntries(unitStatusOptions.map((option) => [option.value, option.label]))
+
+const measurementStatusOptions = [
+  { value: "draft", label: "Rascunho" },
+  { value: "submitted", label: "Enviada" },
+  { value: "in_approval", label: "Em aprovacao" },
+  { value: "approved", label: "Aprovada" },
+  { value: "rejected", label: "Rejeitada" },
+  { value: "paid", label: "Paga" },
+]
+
+const measurementStatusLabel = Object.fromEntries(measurementStatusOptions.map((option) => [option.value, option.label]))
 
 const domainTabs = [
   { id: "overview", label: "Visao geral", icon: Building2 },
@@ -170,6 +187,26 @@ const defaultSaleUnitForm = {
   salePrice: "",
   firstDueDate: "",
   installments: "1",
+}
+
+const defaultMeasurementForm = {
+  code: "",
+  sequenceNumber: "",
+  measurementType: "",
+  competenceDate: "",
+  description: "",
+  grossAmount: "",
+  retentionsAmount: "0",
+  netAmount: "",
+  measuredAmount: "",
+  dueDate: "",
+  supplierPersonId: "",
+  documentType: "",
+  documentNumber: "",
+}
+
+const defaultMeasurementRejectForm = {
+  reason: "",
 }
 
 function toFormProject(project) {
@@ -348,6 +385,23 @@ function requiredSaleFieldError(formSale) {
   return null
 }
 
+function requiredMeasurementFieldError(formMeasurement) {
+  if (!String(formMeasurement.code ?? "").trim()) {
+    return "Informe o codigo da medicao."
+  }
+
+  if (!String(formMeasurement.dueDate ?? "").trim()) {
+    return "Informe a data de vencimento."
+  }
+
+  const grossAmount = Number(formMeasurement.grossAmount || 0)
+  if (Number.isNaN(grossAmount) || grossAmount <= 0) {
+    return "Informe o valor bruto da medicao."
+  }
+
+  return null
+}
+
 export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const bridge = useMemo(() => providedBridge ?? resolveConstructionBridge(), [providedBridge])
   const [activeTab, setActiveTab] = useState("overview")
@@ -401,6 +455,18 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [saleUnitForm, setSaleUnitForm] = useState(defaultSaleUnitForm)
   const [saleTargetUnit, setSaleTargetUnit] = useState(null)
   const [submittingSale, setSubmittingSale] = useState(false)
+
+  const [measurements, setMeasurements] = useState([])
+  const [loadingMeasurements, setLoadingMeasurements] = useState(false)
+  const [measurementError, setMeasurementError] = useState(null)
+  const [isMeasurementModalOpen, setIsMeasurementModalOpen] = useState(false)
+  const [measurementModalMode, setMeasurementModalMode] = useState("create")
+  const [editingMeasurementId, setEditingMeasurementId] = useState(null)
+  const [measurementForm, setMeasurementForm] = useState(defaultMeasurementForm)
+  const [submittingMeasurement, setSubmittingMeasurement] = useState(false)
+  const [rejectMeasurementTarget, setRejectMeasurementTarget] = useState(null)
+  const [rejectMeasurementForm, setRejectMeasurementForm] = useState(defaultMeasurementRejectForm)
+  const [submittingMeasurementReject, setSubmittingMeasurementReject] = useState(false)
 
   const loadProjects = useCallback(async () => {
     setLoading(true)
@@ -568,6 +634,27 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }, [activeProjectId, bridge])
 
+  const loadMeasurements = useCallback(async () => {
+    if (!activeProjectId) {
+      setMeasurements([])
+      return
+    }
+
+    setLoadingMeasurements(true)
+    setMeasurementError(null)
+    try {
+      const result = await listConstructionMeasurements({
+        bridge,
+        projectId: activeProjectId,
+      })
+      setMeasurements(result.items)
+    } catch (requestError) {
+      setMeasurementError(requestError?.message ?? "Nao foi possivel carregar as medicoes.")
+    } finally {
+      setLoadingMeasurements(false)
+    }
+  }, [activeProjectId, bridge])
+
   useEffect(() => {
     if (activeTab !== "blocks") {
       return
@@ -592,6 +679,14 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     void loadUnits()
     void loadBlocks()
   }, [activeTab, loadBlocks, loadUnits])
+
+  useEffect(() => {
+    if (activeTab !== "measurements") {
+      return
+    }
+
+    void loadMeasurements()
+  }, [activeTab, loadMeasurements])
 
   const handleFilterChange = (field, value) => {
     setFilters((currentFilters) => ({ ...currentFilters, [field]: value }))
@@ -1079,6 +1174,178 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
+  const openCreateMeasurement = () => {
+    if (!activeProjectId) {
+      bridge?.feedback?.warning?.("Selecione uma obra antes de criar medicoes.")
+      return
+    }
+
+    const nextSequenceNumber = measurements.length
+      ? Math.max(...measurements.map((measurement) => Number(measurement.sequenceNumber || 0))) + 1
+      : 1
+
+    setMeasurementModalMode("create")
+    setEditingMeasurementId(null)
+    setMeasurementForm({
+      ...defaultMeasurementForm,
+      sequenceNumber: String(nextSequenceNumber),
+    })
+    setIsMeasurementModalOpen(true)
+  }
+
+  const openEditMeasurement = (measurement) => {
+    setMeasurementModalMode("edit")
+    setEditingMeasurementId(measurement.id)
+    setMeasurementForm({
+      code: measurement.code ?? "",
+      sequenceNumber: measurement.sequenceNumber === null || measurement.sequenceNumber === undefined
+        ? ""
+        : String(measurement.sequenceNumber),
+      measurementType: measurement.measurementType ?? "",
+      competenceDate: measurement.competenceDate ? String(measurement.competenceDate).slice(0, 10) : "",
+      description: measurement.description ?? "",
+      grossAmount: measurement.grossAmount === null || measurement.grossAmount === undefined ? "" : String(measurement.grossAmount),
+      retentionsAmount:
+        measurement.retentionsAmount === null || measurement.retentionsAmount === undefined
+          ? "0"
+          : String(measurement.retentionsAmount),
+      netAmount: measurement.netAmount === null || measurement.netAmount === undefined ? "" : String(measurement.netAmount),
+      measuredAmount:
+        measurement.measuredAmount === null || measurement.measuredAmount === undefined
+          ? ""
+          : String(measurement.measuredAmount),
+      dueDate: measurement.dueDate ? String(measurement.dueDate).slice(0, 10) : "",
+      supplierPersonId: measurement.supplierPersonId ?? "",
+      documentType: measurement.documentType ?? "",
+      documentNumber: measurement.documentNumber ?? "",
+    })
+    setIsMeasurementModalOpen(true)
+  }
+
+  const closeMeasurementModal = () => {
+    if (submittingMeasurement) {
+      return
+    }
+
+    setIsMeasurementModalOpen(false)
+    setEditingMeasurementId(null)
+    setMeasurementForm(defaultMeasurementForm)
+  }
+
+  const handleMeasurementFieldChange = (field, value) => {
+    setMeasurementForm((currentForm) => ({ ...currentForm, [field]: value }))
+  }
+
+  const handleMeasurementSubmit = async (event) => {
+    event.preventDefault()
+
+    const validationError = requiredMeasurementFieldError(measurementForm)
+    if (validationError) {
+      bridge?.feedback?.warning?.(validationError)
+      return
+    }
+
+    if (!activeProjectId) {
+      bridge?.feedback?.warning?.("Selecione uma obra antes de salvar medicoes.")
+      return
+    }
+
+    setSubmittingMeasurement(true)
+    try {
+      if (measurementModalMode === "create") {
+        await createConstructionMeasurement({
+          bridge,
+          projectId: activeProjectId,
+          measurementData: measurementForm,
+        })
+        bridge?.feedback?.success?.("Medicao criada com sucesso.")
+      } else if (editingMeasurementId) {
+        await updateConstructionMeasurement({
+          bridge,
+          measurementId: editingMeasurementId,
+          measurementData: measurementForm,
+        })
+        bridge?.feedback?.success?.("Medicao atualizada com sucesso.")
+      }
+
+      closeMeasurementModal()
+      await loadMeasurements()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel salvar a medicao.")
+    } finally {
+      setSubmittingMeasurement(false)
+    }
+  }
+
+  const handleDeleteMeasurement = async (measurement) => {
+    const confirmed = window.confirm(`Deseja remover a medicao ${measurement.code}?`)
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      await deleteConstructionMeasurement({ bridge, measurementId: measurement.id })
+      bridge?.feedback?.success?.("Medicao removida com sucesso.")
+      await loadMeasurements()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover a medicao.")
+    }
+  }
+
+  const handleApproveMeasurement = async (measurement) => {
+    try {
+      await approveConstructionMeasurement({ bridge, measurementId: measurement.id })
+      bridge?.feedback?.success?.("Medicao aprovada com sucesso.")
+      await loadMeasurements()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel aprovar a medicao.")
+    }
+  }
+
+  const openRejectMeasurement = (measurement) => {
+    setRejectMeasurementTarget(measurement)
+    setRejectMeasurementForm({
+      reason: measurement.rejectionReason ?? "",
+    })
+  }
+
+  const closeRejectMeasurementModal = () => {
+    if (submittingMeasurementReject) {
+      return
+    }
+
+    setRejectMeasurementTarget(null)
+    setRejectMeasurementForm(defaultMeasurementRejectForm)
+  }
+
+  const handleRejectMeasurementChange = (field, value) => {
+    setRejectMeasurementForm((currentForm) => ({ ...currentForm, [field]: value }))
+  }
+
+  const handleRejectMeasurementSubmit = async (event) => {
+    event.preventDefault()
+
+    if (!rejectMeasurementTarget) {
+      return
+    }
+
+    setSubmittingMeasurementReject(true)
+    try {
+      await rejectConstructionMeasurement({
+        bridge,
+        measurementId: rejectMeasurementTarget.id,
+        reason: rejectMeasurementForm.reason,
+      })
+      bridge?.feedback?.success?.("Medicao rejeitada com sucesso.")
+      closeRejectMeasurementModal()
+      await loadMeasurements()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel rejeitar a medicao.")
+    } finally {
+      setSubmittingMeasurementReject(false)
+    }
+  }
+
   return (
     <main className={styles.page} data-theme={bridge?.theme ?? "light"}>
       <section className={styles.pageHeader}>
@@ -1311,7 +1578,34 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         />
       )}
 
-      {activeTab === "measurements" && <PhasePlaceholder title="Medicoes" phase="Fase 5" />}
+      {activeTab === "measurements" && (
+        <DomainCard
+          title="Medicoes"
+          subtitle="Boletins de medicao com aprovacao, rejeicao e snapshot financeiro."
+          content={
+            <>
+              <ProjectScopeHeader
+                projects={projects}
+                activeProjectId={activeProjectId}
+                onProjectChange={setActiveProjectId}
+                selectedProject={selectedProject}
+                actionLabel="Nova medicao"
+                onAction={openCreateMeasurement}
+              />
+              <MeasurementsList
+                measurements={measurements}
+                loading={loadingMeasurements}
+                error={measurementError}
+                onRetry={loadMeasurements}
+                onEdit={openEditMeasurement}
+                onDelete={handleDeleteMeasurement}
+                onApprove={handleApproveMeasurement}
+                onReject={openRejectMeasurement}
+              />
+            </>
+          }
+        />
+      )}
       {activeTab === "procurement" && <PhasePlaceholder title="Requisicoes" phase="Fase 6" />}
       {activeTab === "integrations" && <PhasePlaceholder title="Integracoes" phase="Fase 7" />}
 
@@ -1368,6 +1662,28 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           onChange={handleSaleUnitChange}
           onSubmit={handleSaleUnitSubmit}
           loading={submittingSale}
+        />
+      ) : null}
+
+      {isMeasurementModalOpen ? (
+        <MeasurementModal
+          mode={measurementModalMode}
+          measurementForm={measurementForm}
+          onClose={closeMeasurementModal}
+          onChange={handleMeasurementFieldChange}
+          onSubmit={handleMeasurementSubmit}
+          loading={submittingMeasurement}
+        />
+      ) : null}
+
+      {rejectMeasurementTarget ? (
+        <RejectMeasurementModal
+          measurement={rejectMeasurementTarget}
+          rejectForm={rejectMeasurementForm}
+          onClose={closeRejectMeasurementModal}
+          onChange={handleRejectMeasurementChange}
+          onSubmit={handleRejectMeasurementSubmit}
+          loading={submittingMeasurementReject}
         />
       ) : null}
 
@@ -1821,6 +2137,308 @@ function ScheduleList({ phases, loading, error, onRetry, onEdit, onDelete }) {
           ))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+function MeasurementsList({ measurements, loading, error, onRetry, onEdit, onDelete, onApprove, onReject }) {
+  if (loading) {
+    return (
+      <div className={styles.tableWrapper} aria-busy="true">
+        <div className={styles.empty}>
+          <RefreshCw className={styles.spinIcon} size={16} />
+          Carregando medicoes...
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className={styles.tableWrapper}>
+        <div className={styles.empty}>
+          <span>{error}</span>
+          <button type="button" className={styles.secondaryButton} onClick={onRetry}>
+            <RefreshCw size={16} />
+            Tentar novamente
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (!measurements.length) {
+    return (
+      <div className={styles.tableWrapper}>
+        <div className={styles.empty}>Nenhuma medicao cadastrada para a obra selecionada.</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className={styles.tableWrapper}>
+      <table className={styles.table}>
+        <thead>
+          <tr>
+            <th>Codigo</th>
+            <th>Tipo</th>
+            <th>Status</th>
+            <th>Valor liquido</th>
+            <th>Vencimento</th>
+            <th>Financeiro ERP</th>
+            <th>Acoes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {measurements.map((measurement) => {
+            const canApprove = ["draft", "submitted", "in_approval", "rejected"].includes(measurement.status)
+            const canReject = ["draft", "submitted", "in_approval"].includes(measurement.status)
+            const canEdit = measurement.status !== "approved" && measurement.status !== "paid"
+            const canDelete = measurement.status !== "approved" && measurement.status !== "paid"
+
+            return (
+              <tr key={measurement.id}>
+                <td>
+                  <strong>{measurement.code}</strong>
+                  <div className={styles.rowSecondaryText}>Seq. {measurement.sequenceNumber ?? "-"}</div>
+                </td>
+                <td>
+                  {measurement.measurementType || "-"}
+                  <div className={styles.rowSecondaryText}>{measurement.documentType || "-"}</div>
+                </td>
+                <td>
+                  <span className={`${styles.statusPill} ${styles[`status${measurement.status}`] || ""}`}>
+                    {measurementStatusLabel[measurement.status] ?? measurement.status}
+                  </span>
+                </td>
+                <td>{formatMoney(measurement.netAmount ?? measurement.measuredAmount)}</td>
+                <td>{formatDate(measurement.dueDate)}</td>
+                <td>
+                  {measurement.externalAccountsPayableId ? (
+                    <div>
+                      <div className={styles.rowSecondaryText}>{measurement.externalAccountsPayableStatus || "ativo"}</div>
+                      <span className={styles.badgeSuccess}>Vinculado</span>
+                    </div>
+                  ) : (
+                    <span className={styles.badgeMuted}>Pendente</span>
+                  )}
+                </td>
+                <td>
+                  <div className={styles.rowActions}>
+                    {canEdit ? (
+                      <button type="button" className={styles.iconButton} onClick={() => onEdit(measurement)}>
+                        <Pencil size={14} />
+                        Editar
+                      </button>
+                    ) : null}
+                    {canApprove ? (
+                      <button type="button" className={styles.iconButton} onClick={() => onApprove(measurement)}>
+                        <CheckCircle size={14} />
+                        Aprovar
+                      </button>
+                    ) : null}
+                    {canReject ? (
+                      <button type="button" className={styles.iconButton} onClick={() => onReject(measurement)}>
+                        <Clock size={14} />
+                        Rejeitar
+                      </button>
+                    ) : null}
+                    {canDelete ? (
+                      <button
+                        type="button"
+                        className={`${styles.iconButton} ${styles.dangerButton}`}
+                        onClick={() => onDelete(measurement)}
+                      >
+                        <Trash2 size={14} />
+                        Excluir
+                      </button>
+                    ) : null}
+                  </div>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function MeasurementModal({ mode, measurementForm, onClose, onChange, onSubmit, loading }) {
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label={mode === "create" ? "Nova medicao" : "Editar medicao"}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>{mode === "create" ? "Nova medicao" : "Editar medicao"}</h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <div className={styles.formGrid}>
+            <label className={styles.filterControl}>
+              <span>Codigo*</span>
+              <input
+                type="text"
+                value={measurementForm.code}
+                onChange={(event) => onChange("code", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Sequencia</span>
+              <input
+                type="number"
+                min="1"
+                value={measurementForm.sequenceNumber}
+                onChange={(event) => onChange("sequenceNumber", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Tipo</span>
+              <input
+                type="text"
+                value={measurementForm.measurementType}
+                onChange={(event) => onChange("measurementType", event.target.value)}
+                placeholder="empreiteiro, fornecedor..."
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Competencia</span>
+              <input
+                type="date"
+                value={measurementForm.competenceDate}
+                onChange={(event) => onChange("competenceDate", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Fornecedor (ID)</span>
+              <input
+                type="text"
+                value={measurementForm.supplierPersonId}
+                onChange={(event) => onChange("supplierPersonId", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Vencimento*</span>
+              <input
+                type="date"
+                value={measurementForm.dueDate}
+                onChange={(event) => onChange("dueDate", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Valor bruto*</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={measurementForm.grossAmount}
+                onChange={(event) => onChange("grossAmount", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Retencoes</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={measurementForm.retentionsAmount}
+                onChange={(event) => onChange("retentionsAmount", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Valor liquido</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={measurementForm.netAmount}
+                onChange={(event) => onChange("netAmount", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Tipo documento</span>
+              <input
+                type="text"
+                value={measurementForm.documentType}
+                onChange={(event) => onChange("documentType", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Numero documento</span>
+              <input
+                type="text"
+                value={measurementForm.documentNumber}
+                onChange={(event) => onChange("documentNumber", event.target.value)}
+              />
+            </label>
+            <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
+              <span>Descricao</span>
+              <textarea
+                className={styles.textarea}
+                value={measurementForm.description}
+                onChange={(event) => onChange("description", event.target.value)}
+              />
+            </label>
+          </div>
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading}>
+              {loading ? "Salvando..." : mode === "create" ? "Criar medicao" : "Salvar alteracoes"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+function RejectMeasurementModal({ measurement, rejectForm, onClose, onChange, onSubmit, loading }) {
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Rejeitar medicao"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>Rejeitar medicao {measurement?.code}</h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <label className={styles.filterControl}>
+            <span>Motivo da rejeicao</span>
+            <textarea
+              className={styles.textarea}
+              value={rejectForm.reason}
+              onChange={(event) => onChange("reason", event.target.value)}
+            />
+          </label>
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading}>
+              {loading ? "Rejeitando..." : "Rejeitar medicao"}
+            </button>
+          </footer>
+        </form>
+      </section>
     </div>
   )
 }

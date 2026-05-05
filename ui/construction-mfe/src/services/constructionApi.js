@@ -72,6 +72,32 @@ const toUnitView = (unit) => ({
   updatedAt: unit.updated_at ?? null,
 })
 
+const toMeasurementView = (measurement) => ({
+  id: measurement.id,
+  companyId: measurement.company_id,
+  projectId: measurement.project_id,
+  code: measurement.code,
+  sequenceNumber: measurement.sequence_number ?? null,
+  measurementType: measurement.measurement_type ?? null,
+  competenceDate: measurement.competence_date ?? null,
+  description: measurement.description ?? "",
+  grossAmount: measurement.gross_amount ?? null,
+  retentionsAmount: measurement.retentions_amount ?? null,
+  netAmount: measurement.net_amount ?? null,
+  measuredAmount: measurement.measured_amount,
+  dueDate: measurement.due_date,
+  supplierPersonId: measurement.supplier_person_id ?? null,
+  documentType: measurement.document_type ?? null,
+  documentNumber: measurement.document_number ?? null,
+  status: measurement.status,
+  rejectionReason: measurement.rejection_reason ?? null,
+  approvedAt: measurement.approved_at ?? null,
+  externalAccountsPayableId: measurement.external_accounts_payable_id ?? null,
+  externalAccountsPayableStatus: measurement.external_accounts_payable_status ?? null,
+  createdAt: measurement.created_at ?? null,
+  updatedAt: measurement.updated_at ?? null,
+})
+
 const toNullableString = (value) => {
   if (typeof value !== "string") {
     return null
@@ -151,6 +177,22 @@ const toUnitPayload = (unitData = {}) => ({
   total_area: toNullableNumber(unitData.totalArea),
   sale_price: toNullableNumber(unitData.salePrice),
   status: unitData.status,
+})
+
+const toMeasurementPayload = (measurementData = {}) => ({
+  code: String(measurementData.code ?? "").trim(),
+  sequence_number: toNullableNumber(measurementData.sequenceNumber),
+  measurement_type: toNullableString(measurementData.measurementType),
+  competence_date: toNullableString(measurementData.competenceDate),
+  description: toNullableString(measurementData.description),
+  gross_amount: toNullableNumber(measurementData.grossAmount),
+  retentions_amount: toNullableNumber(measurementData.retentionsAmount),
+  net_amount: toNullableNumber(measurementData.netAmount),
+  measured_amount: toNullableNumber(measurementData.measuredAmount),
+  due_date: toNullableString(measurementData.dueDate),
+  supplier_person_id: toNullableString(measurementData.supplierPersonId),
+  document_type: toNullableString(measurementData.documentType),
+  document_number: toNullableString(measurementData.documentNumber),
 })
 
 async function requestJson({ bridge, path, method = "GET", body = null }) {
@@ -422,11 +464,77 @@ export async function confirmConstructionUnitSale({ bridge, unitId, saleData }) 
   return toUnitView(payload)
 }
 
+export async function listConstructionMeasurements({ bridge, projectId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/measurements`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toMeasurementView),
+    total: payload.total ?? 0,
+  }
+}
+
+export async function createConstructionMeasurement({ bridge, projectId, measurementData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/measurements`,
+    method: "POST",
+    body: toMeasurementPayload(measurementData),
+  })
+
+  return toMeasurementView(payload)
+}
+
+export async function updateConstructionMeasurement({ bridge, measurementId, measurementData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurements/${measurementId}`,
+    method: "PATCH",
+    body: toMeasurementPayload(measurementData),
+  })
+
+  return toMeasurementView(payload)
+}
+
+export async function approveConstructionMeasurement({ bridge, measurementId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurements/${measurementId}/approve`,
+    method: "POST",
+  })
+
+  return toMeasurementView(payload)
+}
+
+export async function rejectConstructionMeasurement({ bridge, measurementId, reason }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurements/${measurementId}/reject`,
+    method: "POST",
+    body: {
+      reason: toNullableString(reason),
+    },
+  })
+
+  return toMeasurementView(payload)
+}
+
+export async function deleteConstructionMeasurement({ bridge, measurementId }) {
+  await requestJson({
+    bridge,
+    path: `/v1/construction/measurements/${measurementId}`,
+    method: "DELETE",
+  })
+}
+
 export {
   requestJson,
   toBlockPayload,
   toProjectPayload,
   toProjectView,
   toSchedulePhasePayload,
+  toMeasurementPayload,
   toUnitPayload,
 }

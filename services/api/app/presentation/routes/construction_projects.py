@@ -437,9 +437,12 @@ async def reject_measurement(
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionMeasurementResponse:
-    del request_data
     try:
-        measurement = await service.reject_measurement(company_id=ctx.company_id, measurement_id=measurement_id)
+        measurement = await service.reject_measurement(
+            company_id=ctx.company_id,
+            measurement_id=measurement_id,
+            reason=request_data.reason,
+        )
         return ConstructionMeasurementResponse.model_validate(measurement)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc

@@ -453,6 +453,19 @@
   color: var(--status-overdue-text);
 }
 
+.statussubmitted,
+.statusin_approval,
+.statusrejected {
+  background: var(--status-overdue-bg);
+  color: var(--status-overdue-text);
+}
+
+.statusapproved,
+.statuspaid {
+  background: var(--status-paid-bg);
+  color: var(--status-paid-text);
+}
+
 .statuspaused {
   background: var(--status-overdue-bg);
   color: var(--status-overdue-text);
