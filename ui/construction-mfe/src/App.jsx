@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
+  BarChart3,
   Building2,
   ChevronLeft,
   CheckCircle,
@@ -137,6 +138,7 @@ const projectDetailTabs = [
   { id: "schedule", label: "Cronograma", icon: ListChecks },
   { id: "measurements", label: "Medicoes", icon: HandCoins },
   { id: "procurement", label: "Requisicoes", icon: PackageSearch },
+  { id: "reports", label: "Relatorios", icon: BarChart3 },
   { id: "integrations", label: "Integracoes", icon: FileCog },
 ]
 
@@ -1035,7 +1037,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }, [loadPersonSummaries, personSummaries.length, projectDetailTab, viewMode])
 
   useEffect(() => {
-    if (viewMode !== "projectDetail" || !["overview", "integrations"].includes(projectDetailTab)) {
+    if (viewMode !== "projectDetail" || !["overview", "reports", "integrations"].includes(projectDetailTab)) {
       return
     }
 
@@ -2323,6 +2325,20 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
             />
           ) : null}
 
+          {projectDetailTab === "reports" ? (
+            <DomainCard
+              title="Relatorios"
+              subtitle="Carteira, custos medidos, margem estimada e rastreabilidade por unidade."
+              content={
+                <ReportsPanel
+                  units={units}
+                  schedulePhases={schedulePhases}
+                  measurements={measurements}
+                />
+              }
+            />
+          ) : null}
+
           {projectDetailTab === "integrations" ? (
             <DomainCard
               title="Integracoes"
@@ -2575,6 +2591,147 @@ function OverviewPanel({ selectedProject, units, schedulePhases, measurements, p
           <p className={styles.textMuted}>Sem alertas criticos para a obra aberta.</p>
         )}
       </article>
+    </div>
+  )
+}
+
+function ReportsPanel({ units, schedulePhases, measurements }) {
+  const approvedMeasurements = measurements.filter((measurement) => ["approved", "paid"].includes(measurement.status))
+  const soldUnits = units.filter((unit) => ["sold", "delivered"].includes(unit.status))
+  const inventoryValue = units.reduce((total, unit) => total + Number(unit.salePrice ?? 0), 0)
+  const soldRevenue = soldUnits.reduce((total, unit) => total + Number(unit.salePrice ?? 0), 0)
+  const measuredCost = approvedMeasurements.reduce(
+    (total, measurement) => total + Number(measurement.netAmount ?? measurement.measuredAmount ?? 0),
+    0
+  )
+  const estimatedMargin = soldRevenue - measuredCost
+  const linkedReceivables = soldUnits.filter((unit) => unit.externalReceivableId).length
+  const linkedPayables = approvedMeasurements.filter((measurement) => measurement.externalAccountsPayableId).length
+  const phaseById = new Map(schedulePhases.map((phase) => [phase.id, phase]))
+  const unitRows = units.map((unit) => {
+    const unitMeasurements = approvedMeasurements.filter((measurement) => measurement.unitId === unit.id)
+    const unitMeasuredCost = unitMeasurements.reduce(
+      (total, measurement) => total + Number(measurement.netAmount ?? measurement.measuredAmount ?? 0),
+      0
+    )
+    const unitSalePrice = Number(unit.salePrice ?? 0)
+
+    return {
+      unit,
+      unitMeasuredCost,
+      estimatedMargin: unitSalePrice - unitMeasuredCost,
+      lastPhaseName: unitMeasurements[0]?.schedulePhaseId
+        ? phaseById.get(unitMeasurements[0].schedulePhaseId)?.name ?? "-"
+        : "-",
+    }
+  })
+  const phaseRows = schedulePhases.map((phase) => {
+    const phaseMeasurements = approvedMeasurements.filter((measurement) => measurement.schedulePhaseId === phase.id)
+    const phaseCost = phaseMeasurements.reduce(
+      (total, measurement) => total + Number(measurement.netAmount ?? measurement.measuredAmount ?? 0),
+      0
+    )
+
+    return {
+      phase,
+      phaseCost,
+      measurementsCount: phaseMeasurements.length,
+      linkedPayables: phaseMeasurements.filter((measurement) => measurement.externalAccountsPayableId).length,
+    }
+  })
+
+  const reportMetrics = [
+    { label: "Carteira total", value: formatCurrencyFromNumber(inventoryValue), hint: `${units.length} unidade(s)` },
+    { label: "Receita vendida", value: formatCurrencyFromNumber(soldRevenue), hint: `${soldUnits.length} venda(s)` },
+    { label: "Custo medido", value: formatCurrencyFromNumber(measuredCost), hint: `${linkedPayables} AP vinculada(s)` },
+    { label: "Margem estimada", value: formatCurrencyFromNumber(estimatedMargin), hint: `${linkedReceivables} AR vinculada(s)` },
+  ]
+
+  return (
+    <div className={styles.integrationPanel}>
+      <div className={styles.integrationGrid}>
+        {reportMetrics.map((item) => (
+          <article key={item.label} className={styles.integrationCard}>
+            <h3>{item.label}</h3>
+            <p className={styles.metricValue}>{item.value}</p>
+            <p className={styles.metricHint}>{item.hint}</p>
+          </article>
+        ))}
+      </div>
+
+      <div className={styles.tableHeaderRow}>
+        <h2>Resultado por unidade</h2>
+        <span className={styles.badgeMuted}>{unitRows.length} unidade(s)</span>
+      </div>
+      <div className={styles.tableWrapper}>
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>Unidade</th>
+              <th>Status</th>
+              <th>Receita</th>
+              <th>Custo medido</th>
+              <th>Margem estimada</th>
+              <th>Ultima etapa medida</th>
+              <th>ERP</th>
+            </tr>
+          </thead>
+          <tbody>
+            {unitRows.map(({ unit, unitMeasuredCost, estimatedMargin: unitEstimatedMargin, lastPhaseName }) => (
+              <tr key={unit.id}>
+                <td>
+                  <strong>{unit.code}</strong>
+                  <p className={styles.rowSecondaryText}>{unit.description || unit.typology || "Sem descricao"}</p>
+                </td>
+                <td>{statusLabel[unit.status] ?? unit.status}</td>
+                <td>{formatCurrencyFromNumber(unit.salePrice ?? 0)}</td>
+                <td>{formatCurrencyFromNumber(unitMeasuredCost)}</td>
+                <td>{formatCurrencyFromNumber(unitEstimatedMargin)}</td>
+                <td>{lastPhaseName}</td>
+                <td>
+                  {unit.externalReceivableId ? (
+                    <span className={styles.badgeSuccess}>AR vinculada</span>
+                  ) : (
+                    <span className={styles.badgeMuted}>Pendente</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className={styles.tableHeaderRow}>
+        <h2>Custo por etapa</h2>
+        <span className={styles.badgeMuted}>{phaseRows.length} etapa(s)</span>
+      </div>
+      <div className={styles.tableWrapper}>
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>Etapa</th>
+              <th>Progresso</th>
+              <th>Medicoes</th>
+              <th>Custo aprovado</th>
+              <th>AP vinculadas</th>
+            </tr>
+          </thead>
+          <tbody>
+            {phaseRows.map(({ phase, phaseCost, measurementsCount, linkedPayables: phaseLinkedPayables }) => (
+              <tr key={phase.id}>
+                <td>
+                  <strong>{phase.name}</strong>
+                  <p className={styles.rowSecondaryText}>Sequencia {phase.sequenceOrder}</p>
+                </td>
+                <td>{phase.progressPercent}%</td>
+                <td>{measurementsCount}</td>
+                <td>{formatCurrencyFromNumber(phaseCost)}</td>
+                <td>{phaseLinkedPayables}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
