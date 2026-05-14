@@ -173,6 +173,7 @@ class ConstructionUnitResponse(BaseModel):
     external_contract_status: str | None = None
     external_receivable_id: UUID | None = None
     external_receivable_status: str | None = None
+    analytic_cost_center_id: UUID | None = None
     status: str
     created_at: datetime
     updated_at: datetime

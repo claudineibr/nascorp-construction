@@ -21,6 +21,7 @@ class EventProducer:
 
 class ConstructionEventType:
     PROJECT_CREATED = "construction.project.created.v1"
+    UNIT_CREATED = "construction.unit.created.v1"
     MEASUREMENT_APPROVED = "construction.measurement.approved.v1"
     UNIT_SOLD = "construction.unit.sold.v1"
     PROCUREMENT_REQUESTED = "construction.procurement.requested.v1"

@@ -150,6 +150,7 @@ class ConstructionUnit(Base):
     external_contract_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     external_receivable_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     external_receivable_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    analytic_cost_center_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default=ConstructionUnitStatus.AVAILABLE)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

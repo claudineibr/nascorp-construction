@@ -12,18 +12,21 @@ from app.infrastructure.events.json_event_serializer import JsonEventSerializer
 class ErpConstructionClient:
     EVENT_ENDPOINTS = {
         ConstructionEventType.PROJECT_CREATED: "/v1/internal/construction/events/project-created",
+        ConstructionEventType.UNIT_CREATED: "/v1/internal/construction/events/unit-created",
         ConstructionEventType.MEASUREMENT_APPROVED: "/v1/internal/construction/events/measurement-approved",
         ConstructionEventType.UNIT_SOLD: "/v1/internal/construction/events/unit-sold",
         ConstructionEventType.PROCUREMENT_REQUESTED: "/v1/internal/construction/events/procurement-requested",
     }
     RESPONSE_EVENT_TYPES = {
         ConstructionEventType.PROJECT_CREATED: ErpEventType.COST_CENTER_CREATED,
+        ConstructionEventType.UNIT_CREATED: ErpEventType.COST_CENTER_CREATED,
         ConstructionEventType.MEASUREMENT_APPROVED: ErpEventType.ACCOUNTS_PAYABLE_CREATED,
         ConstructionEventType.UNIT_SOLD: ErpEventType.CONTRACT_RECEIVABLE_CREATED,
         ConstructionEventType.PROCUREMENT_REQUESTED: ErpEventType.PROCUREMENT_REQUEST_ACCEPTED,
     }
     RESPONSE_AGGREGATES = {
         ConstructionEventType.PROJECT_CREATED: ("construction_project_id", ConstructionAggregateType.PROJECT),
+        ConstructionEventType.UNIT_CREATED: ("construction_unit_id", ConstructionAggregateType.UNIT),
         ConstructionEventType.MEASUREMENT_APPROVED: ("construction_measurement_id", ConstructionAggregateType.MEASUREMENT),
         ConstructionEventType.UNIT_SOLD: ("construction_unit_id", ConstructionAggregateType.UNIT),
         ConstructionEventType.PROCUREMENT_REQUESTED: (

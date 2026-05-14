@@ -261,7 +261,12 @@ async def create_unit(
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionUnitResponse:
     try:
-        unit = await service.create_unit(company_id=ctx.company_id, project_id=project_id, request=request_data)
+        unit = await service.create_unit(
+            company_id=ctx.company_id,
+            project_id=project_id,
+            request=request_data,
+            actor_user_id=ctx.user_id,
+        )
         return ConstructionUnitResponse.model_validate(unit)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc

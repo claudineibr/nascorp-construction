@@ -374,8 +374,15 @@ class ConstructionProjectService:
         company_id: UUID,
         project_id: UUID,
         request: ConstructionUnitCreate,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionUnit:
-        await self.get_project(company_id=company_id, project_id=project_id)
+        project = await self.get_project(company_id=company_id, project_id=project_id)
+        if not project.synthetic_cost_center_id:
+            raise ConstructionInvalidValueError(
+                message="Project must have a synthetic cost center before creating construction units.",
+                error_code="CONSTRUCTION_PROJECT_COST_CENTER_REQUIRED",
+            )
+
         self._ensure_known_value(value=request.status, allowed_values=UNIT_STATUSES, field_name="status")
         await self._ensure_block_belongs_to_project(
             company_id=company_id,
@@ -405,6 +412,15 @@ class ConstructionProjectService:
             status=request.status,
         )
         await self.repository.add(unit)
+        unit_created_event = self._build_unit_created_event(
+            unit=unit,
+            project=project,
+            actor_user_id=actor_user_id,
+        )
+        dispatch_result = await self._dispatch_integration_event(event=unit_created_event)
+        if dispatch_result is not None and dispatch_result.response_event is not None:
+            self._apply_unit_cost_center_snapshot_from_event(unit=unit, event=dispatch_result.response_event)
+
         await self.repository.commit()
         await self.repository.refresh(unit)
         return unit
@@ -524,11 +540,10 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_UNIT_SALE_PRICE_REQUIRED",
             )
 
-        project = await self.get_project(company_id=company_id, project_id=unit.project_id)
-        if not project.analytic_cost_center_id:
+        if not unit.analytic_cost_center_id:
             raise ConstructionInvalidValueError(
-                message="Project must have an analytic cost center before confirming unit sale.",
-                error_code="CONSTRUCTION_PROJECT_COST_CENTER_REQUIRED",
+                message="Unit must have an analytic cost center before confirming sale.",
+                error_code="CONSTRUCTION_UNIT_COST_CENTER_REQUIRED",
             )
 
         unit.status = ConstructionUnitStatus.SOLD
@@ -539,7 +554,7 @@ class ConstructionProjectService:
 
         sale_event = self._build_unit_sold_event(
             unit=unit,
-            analytic_cost_center_id=project.analytic_cost_center_id,
+            analytic_cost_center_id=unit.analytic_cost_center_id,
             first_due_date=request.first_due_date,
             installments=request.installments,
             actor_user_id=actor_user_id,
@@ -1231,6 +1246,71 @@ class ConstructionProjectService:
             causation_id=None,
             payload=payload,
         )
+
+    @staticmethod
+    def _build_unit_created_event(
+        *,
+        unit: ConstructionUnit,
+        project: ConstructionProject,
+        actor_user_id: UUID | None,
+    ) -> EventEnvelope:
+        event_id = uuid4()
+        payload: dict[str, Any] = {
+            "construction_unit_id": str(unit.id),
+            "construction_project_id": str(unit.project_id),
+            "project_code": project.code,
+            "project_name": project.name,
+            "project_synthetic_cost_center_id": str(project.synthetic_cost_center_id),
+            "unit_code": unit.code,
+            "unit_description": unit.description,
+            "unit_type": unit.unit_type,
+            "block_id": str(unit.block_id) if unit.block_id else None,
+        }
+        if actor_user_id is not None:
+            payload["user_id"] = str(actor_user_id)
+
+        return EventEnvelope(
+            event_id=event_id,
+            event_type=ConstructionEventType.UNIT_CREATED,
+            event_version=1,
+            company_id=unit.company_id,
+            aggregate_id=unit.id,
+            aggregate_type=ConstructionAggregateType.UNIT,
+            occurred_at=datetime.now(tz=UTC),
+            producer=EventProducer.CONSTRUCTION_API,
+            correlation_id=event_id,
+            causation_id=None,
+            payload=payload,
+        )
+
+    @staticmethod
+    def _apply_unit_cost_center_snapshot_from_event(*, unit: ConstructionUnit, event: EventEnvelope) -> None:
+        if event.event_type != ErpEventType.COST_CENTER_CREATED:
+            raise ConstructionInvalidValueError(
+                message="Unsupported ERP event type for unit cost center confirmation.",
+                error_code="CONSTRUCTION_UNSUPPORTED_ERP_EVENT",
+            )
+
+        unit_id = ConstructionProjectService._read_uuid_payload(
+            payload=event.payload,
+            field_name="construction_unit_id",
+        )
+        if unit_id != unit.id:
+            raise ConstructionInvalidValueError(
+                message="Cost center confirmation does not belong to the created construction unit.",
+                error_code="CONSTRUCTION_COST_CENTER_UNIT_MISMATCH",
+            )
+
+        analytic_cost_center_id = ConstructionProjectService._read_uuid_payload(
+            payload=event.payload,
+            field_name="analytic_cost_center_id",
+        )
+        ConstructionProjectService._ensure_external_id_can_be_applied(
+            current_id=unit.analytic_cost_center_id,
+            next_id=analytic_cost_center_id,
+            field_name="analytic_cost_center_id",
+        )
+        unit.analytic_cost_center_id = analytic_cost_center_id
 
     @staticmethod
     def _apply_accounts_payable_snapshot_from_payload(
