@@ -256,6 +256,8 @@ const defaultSaleUnitForm = {
 
 const defaultMeasurementForm = {
   code: "",
+  unitId: "",
+  schedulePhaseId: "",
   sequenceNumber: "",
   measurementType: "",
   competenceDate: "",
@@ -528,6 +530,14 @@ function requiredSaleFieldError(formSale) {
 function requiredMeasurementFieldError(formMeasurement) {
   if (!String(formMeasurement.code ?? "").trim()) {
     return "Informe o codigo da medicao."
+  }
+
+  if (!String(formMeasurement.unitId ?? "").trim()) {
+    return "Informe a unidade da medicao."
+  }
+
+  if (!String(formMeasurement.schedulePhaseId ?? "").trim()) {
+    return "Informe a etapa da medicao."
   }
 
   if (!String(formMeasurement.dueDate ?? "").trim()) {
@@ -1567,6 +1577,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     setEditingMeasurementId(null)
     setMeasurementForm({
       ...defaultMeasurementForm,
+      unitId: units[0]?.id ?? "",
+      schedulePhaseId: schedulePhases[0]?.id ?? "",
       sequenceNumber: String(nextSequenceNumber),
     })
     setIsMeasurementModalOpen(true)
@@ -1581,6 +1593,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     setEditingMeasurementId(measurement.id)
     setMeasurementForm({
       code: measurement.code ?? "",
+      unitId: measurement.unitId ?? "",
+      schedulePhaseId: measurement.schedulePhaseId ?? "",
       sequenceNumber: measurement.sequenceNumber === null || measurement.sequenceNumber === undefined
         ? ""
         : String(measurement.sequenceNumber),
@@ -2165,6 +2179,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
               content={
                 <MeasurementsList
                   measurements={measurements}
+                  units={units}
+                  schedulePhases={schedulePhases}
                   loading={loadingMeasurements}
                   error={measurementError}
                   onRetry={loadMeasurements}
@@ -2307,6 +2323,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           mode={measurementModalMode}
           measurementForm={measurementForm}
           people={personSummaries}
+          units={units}
+          schedulePhases={schedulePhases}
           onClose={closeMeasurementModal}
           onChange={handleMeasurementFieldChange}
           onSubmit={handleMeasurementSubmit}
@@ -2900,7 +2918,25 @@ function ScheduleList({ phases, loading, error, onRetry, onEdit, onDelete }) {
   )
 }
 
-function MeasurementsList({ measurements, loading, error, onRetry, onEdit, onDelete, onApprove, onReject }) {
+function MeasurementsList({
+  measurements,
+  units,
+  schedulePhases,
+  loading,
+  error,
+  onRetry,
+  onEdit,
+  onDelete,
+  onApprove,
+  onReject,
+}) {
+  const unitNameById = useMemo(() => {
+    return Object.fromEntries(units.map((unit) => [unit.id, `${unit.code} - ${unit.description || unit.unitType}`]))
+  }, [units])
+  const phaseNameById = useMemo(() => {
+    return Object.fromEntries(schedulePhases.map((phase) => [phase.id, phase.name]))
+  }, [schedulePhases])
+
   if (loading) {
     return (
       <div className={styles.tableWrapper} aria-busy="true">
@@ -2940,6 +2976,7 @@ function MeasurementsList({ measurements, loading, error, onRetry, onEdit, onDel
         <thead>
           <tr>
             <th>Codigo</th>
+            <th>Unidade</th>
             <th>Tipo</th>
             <th>Status</th>
             <th>Valor liquido</th>
@@ -2960,6 +2997,12 @@ function MeasurementsList({ measurements, loading, error, onRetry, onEdit, onDel
                 <td>
                   <strong>{measurement.code}</strong>
                   <div className={styles.rowSecondaryText}>Seq. {measurement.sequenceNumber ?? "-"}</div>
+                </td>
+                <td>
+                  <strong>{measurement.unitId ? unitNameById[measurement.unitId] ?? measurement.unitId : "-"}</strong>
+                  <div className={styles.rowSecondaryText}>
+                    {measurement.schedulePhaseId ? phaseNameById[measurement.schedulePhaseId] ?? measurement.schedulePhaseId : "-"}
+                  </div>
                 </td>
                 <td>
                   {measurement.measurementType || "-"}
@@ -3283,7 +3326,7 @@ function RejectProcurementModal({ procurementRequest, rejectForm, onClose, onCha
   )
 }
 
-function MeasurementModal({ mode, measurementForm, people, onClose, onChange, onSubmit, loading }) {
+function MeasurementModal({ mode, measurementForm, people, units, schedulePhases, onClose, onChange, onSubmit, loading }) {
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
       <section
@@ -3318,6 +3361,32 @@ function MeasurementModal({ mode, measurementForm, people, onClose, onChange, on
                 value={measurementForm.sequenceNumber}
                 onChange={(event) => onChange("sequenceNumber", event.target.value)}
               />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Unidade*</span>
+              <select value={measurementForm.unitId} onChange={(event) => onChange("unitId", event.target.value)} required>
+                <option value="">Selecione</option>
+                {units.map((unit) => (
+                  <option key={unit.id} value={unit.id}>
+                    {unit.code} - {unit.description || unit.unitType}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={styles.filterControl}>
+              <span>Etapa*</span>
+              <select
+                value={measurementForm.schedulePhaseId}
+                onChange={(event) => onChange("schedulePhaseId", event.target.value)}
+                required
+              >
+                <option value="">Selecione</option>
+                {schedulePhases.map((phase) => (
+                  <option key={phase.id} value={phase.id}>
+                    {phase.sequenceOrder} - {phase.name}
+                  </option>
+                ))}
+              </select>
             </label>
             <label className={styles.filterControl}>
               <span>Tipo</span>

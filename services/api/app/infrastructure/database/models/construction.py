@@ -213,6 +213,18 @@ class ConstructionMeasurement(Base):
         nullable=False,
         index=True,
     )
+    unit_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_units.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    schedule_phase_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_schedule_phases.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     code: Mapped[str] = mapped_column(String(50), nullable=False)
     sequence_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     measurement_type: Mapped[str | None] = mapped_column(String(30), nullable=True)

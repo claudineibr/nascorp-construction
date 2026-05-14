@@ -17,6 +17,7 @@ from app.infrastructure.database.models import (
     ConstructionMeasurement,
     ConstructionProcurementRequest,
     ConstructionProject,
+    ConstructionSchedulePhase,
     ConstructionUnit,
 )
 from app.schemas.construction import (
@@ -34,6 +35,7 @@ class FakeConstructionRepository:
         self.projects: dict[tuple[object, object], ConstructionProject] = {}
         self.measurements: dict[tuple[object, object], ConstructionMeasurement] = {}
         self.units: dict[tuple[object, object], ConstructionUnit] = {}
+        self.schedule_phases: dict[tuple[object, object], ConstructionSchedulePhase] = {}
         self.procurement_requests: dict[tuple[object, object], ConstructionProcurementRequest] = {}
         self.commits = 0
 
@@ -106,6 +108,9 @@ class FakeConstructionRepository:
 
     async def get_unit(self, *, company_id, unit_id):
         return self.units.get((company_id, unit_id))
+
+    async def get_schedule_phase(self, *, company_id, phase_id):
+        return self.schedule_phases.get((company_id, phase_id))
 
     async def get_unit_by_code(self, *, company_id, project_id, code):
         return next(
@@ -402,6 +407,30 @@ def make_erp_accounts_payable_updated_event(
     )
 
 
+def seed_measurement_axis(*, repository: FakeConstructionRepository, company_id, project_id):
+    unit = ConstructionUnit(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project_id,
+        code="A-101",
+        unit_type="apartment",
+        analytic_cost_center_id=uuid4(),
+        status="available",
+    )
+    schedule_phase = ConstructionSchedulePhase(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project_id,
+        name="Fundacao",
+        sequence_order=1,
+        status="planned",
+        progress_percent=Decimal("0"),
+    )
+    repository.units[(company_id, unit.id)] = unit
+    repository.schedule_phases[(company_id, schedule_phase.id)] = schedule_phase
+    return unit, schedule_phase
+
+
 def make_erp_contract_status_updated_event(
     *,
     company_id,
@@ -686,6 +715,7 @@ async def test_approve_measurement_creates_accounts_payable_once() -> None:
         analytic_cost_center_id=uuid4(),
     )
     repository.projects[(company_id, project.id)] = project
+    unit, schedule_phase = seed_measurement_axis(repository=repository, company_id=company_id, project_id=project.id)
     service = ConstructionProjectService(
         repository=repository,
         event_repository=event_repository,
@@ -697,6 +727,8 @@ async def test_approve_measurement_creates_accounts_payable_once() -> None:
         project_id=project.id,
         request=ConstructionMeasurementCreate(
             code="MED-001",
+            unit_id=unit.id,
+            schedule_phase_id=schedule_phase.id,
             measured_amount=Decimal("12500.50"),
             due_date=date(2026, 5, 15),
         ),
@@ -710,6 +742,9 @@ async def test_approve_measurement_creates_accounts_payable_once() -> None:
     assert approved_first.external_accounts_payable_status == "OPEN"
     assert approved_second.external_accounts_payable_id == approved_first.external_accounts_payable_id
     assert len(erp_client.events) == 1
+    assert erp_client.events[0].payload["construction_unit_id"] == str(unit.id)
+    assert erp_client.events[0].payload["schedule_phase_id"] == str(schedule_phase.id)
+    assert erp_client.events[0].payload["analytic_cost_center_id"] == str(unit.analytic_cost_center_id)
     assert any(event.event_type == ConstructionEventType.MEASUREMENT_APPROVED for event in event_repository.outbox_events)
 
 
@@ -728,6 +763,7 @@ async def test_async_integration_mode_records_measurement_without_http_delivery(
         analytic_cost_center_id=uuid4(),
     )
     repository.projects[(company_id, project.id)] = project
+    unit, schedule_phase = seed_measurement_axis(repository=repository, company_id=company_id, project_id=project.id)
     dispatcher = ConstructionIntegrationDispatcher(
         event_repository=event_repository,
         event_transport=erp_client,
@@ -745,6 +781,8 @@ async def test_async_integration_mode_records_measurement_without_http_delivery(
         project_id=project.id,
         request=ConstructionMeasurementCreate(
             code="MED-ASYNC-001",
+            unit_id=unit.id,
+            schedule_phase_id=schedule_phase.id,
             measured_amount=Decimal("12500.50"),
             due_date=date(2026, 5, 15),
         ),
@@ -772,6 +810,7 @@ async def test_rejected_or_draft_measurement_does_not_create_accounts_payable() 
         analytic_cost_center_id=uuid4(),
     )
     repository.projects[(company_id, project.id)] = project
+    unit, schedule_phase = seed_measurement_axis(repository=repository, company_id=company_id, project_id=project.id)
     service = ConstructionProjectService(repository=repository, erp_client=erp_client)
 
     measurement = await service.create_measurement(
@@ -779,6 +818,8 @@ async def test_rejected_or_draft_measurement_does_not_create_accounts_payable() 
         project_id=project.id,
         request=ConstructionMeasurementCreate(
             code="MED-002",
+            unit_id=unit.id,
+            schedule_phase_id=schedule_phase.id,
             measured_amount=Decimal("1000.00"),
             due_date=date(2026, 5, 20),
         ),

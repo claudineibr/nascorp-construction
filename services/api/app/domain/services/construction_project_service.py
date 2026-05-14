@@ -819,6 +819,20 @@ class ConstructionProjectService:
         request: ConstructionMeasurementCreate,
     ) -> ConstructionMeasurement:
         await self.get_project(company_id=company_id, project_id=project_id)
+        unit = await self._get_unit(company_id=company_id, unit_id=request.unit_id)
+        if unit.project_id != project_id:
+            raise ConstructionInvalidValueError(
+                message="Unit does not belong to the informed construction project.",
+                error_code="CONSTRUCTION_UNIT_PROJECT_MISMATCH",
+            )
+
+        schedule_phase = await self._get_schedule_phase(company_id=company_id, phase_id=request.schedule_phase_id)
+        if schedule_phase.project_id != project_id:
+            raise ConstructionInvalidValueError(
+                message="Schedule phase does not belong to the informed construction project.",
+                error_code="CONSTRUCTION_SCHEDULE_PROJECT_MISMATCH",
+            )
+
         existing_measurement = await self.repository.get_measurement_by_code(
             company_id=company_id,
             project_id=project_id,
@@ -852,6 +866,8 @@ class ConstructionProjectService:
         measurement = ConstructionMeasurement(
             company_id=company_id,
             project_id=project_id,
+            unit_id=request.unit_id,
+            schedule_phase_id=request.schedule_phase_id,
             code=request.code.strip(),
             sequence_number=sequence_number,
             measurement_type=request.measurement_type.strip() if request.measurement_type else None,
@@ -898,6 +914,22 @@ class ConstructionProjectService:
             )
 
         updates = request.model_dump(exclude_unset=True)
+        if "unit_id" in updates:
+            unit = await self._get_unit(company_id=company_id, unit_id=updates["unit_id"])
+            if unit.project_id != measurement.project_id:
+                raise ConstructionInvalidValueError(
+                    message="Unit does not belong to the measurement construction project.",
+                    error_code="CONSTRUCTION_UNIT_PROJECT_MISMATCH",
+                )
+
+        if "schedule_phase_id" in updates:
+            schedule_phase = await self._get_schedule_phase(company_id=company_id, phase_id=updates["schedule_phase_id"])
+            if schedule_phase.project_id != measurement.project_id:
+                raise ConstructionInvalidValueError(
+                    message="Schedule phase does not belong to the measurement construction project.",
+                    error_code="CONSTRUCTION_SCHEDULE_PROJECT_MISMATCH",
+                )
+
         next_code = updates.get("code")
         if next_code is not None and next_code != measurement.code:
             existing_measurement = await self.repository.get_measurement_by_code(
@@ -975,11 +1007,23 @@ class ConstructionProjectService:
         ):
             return measurement
 
-        project = await self.get_project(company_id=company_id, project_id=measurement.project_id)
-        if not project.analytic_cost_center_id:
+        if not measurement.unit_id:
             raise ConstructionInvalidValueError(
-                message="Project must have an analytic cost center before approving measurements.",
-                error_code="CONSTRUCTION_PROJECT_COST_CENTER_REQUIRED",
+                message="Measurement must be linked to a construction unit before approval.",
+                error_code="CONSTRUCTION_MEASUREMENT_UNIT_REQUIRED",
+            )
+
+        if not measurement.schedule_phase_id:
+            raise ConstructionInvalidValueError(
+                message="Measurement must be linked to a schedule phase before approval.",
+                error_code="CONSTRUCTION_MEASUREMENT_PHASE_REQUIRED",
+            )
+
+        unit = await self._get_unit(company_id=company_id, unit_id=measurement.unit_id)
+        if not unit.analytic_cost_center_id:
+            raise ConstructionInvalidValueError(
+                message="Unit must have an analytic cost center before approving measurements.",
+                error_code="CONSTRUCTION_UNIT_COST_CENTER_REQUIRED",
             )
 
         measurement.status = ConstructionMeasurementStatus.APPROVED
@@ -989,7 +1033,7 @@ class ConstructionProjectService:
 
         approval_event = self._build_measurement_approved_event(
             measurement=measurement,
-            analytic_cost_center_id=project.analytic_cost_center_id,
+            analytic_cost_center_id=unit.analytic_cost_center_id,
             actor_user_id=actor_user_id,
         )
         dispatch_result = await self._dispatch_integration_event(event=approval_event)
@@ -1223,6 +1267,8 @@ class ConstructionProjectService:
         payload: dict[str, Any] = {
             "construction_measurement_id": str(measurement.id),
             "construction_project_id": str(measurement.project_id),
+            "construction_unit_id": str(measurement.unit_id),
+            "schedule_phase_id": str(measurement.schedule_phase_id),
             "measurement_code": measurement.code,
             "description": measurement.description,
             "measured_amount": ConstructionProjectService._format_event_decimal(value=measurement.measured_amount),

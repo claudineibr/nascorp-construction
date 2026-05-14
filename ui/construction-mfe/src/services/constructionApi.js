@@ -81,6 +81,8 @@ const toMeasurementView = (measurement) => ({
   id: measurement.id,
   companyId: measurement.company_id,
   projectId: measurement.project_id,
+  unitId: measurement.unit_id ?? null,
+  schedulePhaseId: measurement.schedule_phase_id ?? null,
   code: measurement.code,
   sequenceNumber: measurement.sequence_number ?? null,
   measurementType: measurement.measurement_type ?? null,
@@ -232,6 +234,8 @@ const toUnitPayload = (unitData = {}) => ({
 
 const toMeasurementPayload = (measurementData = {}) => ({
   code: String(measurementData.code ?? "").trim(),
+  unit_id: toNullableString(measurementData.unitId),
+  schedule_phase_id: toNullableString(measurementData.schedulePhaseId),
   sequence_number: toNullableNumber(measurementData.sequenceNumber),
   measurement_type: toNullableString(measurementData.measurementType),
   competence_date: toNullableString(measurementData.competenceDate),

@@ -243,6 +243,8 @@ class ConstructionSchedulePhaseListResponse(BaseModel):
 
 class ConstructionMeasurementCreate(BaseModel):
     code: str = Field(..., min_length=1, max_length=50)
+    unit_id: UUID
+    schedule_phase_id: UUID
     sequence_number: int | None = Field(default=None, ge=1)
     measurement_type: str | None = Field(default=None, max_length=30)
     competence_date: date | None = None
@@ -259,6 +261,8 @@ class ConstructionMeasurementCreate(BaseModel):
 
 class ConstructionMeasurementUpdate(BaseModel):
     code: str | None = Field(default=None, min_length=1, max_length=50)
+    unit_id: UUID | None = None
+    schedule_phase_id: UUID | None = None
     sequence_number: int | None = Field(default=None, ge=1)
     measurement_type: str | None = Field(default=None, max_length=30)
     competence_date: date | None = None
@@ -283,6 +287,8 @@ class ConstructionMeasurementResponse(BaseModel):
     id: UUID
     company_id: UUID
     project_id: UUID
+    unit_id: UUID | None = None
+    schedule_phase_id: UUID | None = None
     code: str
     sequence_number: int | None = None
     measurement_type: str | None = None
