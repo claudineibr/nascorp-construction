@@ -250,9 +250,60 @@ const defaultReserveUnitForm = {
 const defaultSaleUnitForm = {
   buyerPersonId: "",
   salePrice: "",
+  downPaymentAmount: "",
+  downPaymentDueDate: "",
+  downPaymentInstallments: "1",
+  directBuilderAmount: "",
   firstDueDate: "",
   installments: "1",
+  governmentSubsidyAmount: "",
+  governmentSubsidyDueDate: "",
+  governmentSubsidyInstallments: "1",
+  fgtsAmount: "",
+  fgtsDueDate: "",
+  fgtsInstallments: "1",
+  financingAmount: "",
+  financingDueDate: "",
+  financingInstallments: "1",
 }
+
+const salePaymentSourceDefinitions = [
+  {
+    sourceType: "down_payment",
+    label: "Entrada",
+    amountField: "downPaymentAmount",
+    dueDateField: "downPaymentDueDate",
+    installmentsField: "downPaymentInstallments",
+  },
+  {
+    sourceType: "direct_builder",
+    label: "Parcelas construtora",
+    amountField: "directBuilderAmount",
+    dueDateField: "firstDueDate",
+    installmentsField: "installments",
+  },
+  {
+    sourceType: "government_subsidy",
+    label: "Subsidio",
+    amountField: "governmentSubsidyAmount",
+    dueDateField: "governmentSubsidyDueDate",
+    installmentsField: "governmentSubsidyInstallments",
+  },
+  {
+    sourceType: "fgts",
+    label: "FGTS",
+    amountField: "fgtsAmount",
+    dueDateField: "fgtsDueDate",
+    installmentsField: "fgtsInstallments",
+  },
+  {
+    sourceType: "financing",
+    label: "Financiamento",
+    amountField: "financingAmount",
+    dueDateField: "financingDueDate",
+    installmentsField: "financingInstallments",
+  },
+]
 
 const defaultMeasurementForm = {
   code: "",
@@ -510,18 +561,66 @@ function requiredReserveFieldError(formReserve) {
   return null
 }
 
+function parseCurrencyFormValue(value) {
+  if (value === "" || value === null || value === undefined) {
+    return 0
+  }
+
+  const valueText = String(value).trim()
+  const normalizedValue = valueText.includes(",")
+    ? valueText.replace(/\s+/g, "").replace(/\./g, "").replace(",", ".").replace(/[^0-9.-]/g, "")
+    : valueText.replace(/[^0-9.-]/g, "")
+  const parsedValue = Number(normalizedValue)
+  return Number.isNaN(parsedValue) ? 0 : parsedValue
+}
+
+function buildSalePaymentSourcesFromForm(formSale) {
+  return salePaymentSourceDefinitions
+    .map((definition) => ({
+      sourceType: definition.sourceType,
+      amount: formSale[definition.amountField],
+      amountValue: parseCurrencyFormValue(formSale[definition.amountField]),
+      dueDate: formSale[definition.dueDateField],
+      installments: formSale[definition.installmentsField] || "1",
+      label: definition.label,
+    }))
+    .filter((paymentSource) => paymentSource.amountValue > 0)
+}
+
 function requiredSaleFieldError(formSale) {
   if (!String(formSale.buyerPersonId ?? "").trim()) {
     return "Informe a pessoa compradora para confirmar a venda."
   }
 
-  if (!String(formSale.firstDueDate ?? "").trim()) {
-    return "Informe a data do primeiro vencimento."
+  const paymentSources = buildSalePaymentSourcesFromForm(formSale)
+  if (paymentSources.length) {
+    for (const paymentSource of paymentSources) {
+      if (!String(paymentSource.dueDate ?? "").trim()) {
+        return `Informe o vencimento de ${paymentSource.label}.`
+      }
+
+      const sourceInstallments = Number(paymentSource.installments)
+      if (!Number.isInteger(sourceInstallments) || sourceInstallments <= 0 || sourceInstallments > 120) {
+        return `Parcelas de ${paymentSource.label} devem estar entre 1 e 120.`
+      }
+    }
+
+    const salePrice = parseCurrencyFormValue(formSale.salePrice)
+    const sourcesTotal = paymentSources.reduce((total, paymentSource) => total + paymentSource.amountValue, 0)
+    if (salePrice > 0 && Math.abs(sourcesTotal - salePrice) > 0.01) {
+      return "A soma da composicao financeira deve ser igual ao preco da venda."
+    }
+
+    return null
   }
 
   const installments = Number(formSale.installments)
   if (!Number.isInteger(installments) || installments <= 0 || installments > 120) {
     return "Parcelas devem estar entre 1 e 120."
+  }
+
+  if (!String(formSale.firstDueDate ?? "").trim()) {
+    return "Informe a data do primeiro vencimento."
   }
 
   return null
@@ -1511,6 +1610,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       ...defaultSaleUnitForm,
       buyerPersonId: unit.buyerPersonId ?? "",
       salePrice: unit.salePrice === null || unit.salePrice === undefined ? "" : String(unit.salePrice),
+      directBuilderAmount: unit.salePrice === null || unit.salePrice === undefined ? "" : String(unit.salePrice),
     })
     setIsSaleModalOpen(true)
   }
@@ -1544,10 +1644,14 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
     setSubmittingSale(true)
     try {
+      const paymentSources = buildSalePaymentSourcesFromForm(saleUnitForm)
       await confirmConstructionUnitSale({
         bridge,
         unitId: saleTargetUnit.id,
-        saleData: saleUnitForm,
+        saleData: {
+          ...saleUnitForm,
+          paymentSources,
+        },
       })
       bridge?.feedback?.success?.("Venda confirmada com sucesso.")
       closeSaleUnitModal()
@@ -4129,23 +4233,143 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Primeiro vencimento*</span>
+              <span>Entrada</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={saleForm.downPaymentAmount}
+                onChange={(event) => onChange("downPaymentAmount", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Vencimento entrada</span>
+              <input
+                type="date"
+                value={saleForm.downPaymentDueDate}
+                onChange={(event) => onChange("downPaymentDueDate", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Parcelas entrada</span>
+              <input
+                type="number"
+                min="1"
+                max="120"
+                value={saleForm.downPaymentInstallments}
+                onChange={(event) => onChange("downPaymentInstallments", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Parcelas construtora</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={saleForm.directBuilderAmount}
+                onChange={(event) => onChange("directBuilderAmount", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Vencimento construtora</span>
               <input
                 type="date"
                 value={saleForm.firstDueDate}
                 onChange={(event) => onChange("firstDueDate", event.target.value)}
-                required
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Parcelas*</span>
+              <span>Qtd. parcelas construtora</span>
               <input
                 type="number"
                 min="1"
                 max="120"
                 value={saleForm.installments}
                 onChange={(event) => onChange("installments", event.target.value)}
-                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Subsidio</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={saleForm.governmentSubsidyAmount}
+                onChange={(event) => onChange("governmentSubsidyAmount", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Vencimento subsidio</span>
+              <input
+                type="date"
+                value={saleForm.governmentSubsidyDueDate}
+                onChange={(event) => onChange("governmentSubsidyDueDate", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Parcelas subsidio</span>
+              <input
+                type="number"
+                min="1"
+                max="120"
+                value={saleForm.governmentSubsidyInstallments}
+                onChange={(event) => onChange("governmentSubsidyInstallments", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>FGTS</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={saleForm.fgtsAmount}
+                onChange={(event) => onChange("fgtsAmount", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Vencimento FGTS</span>
+              <input
+                type="date"
+                value={saleForm.fgtsDueDate}
+                onChange={(event) => onChange("fgtsDueDate", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Parcelas FGTS</span>
+              <input
+                type="number"
+                min="1"
+                max="120"
+                value={saleForm.fgtsInstallments}
+                onChange={(event) => onChange("fgtsInstallments", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Financiamento</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={saleForm.financingAmount}
+                onChange={(event) => onChange("financingAmount", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Vencimento financiamento</span>
+              <input
+                type="date"
+                value={saleForm.financingDueDate}
+                onChange={(event) => onChange("financingDueDate", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Parcelas financiamento</span>
+              <input
+                type="number"
+                min="1"
+                max="120"
+                value={saleForm.financingInstallments}
+                onChange={(event) => onChange("financingInstallments", event.target.value)}
               />
             </label>
           </div>

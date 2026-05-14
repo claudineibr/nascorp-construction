@@ -546,6 +546,8 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_UNIT_COST_CENTER_REQUIRED",
             )
 
+        payment_sources = self._build_sale_payment_sources(request=request, sale_price=sale_price)
+
         unit.status = ConstructionUnitStatus.SOLD
         unit.buyer_person_id = request.buyer_person_id
         unit.sale_price = sale_price
@@ -557,6 +559,7 @@ class ConstructionProjectService:
             analytic_cost_center_id=unit.analytic_cost_center_id,
             first_due_date=request.first_due_date,
             installments=request.installments,
+            payment_sources=payment_sources,
             actor_user_id=actor_user_id,
         )
         dispatch_result = await self._dispatch_integration_event(event=sale_event)
@@ -1376,12 +1379,51 @@ class ConstructionProjectService:
             measurement.external_accounts_payable_status = str(accounts_payable_status)
 
     @staticmethod
+    def _build_sale_payment_sources(
+        *,
+        request: ConstructionUnitSaleConfirmRequest,
+        sale_price: Decimal,
+    ) -> list[dict[str, Any]]:
+        if not request.payment_sources:
+            return [
+                {
+                    "source_type": "direct_builder",
+                    "amount": ConstructionProjectService._format_event_decimal(value=sale_price),
+                    "due_date": ConstructionProjectService._format_event_date(value=request.first_due_date),
+                    "installments": request.installments,
+                }
+            ]
+
+        total_amount = Decimal("0")
+        payment_sources: list[dict[str, Any]] = []
+        for payment_source in request.payment_sources:
+            source_amount = payment_source.amount.quantize(Decimal("0.01"))
+            total_amount += source_amount
+            payment_sources.append(
+                {
+                    "source_type": payment_source.source_type,
+                    "amount": ConstructionProjectService._format_event_decimal(value=source_amount),
+                    "due_date": ConstructionProjectService._format_event_date(value=payment_source.due_date),
+                    "installments": payment_source.installments,
+                }
+            )
+
+        if total_amount.quantize(Decimal("0.01")) != sale_price.quantize(Decimal("0.01")):
+            raise ConstructionInvalidValueError(
+                message="Payment source amounts must match the unit sale price.",
+                error_code="CONSTRUCTION_UNIT_PAYMENT_SOURCES_TOTAL_MISMATCH",
+            )
+
+        return payment_sources
+
+    @staticmethod
     def _build_unit_sold_event(
         *,
         unit: ConstructionUnit,
         analytic_cost_center_id: UUID,
         first_due_date: date,
         installments: int,
+        payment_sources: list[dict[str, Any]],
         actor_user_id: UUID | None,
     ) -> EventEnvelope:
         event_id = uuid4()
@@ -1393,6 +1435,7 @@ class ConstructionProjectService:
             "sale_price": ConstructionProjectService._format_event_decimal(value=unit.sale_price or Decimal("0")),
             "first_due_date": ConstructionProjectService._format_event_date(value=first_due_date),
             "installments": installments,
+            "payment_sources": payment_sources,
             "analytic_cost_center_id": str(analytic_cost_center_id),
         }
         if actor_user_id is not None:

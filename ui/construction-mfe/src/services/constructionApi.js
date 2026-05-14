@@ -259,6 +259,13 @@ const toProcurementPayload = (procurementData = {}) => ({
   supplier_person_id: toNullableString(procurementData.supplierPersonId),
 })
 
+const toSalePaymentSourcePayload = (paymentSource = {}) => ({
+  source_type: String(paymentSource.sourceType ?? "").trim(),
+  amount: toNullableNumber(paymentSource.amount),
+  due_date: toNullableString(paymentSource.dueDate),
+  installments: Number(paymentSource.installments || 1),
+})
+
 async function requestJson({ bridge, path, method = "GET", body = null, baseUrl = null }) {
   const apiBaseUrl = baseUrl || bridge?.constructionApiBaseUrl || DEFAULT_CONSTRUCTION_API_URL
   const headers = {
@@ -565,6 +572,8 @@ export async function releaseConstructionUnitReservation({ bridge, unitId }) {
 }
 
 export async function confirmConstructionUnitSale({ bridge, unitId, saleData }) {
+  const paymentSources = (saleData.paymentSources ?? []).map(toSalePaymentSourcePayload)
+  const firstPaymentDueDate = paymentSources[0]?.due_date ?? saleData.firstDueDate
   const payload = await requestJson({
     bridge,
     path: `/v1/construction/units/${unitId}/confirm-sale`,
@@ -572,8 +581,9 @@ export async function confirmConstructionUnitSale({ bridge, unitId, saleData }) 
     body: {
       buyer_person_id: saleData.buyerPersonId,
       sale_price: toNullableNumber(saleData.salePrice),
-      first_due_date: saleData.firstDueDate,
-      installments: Number(saleData.installments || 1),
+      first_due_date: firstPaymentDueDate,
+      installments: Number(saleData.installments || paymentSources[0]?.installments || 1),
+      payment_sources: paymentSources.length ? paymentSources : null,
     },
   })
 

@@ -928,6 +928,85 @@ async def test_confirm_unit_sale_creates_contract_snapshot_once() -> None:
     assert second_result.external_contract_id == first_result.external_contract_id
     assert len(erp_client.events) == 1
     assert any(event.event_type == ConstructionEventType.UNIT_SOLD for event in event_repository.outbox_events)
+    assert erp_client.events[0].payload["payment_sources"] == [
+        {
+            "source_type": "direct_builder",
+            "amount": "450000.00",
+            "due_date": "2026-06-10",
+            "installments": 12,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_confirm_unit_sale_dispatches_composed_payment_sources() -> None:
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    erp_client = FakeErpMeasurementClient()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-041",
+        name="Composed unit sales project",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    unit = ConstructionUnit(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        code="B-202",
+        unit_type="apartment",
+        sale_price=Decimal("500000.00"),
+        analytic_cost_center_id=uuid4(),
+        status="available",
+    )
+    repository.projects[(company_id, project.id)] = project
+    repository.units[(company_id, unit.id)] = unit
+    service = ConstructionProjectService(repository=repository, erp_client=erp_client)
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("500000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+        payment_sources=[
+            {
+                "source_type": "down_payment",
+                "amount": Decimal("50000.00"),
+                "due_date": date(2026, 6, 10),
+                "installments": 1,
+            },
+            {
+                "source_type": "direct_builder",
+                "amount": Decimal("150000.00"),
+                "due_date": date(2026, 7, 10),
+                "installments": 12,
+            },
+            {
+                "source_type": "fgts",
+                "amount": Decimal("30000.00"),
+                "due_date": date(2026, 8, 10),
+                "installments": 1,
+            },
+            {
+                "source_type": "financing",
+                "amount": Decimal("270000.00"),
+                "due_date": date(2026, 9, 10),
+                "installments": 1,
+            },
+        ],
+    )
+
+    result = await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert result.status == "sold"
+    assert erp_client.events[0].payload["payment_sources"] == [
+        {"source_type": "down_payment", "amount": "50000.00", "due_date": "2026-06-10", "installments": 1},
+        {"source_type": "direct_builder", "amount": "150000.00", "due_date": "2026-07-10", "installments": 12},
+        {"source_type": "fgts", "amount": "30000.00", "due_date": "2026-08-10", "installments": 1},
+        {"source_type": "financing", "amount": "270000.00", "due_date": "2026-09-10", "installments": 1},
+    ]
 
 
 @pytest.mark.asyncio

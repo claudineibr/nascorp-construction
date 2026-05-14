@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -189,11 +189,28 @@ class ConstructionUnitReserveRequest(BaseModel):
     reservation_expires_at: date | None = None
 
 
+ConstructionUnitSalePaymentSourceType = Literal[
+    "down_payment",
+    "direct_builder",
+    "government_subsidy",
+    "fgts",
+    "financing",
+]
+
+
+class ConstructionUnitSalePaymentSource(BaseModel):
+    source_type: ConstructionUnitSalePaymentSourceType
+    amount: Decimal = Field(..., gt=0)
+    due_date: date
+    installments: int = Field(default=1, ge=1, le=120)
+
+
 class ConstructionUnitSaleConfirmRequest(BaseModel):
     buyer_person_id: UUID
     sale_price: Decimal | None = Field(default=None, gt=0)
     first_due_date: date
     installments: int = Field(default=1, ge=1, le=120)
+    payment_sources: list[ConstructionUnitSalePaymentSource] | None = None
 
 
 class ConstructionSchedulePhaseCreate(BaseModel):
