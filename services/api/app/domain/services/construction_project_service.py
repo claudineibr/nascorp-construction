@@ -398,6 +398,7 @@ class ConstructionProjectService:
             raise ConstructionDuplicateCodeError(resource_name="Construction unit", code=request.code)
 
         unit = ConstructionUnit(
+            id=uuid4(),
             company_id=company_id,
             project_id=project_id,
             block_id=request.block_id,

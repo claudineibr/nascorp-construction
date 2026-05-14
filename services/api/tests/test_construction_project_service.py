@@ -622,6 +622,8 @@ async def test_create_unit_applies_sync_cost_center_confirmation() -> None:
     assert len(event_repository.outbox_events) == 1
     assert len(erp_client.events) == 1
     assert event_repository.outbox_events[0].event_type == ConstructionEventType.UNIT_CREATED
+    assert erp_client.events[0].aggregate_id == unit.id
+    assert erp_client.events[0].payload["construction_unit_id"] == str(unit.id)
     assert erp_client.events[0].payload["project_synthetic_cost_center_id"] == str(project_synthetic_cost_center_id)
     assert erp_client.events[0].payload["user_id"] == str(user_id)
     assert unit.analytic_cost_center_id == UUID(str(confirmation_event.payload["analytic_cost_center_id"]))
