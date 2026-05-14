@@ -2728,6 +2728,7 @@ function UnitsList({ units, blocks, loading, error, onRetry, onEdit, onDelete, o
             <th>Tipo</th>
             <th>Bloco</th>
             <th>Status</th>
+            <th>Centro unidade</th>
             <th>Preco</th>
             <th>Contrato ERP</th>
             <th>Acoes</th>
@@ -2737,7 +2738,7 @@ function UnitsList({ units, blocks, loading, error, onRetry, onEdit, onDelete, o
           {units.map((unit) => {
             const canReserve = unit.status === "available"
             const canRelease = unit.status === "reserved"
-            const canSale = unit.status === "available" || unit.status === "reserved"
+            const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
 
             return (
               <tr key={unit.id}>
@@ -2753,6 +2754,11 @@ function UnitsList({ units, blocks, loading, error, onRetry, onEdit, onDelete, o
                 <td>
                   <span className={`${styles.statusPill} ${styles[`status${unit.status}`] || ""}`}>
                     {unitStatusLabel[unit.status] ?? unit.status}
+                  </span>
+                </td>
+                <td>
+                  <span className={unit.analyticCostCenterId ? styles.badgeSuccess : styles.badgeMuted}>
+                    {unit.analyticCostCenterId ? "Vinculado" : "Pendente"}
                   </span>
                 </td>
                 <td>{formatMoney(unit.salePrice)}</td>

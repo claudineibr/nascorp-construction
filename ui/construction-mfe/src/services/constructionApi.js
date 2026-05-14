@@ -71,6 +71,7 @@ const toUnitView = (unit) => ({
   externalContractStatus: unit.external_contract_status ?? null,
   externalReceivableId: unit.external_receivable_id ?? null,
   externalReceivableStatus: unit.external_receivable_status ?? null,
+  analyticCostCenterId: unit.analytic_cost_center_id ?? null,
   status: unit.status,
   createdAt: unit.created_at ?? null,
   updatedAt: unit.updated_at ?? null,
