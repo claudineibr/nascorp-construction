@@ -135,6 +135,7 @@ class ConstructionUnit(Base):
         index=True,
     )
     code: Mapped[str] = mapped_column(String(50), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     unit_type: Mapped[str] = mapped_column(String(80), nullable=False)
     typology: Mapped[str | None] = mapped_column(String(80), nullable=True)
     floor: Mapped[str | None] = mapped_column(String(30), nullable=True)

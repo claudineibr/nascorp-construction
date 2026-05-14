@@ -126,6 +126,7 @@ class ConstructionBlockListResponse(BaseModel):
 
 class ConstructionUnitCreate(BaseModel):
     code: str = Field(..., min_length=1, max_length=50)
+    description: str | None = None
     unit_type: str = Field(..., min_length=1, max_length=80)
     typology: str | None = Field(default=None, max_length=80)
     block_id: UUID | None = None
@@ -138,6 +139,7 @@ class ConstructionUnitCreate(BaseModel):
 
 class ConstructionUnitUpdate(BaseModel):
     code: str | None = Field(default=None, min_length=1, max_length=50)
+    description: str | None = None
     unit_type: str | None = Field(default=None, min_length=1, max_length=80)
     typology: str | None = Field(default=None, max_length=80)
     block_id: UUID | None = None
@@ -156,6 +158,7 @@ class ConstructionUnitResponse(BaseModel):
     project_id: UUID
     block_id: UUID | None = None
     code: str
+    description: str | None = None
     unit_type: str
     typology: str | None = None
     floor: str | None = None

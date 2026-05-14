@@ -56,6 +56,7 @@ const toUnitView = (unit) => ({
   projectId: unit.project_id,
   blockId: unit.block_id ?? null,
   code: unit.code,
+  description: unit.description ?? "",
   unitType: unit.unit_type,
   typology: unit.typology ?? "",
   floor: unit.floor ?? "",
@@ -203,12 +204,21 @@ const toNullableNumber = (value) => {
     return null
   }
 
-  const parsedValue = Number(value)
+  if (typeof value === "number") {
+    return Number.isNaN(value) ? null : value
+  }
+
+  const valueText = String(value).trim()
+  const normalizedValue = valueText.includes(",")
+    ? valueText.replace(/\s+/g, "").replace(/\./g, "").replace(",", ".").replace(/[^0-9.-]/g, "")
+    : valueText.replace(/[^0-9.-]/g, "")
+  const parsedValue = Number(normalizedValue)
   return Number.isNaN(parsedValue) ? null : parsedValue
 }
 
 const toUnitPayload = (unitData = {}) => ({
   code: String(unitData.code ?? "").trim(),
+  description: toNullableString(unitData.description),
   unit_type: String(unitData.unitType ?? "").trim(),
   typology: toNullableString(unitData.typology),
   block_id: toNullableString(unitData.blockId),

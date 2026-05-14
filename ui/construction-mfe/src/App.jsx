@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import {
   Building2,
+  ChevronLeft,
   CheckCircle,
   Clock,
   FileCog,
@@ -129,9 +130,8 @@ const procurementStatusOptions = [
 
 const procurementStatusLabel = Object.fromEntries(procurementStatusOptions.map((option) => [option.value, option.label]))
 
-const domainTabs = [
+const projectDetailTabs = [
   { id: "overview", label: "Visao geral", icon: Building2 },
-  { id: "projects", label: "Projetos", icon: Layers3 },
   { id: "blocks", label: "Blocos/Torres", icon: Route },
   { id: "units", label: "Unidades", icon: Home },
   { id: "schedule", label: "Cronograma", icon: ListChecks },
@@ -148,6 +148,34 @@ const dateFormatter = new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" })
 const moneyFormatter = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" })
 
 const stripNonDigits = (value) => String(value ?? "").replace(/\D/g, "")
+
+const formatCurrencyInput = (value = "") => {
+  const digits = stripNonDigits(value)
+  if (!digits) {
+    return ""
+  }
+
+  const cents = Number.parseInt(digits.replace(/^0+/, "") || "0", 10)
+  if (Number.isNaN(cents)) {
+    return ""
+  }
+
+  return (cents / 100).toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
+
+const formatCurrencyFromNumber = (value) => {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return ""
+  }
+
+  return Number(value).toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+}
 
 const maskZip = (value) => {
   const digits = stripNonDigits(value).slice(0, 8)
@@ -197,8 +225,13 @@ const defaultSchedulePhaseForm = {
   progressPercent: "0",
 }
 
+const DEFAULT_UNIT_DESCRIPTION = "UNIDADE"
+const MAX_UNIT_BATCH_SIZE = 200
+
 const defaultUnitForm = {
   code: "",
+  description: DEFAULT_UNIT_DESCRIPTION,
+  quantity: "1",
   unitType: "",
   typology: "",
   blockId: "",
@@ -301,15 +334,54 @@ function toFormSchedulePhase(phase) {
 function toFormUnit(unit) {
   return {
     code: unit.code ?? "",
+    description: unit.description ?? "",
+    quantity: "1",
     unitType: unit.unitType ?? "",
     typology: unit.typology ?? "",
     blockId: unit.blockId ?? "",
     floor: unit.floor ?? "",
     privateArea: unit.privateArea === null || unit.privateArea === undefined ? "" : String(unit.privateArea),
     totalArea: unit.totalArea === null || unit.totalArea === undefined ? "" : String(unit.totalArea),
-    salePrice: unit.salePrice === null || unit.salePrice === undefined ? "" : String(unit.salePrice),
+    salePrice: formatCurrencyFromNumber(unit.salePrice),
     status: unit.status ?? "available",
   }
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function getNextUnitSequence(unitDescription, currentUnits) {
+  const escapedDescription = escapeRegExp(unitDescription)
+  const sequencePattern = new RegExp(`^${escapedDescription}\\s*-\\s*(\\d+)$`, "i")
+  const highestSequence = currentUnits.reduce((highestValue, unit) => {
+    const unitLabel = unit.description || unit.code || ""
+    const match = String(unitLabel).match(sequencePattern)
+    if (!match) {
+      return highestValue
+    }
+
+    const sequenceNumber = Number(match[1])
+    return Number.isInteger(sequenceNumber) ? Math.max(highestValue, sequenceNumber) : highestValue
+  }, 0)
+
+  return highestSequence + 1
+}
+
+function buildUnitCreateForms(formUnit, currentUnits) {
+  const unitQuantity = Number(formUnit.quantity)
+  const unitDescription = String(formUnit.description || DEFAULT_UNIT_DESCRIPTION).trim()
+  const firstSequence = getNextUnitSequence(unitDescription, currentUnits)
+
+  return Array.from({ length: unitQuantity }, (_, index) => {
+    const generatedDescription = `${unitDescription} - ${firstSequence + index}`
+
+    return {
+      ...formUnit,
+      code: generatedDescription,
+      description: generatedDescription,
+    }
+  })
 }
 
 function toApiProject(formProject) {
@@ -403,8 +475,17 @@ function requiredScheduleFieldError(formPhase) {
   return null
 }
 
-function requiredUnitFieldError(formUnit) {
-  if (!String(formUnit.code ?? "").trim()) {
+function requiredUnitFieldError(formUnit, mode) {
+  if (mode === "create") {
+    const unitQuantity = Number(formUnit.quantity)
+    if (!Number.isInteger(unitQuantity) || unitQuantity < 1 || unitQuantity > MAX_UNIT_BATCH_SIZE) {
+      return `Informe uma quantidade entre 1 e ${MAX_UNIT_BATCH_SIZE}.`
+    }
+
+    if (!String(formUnit.description ?? "").trim()) {
+      return "Informe a descricao base das unidades."
+    }
+  } else if (!String(formUnit.code ?? "").trim()) {
     return "Informe o codigo da unidade."
   }
 
@@ -476,7 +557,8 @@ function requiredProcurementFieldError(formProcurement) {
 
 export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const bridge = useMemo(() => providedBridge ?? resolveConstructionBridge(), [providedBridge])
-  const [activeTab, setActiveTab] = useState("overview")
+  const [viewMode, setViewMode] = useState("projects")
+  const [projectDetailTab, setProjectDetailTab] = useState("overview")
   const [activeProjectId, setActiveProjectId] = useState(null)
 
   const [filters, setFilters] = useState(defaultFilters)
@@ -582,12 +664,14 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   useEffect(() => {
     if (!projects.length) {
       setActiveProjectId(null)
+      setViewMode("projects")
       return
     }
 
-    const projectExists = projects.some((project) => project.id === activeProjectId)
-    if (!activeProjectId || !projectExists) {
-      setActiveProjectId(projects[0].id)
+    const projectExists = activeProjectId && projects.some((project) => project.id === activeProjectId)
+    if (activeProjectId && !projectExists) {
+      setActiveProjectId(null)
+      setViewMode("projects")
     }
   }, [activeProjectId, projects])
 
@@ -641,14 +725,14 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         tone: "warning",
       },
       {
-        label: "Unidades",
-        value: units.length,
-        hint: "na obra selecionada",
-        icon: Home,
+        label: "Filtradas",
+        value: visibleProjects.length,
+        hint: "obras na lista atual",
+        icon: Layers3,
         tone: "muted",
       },
     ]
-  }, [projects, totalProjects, units.length, visibleProjects.length])
+  }, [projects, totalProjects, visibleProjects.length])
 
   const hasActiveFilters = Object.values(filters).some(Boolean)
 
@@ -788,40 +872,40 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   )
 
   useEffect(() => {
-    if (activeTab !== "blocks") {
+    if (viewMode !== "projectDetail" || projectDetailTab !== "blocks") {
       return
     }
 
     void loadBlocks()
-  }, [activeTab, loadBlocks])
+  }, [projectDetailTab, loadBlocks, viewMode])
 
   useEffect(() => {
-    if (activeTab !== "schedule") {
+    if (viewMode !== "projectDetail" || projectDetailTab !== "schedule") {
       return
     }
 
     void loadSchedulePhases()
-  }, [activeTab, loadSchedulePhases])
+  }, [projectDetailTab, loadSchedulePhases, viewMode])
 
   useEffect(() => {
-    if (activeTab !== "units") {
+    if (viewMode !== "projectDetail" || projectDetailTab !== "units") {
       return
     }
 
     void loadUnits()
     void loadBlocks()
-  }, [activeTab, loadBlocks, loadUnits])
+  }, [projectDetailTab, loadBlocks, loadUnits, viewMode])
 
   useEffect(() => {
-    if (activeTab !== "measurements") {
+    if (viewMode !== "projectDetail" || projectDetailTab !== "measurements") {
       return
     }
 
     void loadMeasurements()
-  }, [activeTab, loadMeasurements])
+  }, [projectDetailTab, loadMeasurements, viewMode])
 
   useEffect(() => {
-    if (activeTab !== "procurement") {
+    if (viewMode !== "projectDetail" || projectDetailTab !== "procurement") {
       return
     }
 
@@ -829,20 +913,20 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     if (!personSummaries.length) {
       void loadPersonSummaries()
     }
-  }, [activeTab, loadPersonSummaries, loadProcurementRequests, personSummaries.length])
+  }, [loadPersonSummaries, loadProcurementRequests, personSummaries.length, projectDetailTab, viewMode])
 
   useEffect(() => {
-    if (!["units", "measurements"].includes(activeTab)) {
+    if (viewMode !== "projectDetail" || !["units", "measurements"].includes(projectDetailTab)) {
       return
     }
 
     if (!personSummaries.length) {
       void loadPersonSummaries()
     }
-  }, [activeTab, loadPersonSummaries, personSummaries.length])
+  }, [loadPersonSummaries, personSummaries.length, projectDetailTab, viewMode])
 
   useEffect(() => {
-    if (!["overview", "integrations"].includes(activeTab)) {
+    if (viewMode !== "projectDetail" || !["overview", "integrations"].includes(projectDetailTab)) {
       return
     }
 
@@ -859,12 +943,13 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     ])
   }, [
     activeProjectId,
-    activeTab,
     loadBlocks,
     loadMeasurements,
     loadProcurementRequests,
     loadSchedulePhases,
     loadUnits,
+    projectDetailTab,
+    viewMode,
   ])
 
   const handleFilterChange = (field, value) => {
@@ -880,6 +965,28 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }
 
   const clearFilters = () => setFilters(defaultFilters)
+
+  const openProjectDetail = (project) => {
+    setActiveProjectId(project.id)
+    setProjectDetailTab("overview")
+    setViewMode("projectDetail")
+  }
+
+  const closeProjectDetail = () => {
+    setProjectDetailTab("overview")
+    setViewMode("projects")
+  }
+
+  const reloadProjectDetail = async () => {
+    await Promise.all([
+      loadProjects(),
+      loadBlocks(),
+      loadSchedulePhases(),
+      loadUnits(),
+      loadMeasurements(),
+      loadProcurementRequests(),
+    ])
+  }
 
   const openCreateProject = () => {
     if (!personSummaries.length) {
@@ -971,7 +1078,13 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       const projectData = toApiProject(projectForm)
       if (projectModalMode === "create") {
         const createdProject = await createConstructionProject({ bridge, projectData })
+        setProjects((currentProjects) => [
+          createdProject,
+          ...currentProjects.filter((project) => project.id !== createdProject.id),
+        ])
         setActiveProjectId(createdProject.id)
+        setProjectDetailTab("overview")
+        setViewMode("projectDetail")
         bridge?.feedback?.success?.("Obra criada com sucesso.")
       } else if (editingProjectId) {
         await updateConstructionProject({
@@ -1000,6 +1113,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     try {
       await deleteConstructionProject({ bridge, projectId: project.id })
       bridge?.feedback?.success?.("Obra removida com sucesso.")
+      if (activeProjectId === project.id) {
+        setActiveProjectId(null)
+        setProjectDetailTab("overview")
+        setViewMode("projects")
+      }
       await loadProjects()
     } catch (requestError) {
       bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover a obra.")
@@ -1008,7 +1126,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const openCreateBlock = () => {
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Selecione uma obra antes de criar blocos.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de criar blocos.")
       return
     }
 
@@ -1049,7 +1167,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
 
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Selecione uma obra antes de salvar blocos.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de salvar blocos.")
       return
     }
 
@@ -1097,7 +1215,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const openCreateSchedulePhase = () => {
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Selecione uma obra antes de criar fases.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de criar fases.")
       return
     }
 
@@ -1145,7 +1263,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
 
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Selecione uma obra antes de salvar fases.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de salvar fases.")
       return
     }
 
@@ -1193,7 +1311,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const openCreateUnit = () => {
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Selecione uma obra antes de criar unidades.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de criar unidades.")
       return
     }
 
@@ -1227,26 +1345,40 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const handleUnitSubmit = async (event) => {
     event.preventDefault()
 
-    const validationError = requiredUnitFieldError(unitForm)
+    const validationError = requiredUnitFieldError(unitForm, unitModalMode)
     if (validationError) {
       bridge?.feedback?.warning?.(validationError)
       return
     }
 
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Selecione uma obra antes de salvar unidades.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de salvar unidades.")
       return
     }
 
     setSubmittingUnit(true)
     try {
       if (unitModalMode === "create") {
-        await createConstructionUnit({
-          bridge,
-          projectId: activeProjectId,
-          unitData: unitForm,
-        })
-        bridge?.feedback?.success?.("Unidade criada com sucesso.")
+        const unitCreateForms = buildUnitCreateForms(unitForm, units)
+        const oversizedUnit = unitCreateForms.find((unitCreateForm) => unitCreateForm.code.length > 50)
+        if (oversizedUnit) {
+          bridge?.feedback?.warning?.("A descricao gerada deve ter ate 50 caracteres.")
+          return
+        }
+
+        for (const unitCreateForm of unitCreateForms) {
+          await createConstructionUnit({
+            bridge,
+            projectId: activeProjectId,
+            unitData: unitCreateForm,
+          })
+        }
+
+        bridge?.feedback?.success?.(
+          unitCreateForms.length === 1
+            ? "Unidade criada com sucesso."
+            : `${unitCreateForms.length} unidades criadas com sucesso.`
+        )
       } else if (editingUnitId) {
         await updateConstructionUnit({
           bridge,
@@ -1419,7 +1551,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const openCreateMeasurement = () => {
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Selecione uma obra antes de criar medicoes.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de criar medicoes.")
       return
     }
 
@@ -1497,7 +1629,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
 
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Selecione uma obra antes de salvar medicoes.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de salvar medicoes.")
       return
     }
 
@@ -1604,7 +1736,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const openCreateProcurement = () => {
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Selecione uma obra antes de criar requisicoes.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de criar requisicoes.")
       return
     }
 
@@ -1653,7 +1785,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
 
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Selecione uma obra antes de salvar requisicoes.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de salvar requisicoes.")
       return
     }
 
@@ -1796,16 +1928,18 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
             </nav>
             <h1 className={styles.title}>Obras</h1>
           </div>
-          <div className={styles.heroActions}>
-            <button type="button" className={styles.primaryButton} onClick={openCreateProject}>
-              <Plus size={18} />
-              Nova obra
-            </button>
-            <button type="button" className={styles.secondaryButton} onClick={loadProjects} disabled={loading}>
-              <RefreshCw size={16} className={loading ? styles.spinIcon : undefined} />
-              Recarregar
-            </button>
-          </div>
+          {viewMode === "projects" ? (
+            <div className={styles.heroActions}>
+              <button type="button" className={styles.primaryButton} onClick={openCreateProject}>
+                <Plus size={18} />
+                Nova obra
+              </button>
+              <button type="button" className={styles.secondaryButton} onClick={loadProjects} disabled={loading}>
+                <RefreshCw size={16} className={loading ? styles.spinIcon : undefined} />
+                Recarregar
+              </button>
+            </div>
+          ) : null}
         </div>
 
         <div className={styles.metricsGrid}>
@@ -1827,272 +1961,283 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         </div>
       </section>
 
-      <section className={styles.tabCard}>
-        <div className={styles.tabList}>
-          {domainTabs.map((tab) => {
-            const Icon = tab.icon
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                className={`${styles.tabButton} ${activeTab === tab.id ? styles.tabButtonActive : ""}`}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                <Icon size={16} />
-                {tab.label}
-              </button>
-            )
-          })}
-        </div>
-      </section>
+      {viewMode === "projects" ? (
+        <>
+          <section className={styles.filtersCard}>
+            <div className={styles.filtersGrid}>
+              <label className={styles.filterControl}>
+                <span>Buscar</span>
+                <input
+                  type="text"
+                  value={filters.search}
+                  onChange={(event) => handleFilterChange("search", event.target.value)}
+                  placeholder="Codigo, nome ou CNPJ"
+                />
+              </label>
+              <label className={styles.filterControl}>
+                <span>Status</span>
+                <select value={filters.status} onChange={(event) => handleFilterChange("status", event.target.value)}>
+                  <option value="">Todos</option>
+                  {statusOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className={styles.filterControl}>
+                <span>Inicio inicial</span>
+                <input
+                  type="date"
+                  value={filters.startDate}
+                  onChange={(event) => handleFilterChange("startDate", event.target.value)}
+                />
+              </label>
+              <label className={styles.filterControl}>
+                <span>Inicio final</span>
+                <input
+                  type="date"
+                  value={filters.endDate}
+                  onChange={(event) => handleFilterChange("endDate", event.target.value)}
+                />
+              </label>
+            </div>
+            {hasActiveFilters ? (
+              <div className={styles.filtersFooter}>
+                <button type="button" className={styles.secondaryButton} onClick={clearFilters}>
+                  Limpar filtros
+                </button>
+              </div>
+            ) : null}
+          </section>
 
-      <section className={styles.filtersCard}>
-        <div className={styles.filtersGrid}>
-          <label className={styles.filterControl}>
-            <span>Buscar</span>
-            <input
-              type="text"
-              value={filters.search}
-              onChange={(event) => handleFilterChange("search", event.target.value)}
-              placeholder="Codigo, nome ou CNPJ"
+          <DomainCard
+            title="Cadastro de obras"
+            subtitle="Abra uma obra para gerenciar blocos, unidades, cronograma, medicoes e requisicoes."
+            content={
+              <ProjectList
+                projects={visibleProjects}
+                loading={loading}
+                error={error}
+                onRetry={loadProjects}
+                onOpenDetails={openProjectDetail}
+                onEdit={openEditProject}
+                onDelete={handleDeleteProject}
+              />
+            }
+            footer={
+              <span className={styles.paginationSummary}>
+                Mostrando {visibleProjects.length} de {totalProjects} obras
+              </span>
+            }
+          />
+        </>
+      ) : null}
+
+      {viewMode === "projectDetail" && selectedProject ? (
+        <>
+          <ProjectDetailHeader
+            project={selectedProject}
+            onBack={closeProjectDetail}
+            onEdit={openEditProject}
+            onRefresh={reloadProjectDetail}
+            loading={loading}
+          />
+
+          <section className={styles.tabCard}>
+            <div className={styles.tabList}>
+              {projectDetailTabs.map((tab) => {
+                const Icon = tab.icon
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    className={`${styles.tabButton} ${projectDetailTab === tab.id ? styles.tabButtonActive : ""}`}
+                    onClick={() => setProjectDetailTab(tab.id)}
+                  >
+                    <Icon size={16} />
+                    {tab.label}
+                  </button>
+                )
+              })}
+            </div>
+          </section>
+
+          {projectDetailTab === "overview" ? (
+            <DomainCard
+              title="Resumo operacional"
+              subtitle="Indicadores da obra aberta com comercial, medicoes e suprimentos."
+              content={
+                <OverviewPanel
+                  selectedProject={selectedProject}
+                  units={units}
+                  schedulePhases={schedulePhases}
+                  measurements={measurements}
+                  procurementRequests={procurementRequests}
+                />
+              }
             />
-          </label>
-          <label className={styles.filterControl}>
-            <span>Status</span>
-            <select value={filters.status} onChange={(event) => handleFilterChange("status", event.target.value)}>
-              <option value="">Todos</option>
-              {statusOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className={styles.filterControl}>
-            <span>Inicio inicial</span>
-            <input
-              type="date"
-              value={filters.startDate}
-              onChange={(event) => handleFilterChange("startDate", event.target.value)}
+          ) : null}
+
+          {projectDetailTab === "blocks" ? (
+            <DomainCard
+              title="Blocos/Torres"
+              subtitle="CRUD da obra aberta com codigo, status e total de pavimentos."
+              action={
+                <button type="button" className={styles.primaryButton} onClick={openCreateBlock}>
+                  <Plus size={16} />
+                  Novo bloco
+                </button>
+              }
+              content={
+                <BlocksList
+                  blocks={blocks}
+                  loading={loadingBlocks}
+                  error={blockError}
+                  onRetry={loadBlocks}
+                  onEdit={openEditBlock}
+                  onDelete={handleDeleteBlock}
+                />
+              }
             />
-          </label>
-          <label className={styles.filterControl}>
-            <span>Inicio final</span>
-            <input
-              type="date"
-              value={filters.endDate}
-              onChange={(event) => handleFilterChange("endDate", event.target.value)}
+          ) : null}
+
+          {projectDetailTab === "units" ? (
+            <DomainCard
+              title="Unidades"
+              subtitle="Inventario comercial com reserva, liberacao e confirmacao de venda."
+              action={
+                <button type="button" className={styles.primaryButton} onClick={openCreateUnit}>
+                  <Plus size={16} />
+                  Nova unidade
+                </button>
+              }
+              content={
+                <UnitsList
+                  units={units}
+                  blocks={blocks}
+                  loading={loadingUnits}
+                  error={unitError}
+                  onRetry={loadUnits}
+                  onEdit={openEditUnit}
+                  onDelete={handleDeleteUnit}
+                  onReserve={openReserveUnitModal}
+                  onRelease={handleReleaseUnit}
+                  onSale={openSaleUnitModal}
+                />
+              }
             />
-          </label>
-        </div>
-        {hasActiveFilters ? (
-          <div className={styles.filtersFooter}>
-            <button type="button" className={styles.secondaryButton} onClick={clearFilters}>
-              Limpar filtros
+          ) : null}
+
+          {projectDetailTab === "schedule" ? (
+            <DomainCard
+              title="Cronograma"
+              subtitle={`CRUD de fases com sequencia e progresso medio de ${scheduleProgress}%`}
+              action={
+                <button type="button" className={styles.primaryButton} onClick={openCreateSchedulePhase}>
+                  <Plus size={16} />
+                  Nova fase
+                </button>
+              }
+              content={
+                <ScheduleList
+                  phases={schedulePhases}
+                  loading={loadingSchedule}
+                  error={scheduleError}
+                  onRetry={loadSchedulePhases}
+                  onEdit={openEditSchedulePhase}
+                  onDelete={handleDeleteSchedulePhase}
+                />
+              }
+            />
+          ) : null}
+
+          {projectDetailTab === "measurements" ? (
+            <DomainCard
+              title="Medicoes"
+              subtitle="Boletins de medicao com aprovacao, rejeicao e snapshot financeiro."
+              action={
+                <button type="button" className={styles.primaryButton} onClick={openCreateMeasurement}>
+                  <Plus size={16} />
+                  Nova medicao
+                </button>
+              }
+              content={
+                <MeasurementsList
+                  measurements={measurements}
+                  loading={loadingMeasurements}
+                  error={measurementError}
+                  onRetry={loadMeasurements}
+                  onEdit={openEditMeasurement}
+                  onDelete={handleDeleteMeasurement}
+                  onApprove={handleApproveMeasurement}
+                  onReject={openRejectMeasurement}
+                />
+              }
+            />
+          ) : null}
+
+          {projectDetailTab === "procurement" ? (
+            <DomainCard
+              title="Requisicoes"
+              subtitle="Solicitacoes de compra com fluxo de envio, aprovacao e integracao ERP."
+              action={
+                <button type="button" className={styles.primaryButton} onClick={openCreateProcurement}>
+                  <Plus size={16} />
+                  Nova requisicao
+                </button>
+              }
+              content={
+                <ProcurementList
+                  procurementRequests={procurementRequests}
+                  loading={loadingProcurement}
+                  error={procurementError}
+                  onRetry={loadProcurementRequests}
+                  onEdit={openEditProcurement}
+                  onDelete={handleDeleteProcurement}
+                  onSubmit={handleSubmitProcurement}
+                  onApprove={handleApproveProcurement}
+                  onReject={openRejectProcurement}
+                />
+              }
+            />
+          ) : null}
+
+          {projectDetailTab === "integrations" ? (
+            <DomainCard
+              title="Integracoes"
+              subtitle="Referencias ERP para pessoas, financeiro e compras sincronizadas no modulo."
+              content={
+                <IntegrationPanel
+                  personLookupQuery={personLookupQuery}
+                  onPersonLookupQueryChange={handlePersonLookupQueryChange}
+                  onPersonLookupSearch={handlePersonLookupSearch}
+                  loadingPeople={loadingPersonSummaries}
+                  personLookupError={personLookupError}
+                  people={personSummaries}
+                  measurements={measurements}
+                  procurementRequests={procurementRequests}
+                  units={units}
+                />
+              }
+            />
+          ) : null}
+        </>
+      ) : null}
+
+      {viewMode === "projectDetail" && !selectedProject ? (
+        <DomainCard
+          title="Obra nao encontrada"
+          subtitle="Volte para a lista e abra uma obra cadastrada."
+          action={
+            <button type="button" className={styles.secondaryButton} onClick={closeProjectDetail}>
+              <ChevronLeft size={16} />
+              Voltar para obras
             </button>
-          </div>
-        ) : null}
-      </section>
-
-      {activeTab === "overview" && (
-        <DomainCard
-          title="Resumo operacional"
-          subtitle="Indicadores consolidados de obras, comercial, medicoes e suprimentos."
-          content={
-            <OverviewPanel
-              selectedProject={selectedProject}
-              units={units}
-              schedulePhases={schedulePhases}
-              measurements={measurements}
-              procurementRequests={procurementRequests}
-            />
           }
+          content={<div className={styles.empty}>Nao foi possivel carregar o detalhe da obra.</div>}
         />
-      )}
-
-      {activeTab === "projects" && (
-        <DomainCard
-          title="Projetos"
-          subtitle="CRUD completo com filtros, criacao, edicao e exclusao."
-          content={
-            <ProjectList
-              projects={visibleProjects}
-              loading={loading}
-              error={error}
-              onRetry={loadProjects}
-              onEdit={openEditProject}
-              onDelete={handleDeleteProject}
-            />
-          }
-          footer={
-            <span className={styles.paginationSummary}>
-              Mostrando {visibleProjects.length} de {totalProjects} obras
-            </span>
-          }
-        />
-      )}
-
-      {activeTab === "blocks" && (
-        <DomainCard
-          title="Blocos/Torres"
-          subtitle="CRUD por obra com codigo, status e total de pavimentos."
-          content={
-            <>
-              <ProjectScopeHeader
-                projects={projects}
-                activeProjectId={activeProjectId}
-                onProjectChange={setActiveProjectId}
-                selectedProject={selectedProject}
-                actionLabel="Novo bloco"
-                onAction={openCreateBlock}
-              />
-              <BlocksList
-                blocks={blocks}
-                loading={loadingBlocks}
-                error={blockError}
-                onRetry={loadBlocks}
-                onEdit={openEditBlock}
-                onDelete={handleDeleteBlock}
-              />
-            </>
-          }
-        />
-      )}
-
-      {activeTab === "units" && (
-        <DomainCard
-          title="Unidades"
-          subtitle="Inventario comercial com reserva, liberacao e confirmacao de venda."
-          content={
-            <>
-              <ProjectScopeHeader
-                projects={projects}
-                activeProjectId={activeProjectId}
-                onProjectChange={setActiveProjectId}
-                selectedProject={selectedProject}
-                actionLabel="Nova unidade"
-                onAction={openCreateUnit}
-              />
-              <UnitsList
-                units={units}
-                blocks={blocks}
-                loading={loadingUnits}
-                error={unitError}
-                onRetry={loadUnits}
-                onEdit={openEditUnit}
-                onDelete={handleDeleteUnit}
-                onReserve={openReserveUnitModal}
-                onRelease={handleReleaseUnit}
-                onSale={openSaleUnitModal}
-              />
-            </>
-          }
-        />
-      )}
-
-      {activeTab === "schedule" && (
-        <DomainCard
-          title="Cronograma"
-          subtitle={`CRUD de fases com sequencia e progresso medio de ${scheduleProgress}%`}
-          content={
-            <>
-              <ProjectScopeHeader
-                projects={projects}
-                activeProjectId={activeProjectId}
-                onProjectChange={setActiveProjectId}
-                selectedProject={selectedProject}
-                actionLabel="Nova fase"
-                onAction={openCreateSchedulePhase}
-              />
-              <ScheduleList
-                phases={schedulePhases}
-                loading={loadingSchedule}
-                error={scheduleError}
-                onRetry={loadSchedulePhases}
-                onEdit={openEditSchedulePhase}
-                onDelete={handleDeleteSchedulePhase}
-              />
-            </>
-          }
-        />
-      )}
-
-      {activeTab === "measurements" && (
-        <DomainCard
-          title="Medicoes"
-          subtitle="Boletins de medicao com aprovacao, rejeicao e snapshot financeiro."
-          content={
-            <>
-              <ProjectScopeHeader
-                projects={projects}
-                activeProjectId={activeProjectId}
-                onProjectChange={setActiveProjectId}
-                selectedProject={selectedProject}
-                actionLabel="Nova medicao"
-                onAction={openCreateMeasurement}
-              />
-              <MeasurementsList
-                measurements={measurements}
-                loading={loadingMeasurements}
-                error={measurementError}
-                onRetry={loadMeasurements}
-                onEdit={openEditMeasurement}
-                onDelete={handleDeleteMeasurement}
-                onApprove={handleApproveMeasurement}
-                onReject={openRejectMeasurement}
-              />
-            </>
-          }
-        />
-      )}
-      {activeTab === "procurement" && (
-        <DomainCard
-          title="Requisicoes"
-          subtitle="Solicitacoes de compra com fluxo de envio, aprovacao e integracao ERP."
-          content={
-            <>
-              <ProjectScopeHeader
-                projects={projects}
-                activeProjectId={activeProjectId}
-                onProjectChange={setActiveProjectId}
-                selectedProject={selectedProject}
-                actionLabel="Nova requisicao"
-                onAction={openCreateProcurement}
-              />
-              <ProcurementList
-                procurementRequests={procurementRequests}
-                loading={loadingProcurement}
-                error={procurementError}
-                onRetry={loadProcurementRequests}
-                onEdit={openEditProcurement}
-                onDelete={handleDeleteProcurement}
-                onSubmit={handleSubmitProcurement}
-                onApprove={handleApproveProcurement}
-                onReject={openRejectProcurement}
-              />
-            </>
-          }
-        />
-      )}
-      {activeTab === "integrations" && (
-        <DomainCard
-          title="Integracoes"
-          subtitle="Referencias ERP para pessoas, financeiro e compras sincronizadas no modulo."
-          content={
-            <IntegrationPanel
-              personLookupQuery={personLookupQuery}
-              onPersonLookupQueryChange={handlePersonLookupQueryChange}
-              onPersonLookupSearch={handlePersonLookupSearch}
-              loadingPeople={loadingPersonSummaries}
-              personLookupError={personLookupError}
-              people={personSummaries}
-              measurements={measurements}
-              procurementRequests={procurementRequests}
-              units={units}
-            />
-          }
-        />
-      )}
+      ) : null}
 
       {isProjectModalOpen ? (
         <ProjectModal
@@ -2217,7 +2362,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   )
 }
 
-function DomainCard({ title, subtitle, content, footer = null }) {
+function DomainCard({ title, subtitle, content, footer = null, action = null }) {
   return (
     <div className={`${styles.card} ${styles.tableCard}`}>
       <div className={styles.tableHeaderRow}>
@@ -2225,6 +2370,7 @@ function DomainCard({ title, subtitle, content, footer = null }) {
           <h2>{title}</h2>
           {subtitle ? <p className={styles.textMuted}>{subtitle}</p> : null}
         </div>
+        {action ? <div className={styles.tableHeaderActions}>{action}</div> : null}
       </div>
       {content}
       {footer ? <div className={styles.paginationSlot}>{footer}</div> : null}
@@ -2232,19 +2378,9 @@ function DomainCard({ title, subtitle, content, footer = null }) {
   )
 }
 
-function PhasePlaceholder({ title, phase }) {
-  return (
-    <DomainCard
-      title={title}
-      subtitle={`${phase}: implementacao funcional prevista nas proximas etapas.`}
-      content={<div className={styles.empty}>Estrutura pronta para evolucao incremental.</div>}
-    />
-  )
-}
-
 function OverviewPanel({ selectedProject, units, schedulePhases, measurements, procurementRequests }) {
   if (!selectedProject) {
-    return <div className={styles.empty}>Selecione uma obra para visualizar os indicadores.</div>
+    return <div className={styles.empty}>Abra uma obra para visualizar os indicadores.</div>
   }
 
   const availableUnits = units.filter((unit) => unit.status === "available").length
@@ -2314,46 +2450,61 @@ function OverviewPanel({ selectedProject, units, schedulePhases, measurements, p
             ))}
           </ul>
         ) : (
-          <p className={styles.textMuted}>Sem alertas criticos para a obra selecionada.</p>
+          <p className={styles.textMuted}>Sem alertas criticos para a obra aberta.</p>
         )}
       </article>
     </div>
   )
 }
 
-function ProjectScopeHeader({ projects, activeProjectId, onProjectChange, selectedProject, actionLabel, onAction }) {
+function ProjectDetailHeader({ project, onBack, onEdit, onRefresh, loading }) {
   return (
-    <div className={styles.scopeHeader}>
-      <div className={styles.scopeContent}>
-        <label className={styles.filterControl}>
-          <span>Obra de referencia</span>
-          <select value={activeProjectId ?? ""} onChange={(event) => onProjectChange(event.target.value || null)}>
-            {!projects.length ? <option value="">Nenhuma obra cadastrada</option> : null}
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.code} - {project.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        {selectedProject ? (
-          <div className={styles.scopeMeta}>
-            <span className={`${styles.statusPill} ${styles[`status${selectedProject.status}`] || ""}`}>
-              {statusLabel[selectedProject.status] ?? selectedProject.status}
+    <section className={styles.detailHeader}>
+      <div className={styles.detailHeaderMain}>
+        <button type="button" className={styles.secondaryButton} onClick={onBack}>
+          <ChevronLeft size={16} />
+          Obras
+        </button>
+        <div className={styles.detailTitleBlock}>
+          <div className={styles.detailTitleRow}>
+            <h2>{project.name}</h2>
+            <span className={`${styles.statusPill} ${styles[`status${project.status}`] || ""}`}>
+              {statusLabel[project.status] ?? project.status}
             </span>
-            <span className={styles.rowSecondaryText}>Tipo: {projectTypeLabel[selectedProject.projectType]}</span>
           </div>
-        ) : null}
+          <p className={styles.textMuted}>{project.code}</p>
+        </div>
       </div>
-      <button type="button" className={styles.primaryButton} onClick={onAction}>
-        <Plus size={16} />
-        {actionLabel}
-      </button>
+      <div className={styles.detailMetaGrid}>
+        <DetailMetaItem label="Tipo" value={projectTypeLabel[project.projectType] ?? project.projectType} />
+        <DetailMetaItem label="Inicio" value={formatDate(project.startDate)} />
+        <DetailMetaItem label="Fim previsto" value={formatDate(project.expectedEndDate)} />
+        <DetailMetaItem label="Centro analitico" value={project.analyticCostCenterId ?? "Nao vinculado"} />
+      </div>
+      <div className={styles.detailActions}>
+        <button type="button" className={styles.secondaryButton} onClick={() => onEdit(project)}>
+          <Pencil size={16} />
+          Editar obra
+        </button>
+        <button type="button" className={styles.secondaryButton} onClick={onRefresh} disabled={loading}>
+          <RefreshCw size={16} className={loading ? styles.spinIcon : undefined} />
+          Recarregar
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function DetailMetaItem({ label, value }) {
+  return (
+    <div className={styles.detailMetaItem}>
+      <span>{label}</span>
+      <strong>{value || "-"}</strong>
     </div>
   )
 }
 
-function ProjectList({ projects, loading, error, onRetry, onEdit, onDelete }) {
+function ProjectList({ projects, loading, error, onRetry, onOpenDetails, onEdit, onDelete }) {
   if (loading) {
     return (
       <div className={styles.tableWrapper} aria-busy="true">
@@ -2423,6 +2574,10 @@ function ProjectList({ projects, loading, error, onRetry, onEdit, onDelete }) {
               </td>
               <td>
                 <div className={styles.rowActions}>
+                  <button type="button" className={styles.iconButton} onClick={() => onOpenDetails(project)}>
+                    <Building2 size={14} />
+                    Detalhes
+                  </button>
                   <button type="button" className={styles.iconButton} onClick={() => onEdit(project)}>
                     <Pencil size={14} />
                     Editar
@@ -2569,7 +2724,7 @@ function UnitsList({ units, blocks, loading, error, onRetry, onEdit, onDelete, o
       <table className={styles.table}>
         <thead>
           <tr>
-            <th>Codigo</th>
+            <th>Descricao</th>
             <th>Tipo</th>
             <th>Bloco</th>
             <th>Status</th>
@@ -2586,7 +2741,10 @@ function UnitsList({ units, blocks, loading, error, onRetry, onEdit, onDelete, o
 
             return (
               <tr key={unit.id}>
-                <td>{unit.code}</td>
+                <td>
+                  <strong>{unit.description || unit.code}</strong>
+                  <div className={styles.rowSecondaryText}>{unit.code}</div>
+                </td>
                 <td>
                   <strong>{unit.unitType}</strong>
                   <div className={styles.rowSecondaryText}>{unit.typology || "-"}</div>
@@ -3659,6 +3817,9 @@ function BlockModal({ mode, blockForm, onClose, onChange, onSubmit, loading }) {
 }
 
 function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loading }) {
+  const unitQuantity = Number(unitForm.quantity)
+  const submitLabel = mode === "create" && unitQuantity > 1 ? `Criar ${unitQuantity} unidades` : "Criar unidade"
+
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
       <section
@@ -3676,15 +3837,52 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
         </header>
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <div className={styles.formGrid}>
-            <label className={styles.filterControl}>
-              <span>Codigo*</span>
-              <input
-                type="text"
-                value={unitForm.code}
-                onChange={(event) => onChange("code", event.target.value)}
-                required
-              />
-            </label>
+            {mode === "create" ? (
+              <>
+                <label className={styles.filterControl}>
+                  <span>Quantidade*</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max={MAX_UNIT_BATCH_SIZE}
+                    step="1"
+                    value={unitForm.quantity}
+                    onChange={(event) => onChange("quantity", event.target.value)}
+                    required
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Descricao base*</span>
+                  <input
+                    type="text"
+                    value={unitForm.description}
+                    onChange={(event) => onChange("description", event.target.value)}
+                    placeholder={DEFAULT_UNIT_DESCRIPTION}
+                    required
+                  />
+                </label>
+              </>
+            ) : (
+              <>
+                <label className={styles.filterControl}>
+                  <span>Codigo*</span>
+                  <input
+                    type="text"
+                    value={unitForm.code}
+                    onChange={(event) => onChange("code", event.target.value)}
+                    required
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Descricao</span>
+                  <input
+                    type="text"
+                    value={unitForm.description}
+                    onChange={(event) => onChange("description", event.target.value)}
+                  />
+                </label>
+              </>
+            )}
             <label className={styles.filterControl}>
               <span>Tipo*</span>
               <input
@@ -3740,11 +3938,11 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
             <label className={styles.filterControl}>
               <span>Preco de venda</span>
               <input
-                type="number"
-                min="0"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 value={unitForm.salePrice}
-                onChange={(event) => onChange("salePrice", event.target.value)}
+                onChange={(event) => onChange("salePrice", formatCurrencyInput(event.target.value))}
+                placeholder="0,00"
               />
             </label>
             <label className={styles.filterControl}>
@@ -3763,7 +3961,7 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
               Cancelar
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Salvando..." : mode === "create" ? "Criar unidade" : "Salvar alteracoes"}
+              {loading ? "Salvando..." : mode === "create" ? submitLabel : "Salvar alteracoes"}
             </button>
           </footer>
         </form>

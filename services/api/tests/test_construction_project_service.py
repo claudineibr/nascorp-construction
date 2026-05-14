@@ -1,6 +1,6 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -24,6 +24,7 @@ from app.schemas.construction import (
     ConstructionProcurementRequestCreate,
     ConstructionProjectCreate,
     ConstructionProjectUpdate,
+    ConstructionUnitCreate,
     ConstructionUnitSaleConfirmRequest,
 )
 
@@ -105,6 +106,16 @@ class FakeConstructionRepository:
 
     async def get_unit(self, *, company_id, unit_id):
         return self.units.get((company_id, unit_id))
+
+    async def get_unit_by_code(self, *, company_id, project_id, code):
+        return next(
+            (
+                unit
+                for (stored_company_id, _), unit in self.units.items()
+                if stored_company_id == company_id and unit.project_id == project_id and unit.code == code
+            ),
+            None,
+        )
 
     async def get_measurement_by_code(self, *, company_id, project_id, code):
         return next(
@@ -199,6 +210,30 @@ class FakeEventRepository:
 class FakeErpMeasurementClient:
     def __init__(self) -> None:
         self.events: list[EventEnvelope] = []
+        self.confirmation_events: list[EventEnvelope] = []
+
+    async def create_cost_center_hierarchy(self, *, event: EventEnvelope) -> EventEnvelope:
+        self.events.append(event)
+        event_id = uuid4()
+        confirmation_event = EventEnvelope(
+            event_id=event_id,
+            event_type=ErpEventType.COST_CENTER_CREATED,
+            event_version=1,
+            company_id=event.company_id,
+            aggregate_id=event.aggregate_id,
+            aggregate_type="construction_project",
+            occurred_at=datetime.now(tz=UTC),
+            producer="erp-api",
+            correlation_id=event.correlation_id,
+            causation_id=event.event_id,
+            payload={
+                "construction_project_id": str(event.aggregate_id),
+                "synthetic_cost_center_id": str(uuid4()),
+                "analytic_cost_center_id": str(uuid4()),
+            },
+        )
+        self.confirmation_events.append(confirmation_event)
+        return confirmation_event
 
     async def create_accounts_payable_from_measurement(self, *, event: EventEnvelope) -> EventEnvelope:
         self.events.append(event)
@@ -222,6 +257,9 @@ class FakeErpMeasurementClient:
         )
 
     async def deliver_event(self, *, event: EventEnvelope) -> EventEnvelope:
+        if event.event_type == ConstructionEventType.PROJECT_CREATED:
+            return await self.create_cost_center_hierarchy(event=event)
+
         if event.event_type == ConstructionEventType.MEASUREMENT_APPROVED:
             return await self.create_accounts_payable_from_measurement(event=event)
 
@@ -415,6 +453,70 @@ async def test_create_project_records_project_created_outbox_event() -> None:
     assert event.payload["project_name"] == "Obra Outbox"
     assert event.payload["start_date"] == "2026-04-01"
     assert event.payload["user_id"] == str(user_id)
+
+
+@pytest.mark.asyncio
+async def test_create_project_applies_sync_cost_center_confirmation() -> None:
+    company_id = uuid4()
+    user_id = uuid4()
+    repository = FakeConstructionRepository()
+    event_repository = FakeEventRepository()
+    erp_client = FakeErpMeasurementClient()
+    dispatcher = ConstructionIntegrationDispatcher(
+        event_repository=event_repository,
+        event_transport=erp_client,
+        integration_mode=ConstructionIntegrationMode.SYNC_HTTP,
+    )
+    service = ConstructionProjectService(
+        repository=repository,
+        event_repository=event_repository,
+        erp_client=erp_client,
+        integration_dispatcher=dispatcher,
+    )
+
+    project = await service.create_project(
+        company_id=company_id,
+        request=ConstructionProjectCreate(code="OBRA-011", name="Obra Integrada"),
+        actor_user_id=user_id,
+    )
+
+    confirmation_event = erp_client.confirmation_events[0]
+    assert repository.commits == 1
+    assert len(event_repository.outbox_events) == 1
+    assert len(erp_client.events) == 1
+    assert event_repository.outbox_events[0].event_type == ConstructionEventType.PROJECT_CREATED
+    assert erp_client.events[0].payload["user_id"] == str(user_id)
+    assert project.synthetic_cost_center_id == UUID(str(confirmation_event.payload["synthetic_cost_center_id"]))
+    assert project.analytic_cost_center_id == UUID(str(confirmation_event.payload["analytic_cost_center_id"]))
+
+
+@pytest.mark.asyncio
+async def test_create_unit_persists_description() -> None:
+    company_id = uuid4()
+    project_id = uuid4()
+    repository = FakeConstructionRepository()
+    repository.projects[(company_id, project_id)] = ConstructionProject(
+        id=project_id,
+        company_id=company_id,
+        code="OBRA-UNIT",
+        name="Obra com unidades",
+        status=ConstructionProjectStatus.DRAFT,
+    )
+    service = make_service(repository=repository)
+
+    unit = await service.create_unit(
+        company_id=company_id,
+        project_id=project_id,
+        request=ConstructionUnitCreate(
+            code="UNIDADE - 1",
+            description="UNIDADE - 1",
+            unit_type="Apartamento",
+        ),
+    )
+
+    assert unit.description == "UNIDADE - 1"
+    assert unit.code == "UNIDADE - 1"
+    assert repository.commits == 1
 
 
 @pytest.mark.asyncio

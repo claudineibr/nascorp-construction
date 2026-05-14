@@ -130,10 +130,10 @@ class ConstructionProjectService:
             actual_end_date=request.actual_end_date,
         )
         await self.repository.add(project)
-        if self.event_repository is not None:
-            await self.event_repository.add_outbox_event(
-                event=self._build_project_created_event(project=project, actor_user_id=actor_user_id)
-            )
+        project_created_event = self._build_project_created_event(project=project, actor_user_id=actor_user_id)
+        dispatch_result = await self._dispatch_integration_event(event=project_created_event)
+        if dispatch_result is not None and dispatch_result.response_event is not None:
+            self._apply_cost_center_snapshot_from_event(project=project, event=dispatch_result.response_event)
 
         await self.repository.commit()
         await self.repository.refresh(project)
@@ -175,6 +175,46 @@ class ConstructionProjectService:
         await self.repository.commit()
         await self.repository.refresh(project)
         return project
+
+    @staticmethod
+    def _apply_cost_center_snapshot_from_event(*, project: ConstructionProject, event: EventEnvelope) -> None:
+        if event.event_type != ErpEventType.COST_CENTER_CREATED:
+            raise ConstructionInvalidValueError(
+                message="Unsupported ERP event type for cost center confirmation.",
+                error_code="CONSTRUCTION_UNSUPPORTED_ERP_EVENT",
+            )
+
+        project_id = ConstructionProjectService._read_uuid_payload(
+            payload=event.payload,
+            field_name="construction_project_id",
+        )
+        if project_id != project.id:
+            raise ConstructionInvalidValueError(
+                message="Cost center confirmation does not belong to the created construction project.",
+                error_code="CONSTRUCTION_COST_CENTER_PROJECT_MISMATCH",
+            )
+
+        synthetic_cost_center_id = ConstructionProjectService._read_uuid_payload(
+            payload=event.payload,
+            field_name="synthetic_cost_center_id",
+        )
+        analytic_cost_center_id = ConstructionProjectService._read_uuid_payload(
+            payload=event.payload,
+            field_name="analytic_cost_center_id",
+        )
+        ConstructionProjectService._ensure_external_id_can_be_applied(
+            current_id=project.synthetic_cost_center_id,
+            next_id=synthetic_cost_center_id,
+            field_name="synthetic_cost_center_id",
+        )
+        ConstructionProjectService._ensure_external_id_can_be_applied(
+            current_id=project.analytic_cost_center_id,
+            next_id=analytic_cost_center_id,
+            field_name="analytic_cost_center_id",
+        )
+
+        project.synthetic_cost_center_id = synthetic_cost_center_id
+        project.analytic_cost_center_id = analytic_cost_center_id
 
     async def list_projects(
         self,
@@ -355,6 +395,7 @@ class ConstructionProjectService:
             project_id=project_id,
             block_id=request.block_id,
             code=request.code.strip(),
+            description=request.description.strip() if request.description else None,
             unit_type=request.unit_type.strip(),
             typology=request.typology.strip() if request.typology else None,
             floor=request.floor,

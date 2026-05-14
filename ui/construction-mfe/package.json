@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 8011",
+    "dev": "node ./scripts/dev-federation.mjs",
+    "dev:standalone": "vite --host 127.0.0.1 --port 8011",
+    "dev:remote": "vite build --watch --mode development",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1 --port 8011"
   },
