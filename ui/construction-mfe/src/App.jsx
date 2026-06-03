@@ -136,10 +136,15 @@ const projectDetailTabs = [
   { id: "blocks", label: "Blocos/Torres", icon: Route },
   { id: "units", label: "Unidades", icon: Home },
   { id: "schedule", label: "Cronograma", icon: ListChecks },
-  { id: "measurements", label: "Medicoes", icon: HandCoins },
   { id: "procurement", label: "Requisicoes", icon: PackageSearch },
   { id: "reports", label: "Relatorios", icon: BarChart3 },
   { id: "integrations", label: "Integracoes", icon: FileCog },
+]
+
+const unitDetailTabs = [
+  { id: "summary", label: "Resumo", icon: Home },
+  { id: "measurements", label: "Medicoes", icon: HandCoins },
+  { id: "installments", label: "Parcelas", icon: ShoppingCart },
 ]
 
 const statusOptions = Object.entries(statusLabel)
@@ -671,6 +676,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [viewMode, setViewMode] = useState("projects")
   const [projectDetailTab, setProjectDetailTab] = useState("overview")
   const [activeProjectId, setActiveProjectId] = useState(null)
+  const [activeUnitId, setActiveUnitId] = useState(null)
+  const [unitDetailTab, setUnitDetailTab] = useState("summary")
 
   const [filters, setFilters] = useState(defaultFilters)
   const [projects, setProjects] = useState([])
@@ -775,6 +782,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   useEffect(() => {
     if (!projects.length) {
       setActiveProjectId(null)
+      setActiveUnitId(null)
       setViewMode("projects")
       return
     }
@@ -782,9 +790,22 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     const projectExists = activeProjectId && projects.some((project) => project.id === activeProjectId)
     if (activeProjectId && !projectExists) {
       setActiveProjectId(null)
+      setActiveUnitId(null)
       setViewMode("projects")
     }
   }, [activeProjectId, projects])
+
+  useEffect(() => {
+    if (!activeUnitId) {
+      return
+    }
+
+    const unitExists = units.some((unit) => unit.id === activeUnitId)
+    if (!unitExists) {
+      setActiveUnitId(null)
+      setUnitDetailTab("summary")
+    }
+  }, [activeUnitId, units])
 
   const visibleProjects = useMemo(() => {
     const searchTerm = filters.search.trim().toLowerCase()
@@ -807,6 +828,16 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === activeProjectId) ?? null,
     [activeProjectId, projects]
+  )
+
+  const selectedUnit = useMemo(
+    () => units.find((unit) => unit.id === activeUnitId) ?? null,
+    [activeUnitId, units]
+  )
+
+  const selectedUnitMeasurements = useMemo(
+    () => measurements.filter((measurement) => measurement.unitId === activeUnitId),
+    [activeUnitId, measurements]
   )
 
   const summaryItems = useMemo(() => {
@@ -1005,15 +1036,9 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
     void loadUnits()
     void loadBlocks()
-  }, [projectDetailTab, loadBlocks, loadUnits, viewMode])
-
-  useEffect(() => {
-    if (viewMode !== "projectDetail" || projectDetailTab !== "measurements") {
-      return
-    }
-
+    void loadSchedulePhases()
     void loadMeasurements()
-  }, [projectDetailTab, loadMeasurements, viewMode])
+  }, [projectDetailTab, loadBlocks, loadMeasurements, loadSchedulePhases, loadUnits, viewMode])
 
   useEffect(() => {
     if (viewMode !== "projectDetail" || projectDetailTab !== "procurement") {
@@ -1027,7 +1052,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }, [loadPersonSummaries, loadProcurementRequests, personSummaries.length, projectDetailTab, viewMode])
 
   useEffect(() => {
-    if (viewMode !== "projectDetail" || !["units", "measurements"].includes(projectDetailTab)) {
+    if (viewMode !== "projectDetail" || projectDetailTab !== "units") {
       return
     }
 
@@ -1080,12 +1105,26 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const openProjectDetail = (project) => {
     setActiveProjectId(project.id)
     setProjectDetailTab("overview")
+    setActiveUnitId(null)
+    setUnitDetailTab("summary")
     setViewMode("projectDetail")
   }
 
   const closeProjectDetail = () => {
     setProjectDetailTab("overview")
+    setActiveUnitId(null)
+    setUnitDetailTab("summary")
     setViewMode("projects")
+  }
+
+  const openUnitDetail = (unit) => {
+    setActiveUnitId(unit.id)
+    setUnitDetailTab("summary")
+  }
+
+  const closeUnitDetail = () => {
+    setActiveUnitId(null)
+    setUnitDetailTab("summary")
   }
 
   const reloadProjectDetail = async () => {
@@ -1665,7 +1704,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const openCreateMeasurement = () => {
+  const openCreateMeasurement = (unit = null) => {
     if (!activeProjectId) {
       bridge?.feedback?.warning?.("Abra uma obra antes de criar medicoes.")
       return
@@ -1675,15 +1714,18 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       void loadPersonSummaries()
     }
 
-    const nextSequenceNumber = measurements.length
-      ? Math.max(...measurements.map((measurement) => Number(measurement.sequenceNumber || 0))) + 1
+    const measurementScope = unit
+      ? measurements.filter((measurement) => measurement.unitId === unit.id)
+      : measurements
+    const nextSequenceNumber = measurementScope.length
+      ? Math.max(...measurementScope.map((measurement) => Number(measurement.sequenceNumber || 0))) + 1
       : 1
 
     setMeasurementModalMode("create")
     setEditingMeasurementId(null)
     setMeasurementForm({
       ...defaultMeasurementForm,
-      unitId: units[0]?.id ?? "",
+      unitId: unit?.id ?? selectedUnit?.id ?? units[0]?.id ?? "",
       schedulePhaseId: schedulePhases[0]?.id ?? "",
       sequenceNumber: String(nextSequenceNumber),
     })
@@ -2224,27 +2266,62 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
           {projectDetailTab === "units" ? (
             <DomainCard
-              title="Unidades"
-              subtitle="Inventario comercial com reserva, liberacao e confirmacao de venda."
+              title={selectedUnit ? `Unidade ${selectedUnit.code}` : "Unidades"}
+              subtitle={
+                selectedUnit
+                  ? "Detalhe operacional e financeiro da unidade selecionada."
+                  : "Inventario comercial com reserva, liberacao, medicoes e venda por unidade."
+              }
               action={
-                <button type="button" className={styles.primaryButton} onClick={openCreateUnit}>
-                  <Plus size={16} />
-                  Nova unidade
-                </button>
+                selectedUnit ? (
+                  <button type="button" className={styles.secondaryButton} onClick={closeUnitDetail}>
+                    <ChevronLeft size={16} />
+                    Voltar para unidades
+                  </button>
+                ) : (
+                  <button type="button" className={styles.primaryButton} onClick={openCreateUnit}>
+                    <Plus size={16} />
+                    Nova unidade
+                  </button>
+                )
               }
               content={
-                <UnitsList
-                  units={units}
-                  blocks={blocks}
-                  loading={loadingUnits}
-                  error={unitError}
-                  onRetry={loadUnits}
-                  onEdit={openEditUnit}
-                  onDelete={handleDeleteUnit}
-                  onReserve={openReserveUnitModal}
-                  onRelease={handleReleaseUnit}
-                  onSale={openSaleUnitModal}
-                />
+                selectedUnit ? (
+                  <UnitDetailPanel
+                    unit={selectedUnit}
+                    blocks={blocks}
+                    measurements={selectedUnitMeasurements}
+                    schedulePhases={schedulePhases}
+                    activeTab={unitDetailTab}
+                    loadingMeasurements={loadingMeasurements}
+                    measurementError={measurementError}
+                    onTabChange={setUnitDetailTab}
+                    onEdit={openEditUnit}
+                    onReserve={openReserveUnitModal}
+                    onRelease={handleReleaseUnit}
+                    onSale={openSaleUnitModal}
+                    onCreateMeasurement={openCreateMeasurement}
+                    onRetryMeasurements={loadMeasurements}
+                    onEditMeasurement={openEditMeasurement}
+                    onDeleteMeasurement={handleDeleteMeasurement}
+                    onApproveMeasurement={handleApproveMeasurement}
+                    onRejectMeasurement={openRejectMeasurement}
+                  />
+                ) : (
+                  <UnitsList
+                    units={units}
+                    blocks={blocks}
+                    loading={loadingUnits}
+                    error={unitError}
+                    onRetry={loadUnits}
+                    onOpenDetails={openUnitDetail}
+                    onEdit={openEditUnit}
+                    onDelete={handleDeleteUnit}
+                    onReserve={openReserveUnitModal}
+                    onRelease={handleReleaseUnit}
+                    onSale={openSaleUnitModal}
+                  />
+                )
               }
             />
           ) : null}
@@ -2267,33 +2344,6 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                   onRetry={loadSchedulePhases}
                   onEdit={openEditSchedulePhase}
                   onDelete={handleDeleteSchedulePhase}
-                />
-              }
-            />
-          ) : null}
-
-          {projectDetailTab === "measurements" ? (
-            <DomainCard
-              title="Medicoes"
-              subtitle="Boletins de medicao com aprovacao, rejeicao e snapshot financeiro."
-              action={
-                <button type="button" className={styles.primaryButton} onClick={openCreateMeasurement}>
-                  <Plus size={16} />
-                  Nova medicao
-                </button>
-              }
-              content={
-                <MeasurementsList
-                  measurements={measurements}
-                  units={units}
-                  schedulePhases={schedulePhases}
-                  loading={loadingMeasurements}
-                  error={measurementError}
-                  onRetry={loadMeasurements}
-                  onEdit={openEditMeasurement}
-                  onDelete={handleDeleteMeasurement}
-                  onApprove={handleApproveMeasurement}
-                  onReject={openRejectMeasurement}
                 />
               }
             />
@@ -2444,6 +2494,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           measurementForm={measurementForm}
           people={personSummaries}
           units={units}
+          lockedUnit={measurementForm.unitId ? units.find((unit) => unit.id === measurementForm.unitId) ?? null : null}
           schedulePhases={schedulePhases}
           onClose={closeMeasurementModal}
           onChange={handleMeasurementFieldChange}
@@ -2960,7 +3011,212 @@ function BlocksList({ blocks, loading, error, onRetry, onEdit, onDelete }) {
   )
 }
 
-function UnitsList({ units, blocks, loading, error, onRetry, onEdit, onDelete, onReserve, onRelease, onSale }) {
+function UnitDetailPanel({
+  unit,
+  blocks,
+  measurements,
+  schedulePhases,
+  activeTab,
+  loadingMeasurements,
+  measurementError,
+  onTabChange,
+  onEdit,
+  onReserve,
+  onRelease,
+  onSale,
+  onCreateMeasurement,
+  onRetryMeasurements,
+  onEditMeasurement,
+  onDeleteMeasurement,
+  onApproveMeasurement,
+  onRejectMeasurement,
+}) {
+  const blockNameById = useMemo(() => {
+    return Object.fromEntries(blocks.map((block) => [block.id, `${block.code} - ${block.name}`]))
+  }, [blocks])
+  const approvedMeasurements = measurements.filter((measurement) => ["approved", "paid"].includes(measurement.status))
+  const measuredCost = approvedMeasurements.reduce(
+    (total, measurement) => total + Number(measurement.netAmount ?? measurement.measuredAmount ?? 0),
+    0
+  )
+  const openMeasurements = measurements.filter((measurement) => !["approved", "paid"].includes(measurement.status)).length
+  const linkedPayables = measurements.filter((measurement) => measurement.externalAccountsPayableId).length
+  const estimatedMargin = Number(unit.salePrice ?? 0) - measuredCost
+  const canReserve = unit.status === "available"
+  const canRelease = unit.status === "reserved"
+  const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
+
+  return (
+    <div className={styles.integrationPanel}>
+      <div className={styles.scopeHeader}>
+        <div className={styles.scopeMeta}>
+          <div className={styles.detailTitleRow}>
+            <h2>{unit.description || unit.code}</h2>
+            <span className={`${styles.statusPill} ${styles[`status${unit.status}`] || ""}`}>
+              {unitStatusLabel[unit.status] ?? unit.status}
+            </span>
+          </div>
+          <p className={styles.textMuted}>{unit.unitType}{unit.typology ? ` - ${unit.typology}` : ""}</p>
+        </div>
+        <div className={styles.tableHeaderActions}>
+          <button type="button" className={styles.secondaryButton} onClick={() => onEdit(unit)}>
+            <Pencil size={16} />
+            Editar
+          </button>
+          {canReserve ? (
+            <button type="button" className={styles.secondaryButton} onClick={() => onReserve(unit)}>
+              <Clock size={16} />
+              Reservar
+            </button>
+          ) : null}
+          {canRelease ? (
+            <button type="button" className={styles.secondaryButton} onClick={() => onRelease(unit)}>
+              <Unlock size={16} />
+              Liberar
+            </button>
+          ) : null}
+          {canSale ? (
+            <button type="button" className={styles.primaryButton} onClick={() => onSale(unit)}>
+              <ShoppingCart size={16} />
+              Vender
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <div className={styles.detailMetaGrid}>
+        <DetailMetaItem label="Bloco" value={unit.blockId ? blockNameById[unit.blockId] ?? unit.blockId : "-"} />
+        <DetailMetaItem label="Centro unidade" value={unit.analyticCostCenterId ? "Vinculado" : "Pendente"} />
+        <DetailMetaItem label="Preco" value={formatMoney(unit.salePrice)} />
+        <DetailMetaItem label="Contrato ERP" value={unit.externalContractId ? unit.externalContractStatus || "Vinculado" : "Pendente"} />
+      </div>
+
+      <section className={styles.tabCard}>
+        <div className={styles.tabList}>
+          {unitDetailTabs.map((tab) => {
+            const Icon = tab.icon
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                className={`${styles.tabButton} ${activeTab === tab.id ? styles.tabButtonActive : ""}`}
+                onClick={() => onTabChange(tab.id)}
+              >
+                <Icon size={16} />
+                {tab.label}
+              </button>
+            )
+          })}
+        </div>
+      </section>
+
+      {activeTab === "summary" ? (
+        <div className={styles.integrationGrid}>
+          <article className={styles.integrationCard}>
+            <h3>Custo medido</h3>
+            <p className={styles.metricValue}>{formatCurrencyFromNumber(measuredCost)}</p>
+            <p className={styles.metricHint}>{linkedPayables} AP vinculada(s)</p>
+          </article>
+          <article className={styles.integrationCard}>
+            <h3>Medicoes abertas</h3>
+            <p className={styles.metricValue}>{openMeasurements}</p>
+            <p className={styles.metricHint}>{measurements.length} medicao(oes) no total</p>
+          </article>
+          <article className={styles.integrationCard}>
+            <h3>Margem estimada</h3>
+            <p className={styles.metricValue}>{formatCurrencyFromNumber(estimatedMargin)}</p>
+            <p className={styles.metricHint}>preco menos custo aprovado</p>
+          </article>
+        </div>
+      ) : null}
+
+      {activeTab === "measurements" ? (
+        <>
+          <div className={styles.tableHeaderRow}>
+            <div>
+              <h2>Medicoes da unidade</h2>
+              <p className={styles.textMuted}>AP e custos ficam amarrados ao centro analitico desta unidade.</p>
+            </div>
+            <button type="button" className={styles.primaryButton} onClick={() => onCreateMeasurement(unit)}>
+              <Plus size={16} />
+              Nova medicao
+            </button>
+          </div>
+          <MeasurementsList
+            measurements={measurements}
+            units={[unit]}
+            schedulePhases={schedulePhases}
+            loading={loadingMeasurements}
+            error={measurementError}
+            emptyMessage="Nenhuma medicao cadastrada para esta unidade."
+            onRetry={onRetryMeasurements}
+            onEdit={onEditMeasurement}
+            onDelete={onDeleteMeasurement}
+            onApprove={onApproveMeasurement}
+            onReject={onRejectMeasurement}
+          />
+        </>
+      ) : null}
+
+      {activeTab === "installments" ? <UnitInstallmentsPanel unit={unit} onSale={onSale} /> : null}
+    </div>
+  )
+}
+
+function UnitInstallmentsPanel({ unit, onSale }) {
+  const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
+
+  return (
+    <div className={styles.integrationPanel}>
+      <div className={styles.integrationGrid}>
+        <article className={styles.integrationCard}>
+          <h3>Preco de venda</h3>
+          <p className={styles.metricValue}>{formatMoney(unit.salePrice)}</p>
+          <p className={styles.metricHint}>{unit.soldAt ? `vendida em ${formatDate(unit.soldAt)}` : "venda pendente"}</p>
+        </article>
+        <article className={styles.integrationCard}>
+          <h3>Contrato ERP</h3>
+          <p className={styles.metricValue}>{unit.externalContractId ? "Vinculado" : "Pendente"}</p>
+          <p className={styles.metricHint}>{unit.externalContractStatus || "sem status externo"}</p>
+        </article>
+        <article className={styles.integrationCard}>
+          <h3>Recebivel ERP</h3>
+          <p className={styles.metricValue}>{unit.externalReceivableId ? "Vinculado" : "Pendente"}</p>
+          <p className={styles.metricHint}>{unit.externalReceivableStatus || "sem parcelas vinculadas"}</p>
+        </article>
+      </div>
+
+      <div className={styles.tableWrapper}>
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>Origem</th>
+              <th>Status</th>
+              <th>Referencia externa</th>
+              <th>Acoes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Contrato</td>
+              <td>{unit.externalContractStatus || (unit.externalContractId ? "Vinculado" : "Pendente")}</td>
+              <td>{unit.externalContractId || "-"}</td>
+              <td>{canSale ? <button type="button" className={styles.iconButton} onClick={() => onSale(unit)}>Confirmar venda</button> : "-"}</td>
+            </tr>
+            <tr>
+              <td>Recebivel / parcelas</td>
+              <td>{unit.externalReceivableStatus || (unit.externalReceivableId ? "Vinculado" : "Pendente")}</td>
+              <td>{unit.externalReceivableId || "-"}</td>
+              <td>{unit.externalReceivableId ? <span className={styles.badgeSuccess}>AR vinculada</span> : <span className={styles.badgeMuted}>Pendente</span>}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function UnitsList({ units, blocks, loading, error, onRetry, onOpenDetails, onEdit, onDelete, onReserve, onRelease, onSale }) {
   const blockNameById = useMemo(() => {
     return Object.fromEntries(blocks.map((block) => [block.id, `${block.code} - ${block.name}`]))
   }, [blocks])
@@ -3053,6 +3309,10 @@ function UnitsList({ units, blocks, loading, error, onRetry, onEdit, onDelete, o
                 </td>
                 <td>
                   <div className={styles.rowActions}>
+                    <button type="button" className={styles.iconButton} onClick={() => onOpenDetails(unit)}>
+                      <Home size={14} />
+                      Detalhes
+                    </button>
                     <button type="button" className={styles.iconButton} onClick={() => onEdit(unit)}>
                       <Pencil size={14} />
                       Editar
@@ -3185,6 +3445,7 @@ function MeasurementsList({
   schedulePhases,
   loading,
   error,
+  emptyMessage = "Nenhuma medicao cadastrada para a obra selecionada.",
   onRetry,
   onEdit,
   onDelete,
@@ -3226,7 +3487,7 @@ function MeasurementsList({
   if (!measurements.length) {
     return (
       <div className={styles.tableWrapper}>
-        <div className={styles.empty}>Nenhuma medicao cadastrada para a obra selecionada.</div>
+        <div className={styles.empty}>{emptyMessage}</div>
       </div>
     )
   }
@@ -3587,7 +3848,18 @@ function RejectProcurementModal({ procurementRequest, rejectForm, onClose, onCha
   )
 }
 
-function MeasurementModal({ mode, measurementForm, people, units, schedulePhases, onClose, onChange, onSubmit, loading }) {
+function MeasurementModal({
+  mode,
+  measurementForm,
+  people,
+  units,
+  lockedUnit,
+  schedulePhases,
+  onClose,
+  onChange,
+  onSubmit,
+  loading,
+}) {
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
       <section
@@ -3623,17 +3895,26 @@ function MeasurementModal({ mode, measurementForm, people, units, schedulePhases
                 onChange={(event) => onChange("sequenceNumber", event.target.value)}
               />
             </label>
-            <label className={styles.filterControl}>
-              <span>Unidade*</span>
-              <select value={measurementForm.unitId} onChange={(event) => onChange("unitId", event.target.value)} required>
-                <option value="">Selecione</option>
-                {units.map((unit) => (
-                  <option key={unit.id} value={unit.id}>
-                    {unit.code} - {unit.description || unit.unitType}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {lockedUnit ? (
+              <div className={styles.detailMetaItem}>
+                <span>Unidade*</span>
+                <strong>
+                  {lockedUnit.code} - {lockedUnit.description || lockedUnit.unitType}
+                </strong>
+              </div>
+            ) : (
+              <label className={styles.filterControl}>
+                <span>Unidade*</span>
+                <select value={measurementForm.unitId} onChange={(event) => onChange("unitId", event.target.value)} required>
+                  <option value="">Selecione</option>
+                  {units.map((unit) => (
+                    <option key={unit.id} value={unit.id}>
+                      {unit.code} - {unit.description || unit.unitType}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className={styles.filterControl}>
               <span>Etapa*</span>
               <select
