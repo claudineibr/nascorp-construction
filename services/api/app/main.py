@@ -1,3 +1,6 @@
+import logging
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -7,7 +10,18 @@ from app.presentation.routes.health import router as health_router
 from app.presentation.routes.internal_events import router as internal_events_router
 
 
+def _configure_logging() -> None:
+    # O uvicorn so configura os loggers uvicorn.*; sem isso o root fica sem
+    # handler e as mensagens da aplicacao caem no lastResort, sem timestamp.
+    logging.basicConfig(
+        level=os.getenv("CONSTRUCTION_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+
+
 def create_app() -> FastAPI:
+    _configure_logging()
     app = FastAPI(
         title="NASCORP Construction API",
         version="0.1.0",

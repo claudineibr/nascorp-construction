@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
@@ -13,6 +14,8 @@ from fastapi import Depends, Header, HTTPException, status
 from app.core.config import settings
 from app.core.context import ConstructionContext
 from app.infrastructure.clients import EffectivePermissions, ErpPermissionClient
+
+logger = logging.getLogger(__name__)
 
 
 class PermissionClient(Protocol):
@@ -43,6 +46,14 @@ async def get_construction_context(
         user_id=user_id,
     )
     if effective_permissions.company_id != x_company_id or effective_permissions.user_id != user_id:
+        logger.warning(
+            "construction_permission_denied reason=context_mismatch token_user_id=%s "
+            "header_company_id=%s erp_user_id=%s erp_company_id=%s",
+            user_id,
+            x_company_id,
+            effective_permissions.user_id,
+            effective_permissions.company_id,
+        )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission context mismatch")
 
     return ConstructionContext(
@@ -56,6 +67,16 @@ async def get_construction_context(
 def require_permission(feature: str, action: int):
     async def dependency(ctx: ConstructionContext = Depends(get_construction_context)) -> ConstructionContext:
         if not ctx.can(feature=feature, action=action):
+            logger.warning(
+                "construction_permission_denied reason=insufficient_permission feature=%s "
+                "action_required=%s action_effective=%s user_id=%s company_id=%s features=%s",
+                feature,
+                action,
+                (ctx.feature_permissions or {}).get(feature, 0),
+                ctx.user_id,
+                ctx.company_id,
+                ctx.feature_permissions,
+            )
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient Construction permission")
 
         return ctx
@@ -121,6 +142,14 @@ async def _resolve_permissions(
     except HTTPException:
         raise
     except Exception as exc:
+        logger.warning(
+            "construction_permission_denied reason=resolve_failed user_id=%s company_id=%s "
+            "error_type=%s error=%s",
+            user_id,
+            company_id,
+            type(exc).__name__,
+            exc,
+        )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Unable to resolve Construction permissions") from exc
 
 

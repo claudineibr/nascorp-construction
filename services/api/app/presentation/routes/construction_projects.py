@@ -1,7 +1,8 @@
+from decimal import Decimal
 from math import ceil
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.context import ConstructionContext
@@ -30,12 +31,28 @@ from app.schemas.construction import (
     ConstructionProcurementRequestResponse,
     ConstructionProcurementRequestUpdate,
     ConstructionMeasurementCreate,
+    ConstructionMeasurementInspectionVerifyRequest,
+    ConstructionMeasurementItemCreate,
+    ConstructionMeasurementItemInspectionCreate,
+    ConstructionMeasurementItemInspectionResponse,
+    ConstructionMeasurementItemInspectionUpdate,
+    ConstructionMeasurementItemListResponse,
+    ConstructionMeasurementItemOccurrenceCreate,
+    ConstructionMeasurementItemOccurrenceResponse,
+    ConstructionMeasurementItemOccurrenceUpdate,
+    ConstructionMeasurementItemResponse,
+    ConstructionMeasurementItemUpdate,
     ConstructionMeasurementListResponse,
     ConstructionMeasurementReject,
     ConstructionMeasurementResponse,
     ConstructionMeasurementUpdate,
     ConstructionSchedulePhaseCreate,
     ConstructionSchedulePhaseListResponse,
+    ConstructionServiceTemplateImportResponse,
+    ConstructionServiceTemplateImportResult,
+    ConstructionServiceTemplateListResponse,
+    ConstructionServiceTemplateResponse,
+    ConstructionServiceTemplateUpdate,
     ConstructionSchedulePhaseResponse,
     ConstructionSchedulePhaseUpdate,
     ConstructionUnitCreate,
@@ -48,6 +65,9 @@ from app.schemas.construction import (
 
 
 router = APIRouter(prefix="/construction", tags=["construction"])
+
+MAX_SERVICE_TEMPLATE_FILES = 30
+MAX_SERVICE_TEMPLATE_FILE_BYTES = 5 * 1024 * 1024
 
 
 async def get_erp_construction_client() -> ErpConstructionClient:
@@ -378,6 +398,20 @@ async def delete_unit(
         raise _http_error(exc=exc) from exc
 
 
+async def _build_measurement_response(
+    *,
+    service: ConstructionProjectService,
+    ctx: ConstructionContext,
+    measurement,
+) -> ConstructionMeasurementResponse:
+    response = ConstructionMeasurementResponse.model_validate(measurement)
+    summary = await service.build_measurement_items_summary(
+        company_id=ctx.company_id,
+        measurement_id=measurement.id,
+    )
+    return response.model_copy(update=summary)
+
+
 @router.post(
     "/projects/{project_id}/measurements",
     response_model=ConstructionMeasurementResponse,
@@ -394,8 +428,9 @@ async def create_measurement(
             company_id=ctx.company_id,
             project_id=project_id,
             request=request_data,
+            actor_user_id=ctx.user_id,
         )
-        return ConstructionMeasurementResponse.model_validate(measurement)
+        return await _build_measurement_response(service=service, ctx=ctx, measurement=measurement)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 
@@ -424,7 +459,7 @@ async def get_measurement(
 ) -> ConstructionMeasurementResponse:
     try:
         measurement = await service.get_measurement(company_id=ctx.company_id, measurement_id=measurement_id)
-        return ConstructionMeasurementResponse.model_validate(measurement)
+        return await _build_measurement_response(service=service, ctx=ctx, measurement=measurement)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 
@@ -442,7 +477,7 @@ async def update_measurement(
             measurement_id=measurement_id,
             request=request_data,
         )
-        return ConstructionMeasurementResponse.model_validate(measurement)
+        return await _build_measurement_response(service=service, ctx=ctx, measurement=measurement)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 
@@ -459,7 +494,7 @@ async def approve_measurement(
             measurement_id=measurement_id,
             actor_user_id=ctx.user_id,
         )
-        return ConstructionMeasurementResponse.model_validate(measurement)
+        return await _build_measurement_response(service=service, ctx=ctx, measurement=measurement)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 
@@ -476,8 +511,353 @@ async def reject_measurement(
             company_id=ctx.company_id,
             measurement_id=measurement_id,
             reason=request_data.reason,
+            actor_user_id=ctx.user_id,
         )
-        return ConstructionMeasurementResponse.model_validate(measurement)
+        return await _build_measurement_response(service=service, ctx=ctx, measurement=measurement)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/measurements/{measurement_id}/submit", response_model=ConstructionMeasurementResponse)
+async def submit_measurement(
+    measurement_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionMeasurementResponse:
+    try:
+        measurement = await service.submit_measurement(
+            company_id=ctx.company_id,
+            measurement_id=measurement_id,
+            actor_user_id=ctx.user_id,
+        )
+        return await _build_measurement_response(service=service, ctx=ctx, measurement=measurement)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/units/{unit_id}/payment-plan")
+async def get_unit_payment_plan(
+    unit_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        return await service.build_unit_payment_plan(company_id=ctx.company_id, unit_id=unit_id)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/service-templates", response_model=ConstructionServiceTemplateListResponse)
+async def list_service_templates(
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+    search: str | None = Query(default=None),
+    only_active: bool = Query(default=True),
+) -> ConstructionServiceTemplateListResponse:
+    try:
+        templates = await service.list_service_templates(
+            company_id=ctx.company_id,
+            only_active=only_active,
+            search=search,
+        )
+        return ConstructionServiceTemplateListResponse(
+            items=[ConstructionServiceTemplateResponse.model_validate(template) for template in templates],
+            total=len(templates),
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/service-templates/{service_template_id}", response_model=ConstructionServiceTemplateResponse)
+async def get_service_template(
+    service_template_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionServiceTemplateResponse:
+    try:
+        template = await service.get_service_template(
+            company_id=ctx.company_id,
+            service_template_id=service_template_id,
+        )
+        return ConstructionServiceTemplateResponse.model_validate(template)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.patch("/service-templates/{service_template_id}", response_model=ConstructionServiceTemplateResponse)
+async def update_service_template(
+    service_template_id: UUID,
+    request_data: ConstructionServiceTemplateUpdate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionServiceTemplateResponse:
+    try:
+        template = await service.update_service_template(
+            company_id=ctx.company_id,
+            service_template_id=service_template_id,
+            request=request_data,
+        )
+        return ConstructionServiceTemplateResponse.model_validate(template)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/service-templates/import", response_model=ConstructionServiceTemplateImportResponse)
+async def import_service_templates(
+    files: list[UploadFile] = File(...),
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.CREATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionServiceTemplateImportResponse:
+    if len(files) > MAX_SERVICE_TEMPLATE_FILES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Send at most {MAX_SERVICE_TEMPLATE_FILES} spreadsheets per import.",
+        )
+
+    uploaded_files: list[tuple[str, bytes]] = []
+    for upload in files:
+        content = await upload.read()
+        if len(content) > MAX_SERVICE_TEMPLATE_FILE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail=f"Spreadsheet {upload.filename} is larger than the 5 MB limit.",
+            )
+
+        uploaded_files.append((upload.filename or "planilha.xlsx", content))
+
+    try:
+        results = await service.import_service_templates(company_id=ctx.company_id, files=uploaded_files)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+    parsed_results = [ConstructionServiceTemplateImportResult(**result) for result in results]
+    return ConstructionServiceTemplateImportResponse(
+        results=parsed_results,
+        created=sum(1 for result in parsed_results if result.status == "created"),
+        updated=sum(1 for result in parsed_results if result.status == "updated"),
+        skipped=sum(1 for result in parsed_results if result.status == "skipped"),
+        failed=sum(1 for result in parsed_results if result.status == "failed"),
+    )
+
+
+@router.get(
+    "/measurements/{measurement_id}/items",
+    response_model=ConstructionMeasurementItemListResponse,
+)
+async def list_measurement_items(
+    measurement_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionMeasurementItemListResponse:
+    try:
+        items = await service.list_measurement_items(company_id=ctx.company_id, measurement_id=measurement_id)
+        return ConstructionMeasurementItemListResponse(
+            items=[ConstructionMeasurementItemResponse.model_validate(item) for item in items],
+            total=len(items),
+            total_amount=sum((item.amount for item in items), Decimal("0")),
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post(
+    "/measurements/{measurement_id}/items",
+    response_model=ConstructionMeasurementItemResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_measurement_item(
+    measurement_id: UUID,
+    request_data: ConstructionMeasurementItemCreate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.CREATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionMeasurementItemResponse:
+    try:
+        item = await service.create_measurement_item(
+            company_id=ctx.company_id,
+            measurement_id=measurement_id,
+            request=request_data,
+            actor_user_id=ctx.user_id,
+        )
+        return ConstructionMeasurementItemResponse.model_validate(item)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/measurement-items/{item_id}", response_model=ConstructionMeasurementItemResponse)
+async def get_measurement_item(
+    item_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionMeasurementItemResponse:
+    try:
+        item = await service.get_measurement_item(company_id=ctx.company_id, item_id=item_id)
+        return ConstructionMeasurementItemResponse.model_validate(item)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.patch("/measurement-items/{item_id}", response_model=ConstructionMeasurementItemResponse)
+async def update_measurement_item(
+    item_id: UUID,
+    request_data: ConstructionMeasurementItemUpdate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionMeasurementItemResponse:
+    try:
+        item = await service.update_measurement_item(
+            company_id=ctx.company_id,
+            item_id=item_id,
+            request=request_data,
+        )
+        return ConstructionMeasurementItemResponse.model_validate(item)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.delete("/measurement-items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_measurement_item(
+    item_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.DELETE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> Response:
+    try:
+        await service.delete_measurement_item(company_id=ctx.company_id, item_id=item_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post(
+    "/measurement-items/{item_id}/inspections",
+    response_model=ConstructionMeasurementItemInspectionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_measurement_item_inspection(
+    item_id: UUID,
+    request_data: ConstructionMeasurementItemInspectionCreate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.CREATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionMeasurementItemInspectionResponse:
+    try:
+        inspection = await service.create_measurement_item_inspection(
+            company_id=ctx.company_id,
+            item_id=item_id,
+            request=request_data,
+        )
+        return ConstructionMeasurementItemInspectionResponse.model_validate(inspection)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.patch(
+    "/measurement-inspections/{inspection_id}",
+    response_model=ConstructionMeasurementItemInspectionResponse,
+)
+async def update_measurement_item_inspection(
+    inspection_id: UUID,
+    request_data: ConstructionMeasurementItemInspectionUpdate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionMeasurementItemInspectionResponse:
+    try:
+        inspection = await service.update_measurement_item_inspection(
+            company_id=ctx.company_id,
+            inspection_id=inspection_id,
+            request=request_data,
+        )
+        return ConstructionMeasurementItemInspectionResponse.model_validate(inspection)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post(
+    "/measurement-inspections/{inspection_id}/verify",
+    response_model=ConstructionMeasurementItemInspectionResponse,
+)
+async def verify_measurement_item_inspection(
+    inspection_id: UUID,
+    request_data: ConstructionMeasurementInspectionVerifyRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionMeasurementItemInspectionResponse:
+    try:
+        inspection = await service.verify_measurement_item_inspection(
+            company_id=ctx.company_id,
+            inspection_id=inspection_id,
+            request=request_data,
+            actor_user_id=ctx.user_id,
+        )
+        return ConstructionMeasurementItemInspectionResponse.model_validate(inspection)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.delete("/measurement-inspections/{inspection_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_measurement_item_inspection(
+    inspection_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.DELETE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> Response:
+    try:
+        await service.delete_measurement_item_inspection(company_id=ctx.company_id, inspection_id=inspection_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post(
+    "/measurement-items/{item_id}/occurrences",
+    response_model=ConstructionMeasurementItemOccurrenceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_measurement_item_occurrence(
+    item_id: UUID,
+    request_data: ConstructionMeasurementItemOccurrenceCreate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.CREATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionMeasurementItemOccurrenceResponse:
+    try:
+        occurrence = await service.create_measurement_item_occurrence(
+            company_id=ctx.company_id,
+            item_id=item_id,
+            request=request_data,
+            actor_user_id=ctx.user_id,
+        )
+        return ConstructionMeasurementItemOccurrenceResponse.model_validate(occurrence)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.patch(
+    "/measurement-occurrences/{occurrence_id}",
+    response_model=ConstructionMeasurementItemOccurrenceResponse,
+)
+async def update_measurement_item_occurrence(
+    occurrence_id: UUID,
+    request_data: ConstructionMeasurementItemOccurrenceUpdate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionMeasurementItemOccurrenceResponse:
+    try:
+        occurrence = await service.update_measurement_item_occurrence(
+            company_id=ctx.company_id,
+            occurrence_id=occurrence_id,
+            request=request_data,
+        )
+        return ConstructionMeasurementItemOccurrenceResponse.model_validate(occurrence)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.delete("/measurement-occurrences/{occurrence_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_measurement_item_occurrence(
+    occurrence_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.DELETE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> Response:
+    try:
+        await service.delete_measurement_item_occurrence(company_id=ctx.company_id, occurrence_id=occurrence_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 

@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import json
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -55,7 +56,15 @@ class FakeProjectService:
             updated_at=now,
         )
 
-    async def create_measurement(self, *, company_id: UUID, project_id: UUID, request):
+    async def build_measurement_items_summary(self, *, company_id: UUID, measurement_id: UUID):
+        return {
+            "items_total_amount": Decimal("0"),
+            "items_count": 0,
+            "pending_inspections_count": 0,
+            "open_occurrences_count": 0,
+        }
+
+    async def create_measurement(self, *, company_id: UUID, project_id: UUID, request, actor_user_id=None):
         now = datetime.now(tz=UTC)
         return SimpleNamespace(
             id=uuid4(),
@@ -67,7 +76,13 @@ class FakeProjectService:
             due_date=request.due_date,
             supplier_person_id=request.supplier_person_id,
             status="draft",
+            created_by_user_id=actor_user_id,
+            submitted_by_user_id=None,
+            submitted_at=None,
+            approved_by_user_id=None,
             approved_at=None,
+            rejected_by_user_id=None,
+            rejected_at=None,
             external_accounts_payable_id=None,
             external_accounts_payable_status=None,
             created_at=now,
@@ -310,6 +325,8 @@ def test_create_measurement_accepts_valid_permission() -> None:
         },
         json={
             "code": "MED-001",
+            "unit_id": str(uuid4()),
+            "schedule_phase_id": str(uuid4()),
             "description": "Medição fase fundação",
             "measured_amount": "1200.00",
             "due_date": "2026-05-15",

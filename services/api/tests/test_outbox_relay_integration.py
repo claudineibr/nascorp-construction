@@ -10,13 +10,19 @@ from tests.integration_database import create_reachable_engine_or_skip
 
 
 class FailingOncePublisher:
-    def __init__(self) -> None:
+    def __init__(self, target_event_id=None) -> None:
         self.publish_attempts = 0
+        self.target_event_id = target_event_id
+        self.target_publish_attempts = 0
         self.successful_publisher = InMemoryEventBus()
 
     async def publish(self, event):
         self.publish_attempts += 1
-        if self.publish_attempts == 1:
+        if self.target_event_id is not None and event.event_id != self.target_event_id:
+            return await self.successful_publisher.publish(event)
+
+        self.target_publish_attempts += 1
+        if self.target_publish_attempts == 1:
             raise RuntimeError("broker unavailable")
 
         return await self.successful_publisher.publish(event)
@@ -34,7 +40,7 @@ async def test_database_outbox_relay_commits_and_retries_with_real_repository() 
     engine = await create_reachable_engine_or_skip()
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
     event = make_event()
-    publisher = FailingOncePublisher()
+    publisher = FailingOncePublisher(target_event_id=event.event_id)
 
     try:
         async with session_factory() as setup_session:
@@ -53,7 +59,9 @@ async def test_database_outbox_relay_commits_and_retries_with_real_repository() 
         async with session_factory() as first_assertion_session:
             failed_outbox_event = await get_outbox_event(session=first_assertion_session, event_id=event.event_id)
 
-            assert first_relayed_count == 0
+            assert event.event_id not in [
+                relayed_event.event_id for relayed_event in publisher.successful_publisher.events
+            ]
             assert failed_outbox_event.status == EventStatus.FAILED
             assert failed_outbox_event.retry_count == 1
 
@@ -68,11 +76,11 @@ async def test_database_outbox_relay_commits_and_retries_with_real_repository() 
         async with session_factory() as second_assertion_session:
             published_outbox_event = await get_outbox_event(session=second_assertion_session, event_id=event.event_id)
 
-            assert second_relayed_count == 1
+            assert second_relayed_count >= 1
             assert published_outbox_event.status == EventStatus.PUBLISHED
             assert published_outbox_event.retry_count == 1
             assert published_outbox_event.published_at is not None
-            assert publisher.publish_attempts == 2
+            assert publisher.target_publish_attempts == 2
     finally:
         async with session_factory() as cleanup_session:
             await cleanup_session.execute(delete(DeadLetterEvent).where(DeadLetterEvent.event_id == event.event_id))

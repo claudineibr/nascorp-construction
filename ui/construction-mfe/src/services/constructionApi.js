@@ -63,7 +63,13 @@ const toUnitView = (unit) => ({
   privateArea: unit.private_area ?? null,
   totalArea: unit.total_area ?? null,
   salePrice: unit.sale_price ?? null,
+  discountAmount: unit.discount_amount ?? null,
+  netSalePrice: unit.net_sale_price ?? null,
   buyerPersonId: unit.buyer_person_id ?? null,
+  secondaryBuyerPersonId: unit.secondary_buyer_person_id ?? null,
+  brokerPersonId: unit.broker_person_id ?? null,
+  contractSignatureDate: unit.contract_signature_date ?? null,
+  saleNotes: unit.sale_notes ?? "",
   reservedAt: unit.reserved_at ?? null,
   reservationExpiresAt: unit.reservation_expires_at ?? null,
   soldAt: unit.sold_at ?? null,
@@ -75,6 +81,71 @@ const toUnitView = (unit) => ({
   status: unit.status,
   createdAt: unit.created_at ?? null,
   updatedAt: unit.updated_at ?? null,
+})
+
+const toServiceTemplateView = (template) => ({
+  id: template.id,
+  companyId: template.company_id,
+  name: template.name,
+  productId: template.product_id ?? null,
+  sourceFileName: template.source_file_name ?? "",
+  isActive: template.is_active,
+  items: (template.items ?? []).map((item) => ({
+    id: item.id,
+    sequenceNumber: item.sequence_number,
+    description: item.description,
+    verificationMethod: item.verification_method,
+  })),
+})
+
+const toMeasurementItemView = (item) => ({
+  id: item.id,
+  companyId: item.company_id,
+  measurementId: item.measurement_id,
+  sequenceNumber: item.sequence_number,
+  serviceTemplateId: item.service_template_id ?? null,
+  productId: item.product_id ?? null,
+  productDescription: item.product_description ?? "",
+  description: item.description,
+  amount: item.amount ?? null,
+  startDate: item.start_date ?? null,
+  endDate: item.end_date ?? null,
+  inspectorPersonId: item.inspector_person_id ?? null,
+  inspectionStatus: item.inspection_status,
+  createdByUserId: item.created_by_user_id ?? null,
+  inspections: (item.inspections ?? []).map(toMeasurementInspectionView),
+  occurrences: (item.occurrences ?? []).map(toMeasurementOccurrenceView),
+})
+
+const toMeasurementInspectionView = (inspection) => ({
+  id: inspection.id,
+  measurementItemId: inspection.measurement_item_id,
+  sequenceNumber: inspection.sequence_number,
+  description: inspection.description,
+  verificationMethod: inspection.verification_method ?? "",
+  startDate: inspection.start_date ?? null,
+  endDate: inspection.end_date ?? null,
+  inspectorPersonId: inspection.inspector_person_id ?? null,
+  firstStatus: inspection.first_status,
+  firstStatusAt: inspection.first_status_at ?? null,
+  firstStatusByUserId: inspection.first_status_by_user_id ?? null,
+  secondStatus: inspection.second_status,
+  secondStatusAt: inspection.second_status_at ?? null,
+  secondStatusByUserId: inspection.second_status_by_user_id ?? null,
+  isDoubleChecked: inspection.is_double_checked ?? false,
+})
+
+const toMeasurementOccurrenceView = (occurrence) => ({
+  id: occurrence.id,
+  measurementItemId: occurrence.measurement_item_id,
+  sequenceNumber: occurrence.sequence_number,
+  problem: occurrence.problem,
+  solution: occurrence.solution ?? "",
+  status: occurrence.status,
+  openedAt: occurrence.opened_at ?? null,
+  closedAt: occurrence.closed_at ?? null,
+  inspectorPersonId: occurrence.inspector_person_id ?? null,
+  registeredByUserId: occurrence.registered_by_user_id ?? null,
 })
 
 const toMeasurementView = (measurement) => ({
@@ -99,6 +170,16 @@ const toMeasurementView = (measurement) => ({
   status: measurement.status,
   rejectionReason: measurement.rejection_reason ?? null,
   approvedAt: measurement.approved_at ?? null,
+  createdByUserId: measurement.created_by_user_id ?? null,
+  submittedByUserId: measurement.submitted_by_user_id ?? null,
+  submittedAt: measurement.submitted_at ?? null,
+  approvedByUserId: measurement.approved_by_user_id ?? null,
+  rejectedByUserId: measurement.rejected_by_user_id ?? null,
+  rejectedAt: measurement.rejected_at ?? null,
+  itemsTotalAmount: measurement.items_total_amount ?? null,
+  itemsCount: measurement.items_count ?? null,
+  pendingInspectionsCount: measurement.pending_inspections_count ?? null,
+  openOccurrencesCount: measurement.open_occurrences_count ?? null,
   externalAccountsPayableId: measurement.external_accounts_payable_id ?? null,
   externalAccountsPayableStatus: measurement.external_accounts_payable_status ?? null,
   createdAt: measurement.created_at ?? null,
@@ -257,6 +338,17 @@ const toProcurementPayload = (procurementData = {}) => ({
   estimated_amount: toNullableNumber(procurementData.estimatedAmount),
   needed_by_date: toNullableString(procurementData.neededByDate),
   supplier_person_id: toNullableString(procurementData.supplierPersonId),
+})
+
+const toMeasurementItemPayload = (itemData = {}) => ({
+  description: toNullableString(itemData.description),
+  service_template_id: toNullableString(itemData.serviceTemplateId),
+  amount: toNullableNumber(itemData.amount),
+  product_id: toNullableString(itemData.productId),
+  product_description: toNullableString(itemData.productDescription),
+  start_date: toNullableString(itemData.startDate),
+  end_date: toNullableString(itemData.endDate),
+  inspector_person_id: toNullableString(itemData.inspectorPersonId),
 })
 
 const toSalePaymentSourcePayload = (paymentSource = {}) => ({
@@ -580,7 +672,12 @@ export async function confirmConstructionUnitSale({ bridge, unitId, saleData }) 
     method: "POST",
     body: {
       buyer_person_id: saleData.buyerPersonId,
+      secondary_buyer_person_id: toNullableString(saleData.secondaryBuyerPersonId),
+      broker_person_id: toNullableString(saleData.brokerPersonId),
       sale_price: toNullableNumber(saleData.salePrice),
+      discount_amount: toNullableNumber(saleData.discountAmount),
+      contract_signature_date: toNullableString(saleData.contractSignatureDate),
+      sale_notes: toNullableString(saleData.saleNotes),
       first_due_date: firstPaymentDueDate,
       installments: Number(saleData.installments || paymentSources[0]?.installments || 1),
       payment_sources: paymentSources.length ? paymentSources : null,
@@ -588,6 +685,273 @@ export async function confirmConstructionUnitSale({ bridge, unitId, saleData }) 
   })
 
   return toUnitView(payload)
+}
+
+export async function getConstructionUnitPaymentPlan({ bridge, unitId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/payment-plan`,
+  })
+
+  const plan = payload.payment_plan ?? {}
+
+  return {
+    constructionUnitId: payload.construction_unit_id,
+    unitCode: payload.unit_code,
+    salePrice: payload.sale_price ?? null,
+    discountAmount: payload.discount_amount ?? null,
+    installmentTotal: payload.installment_total ?? null,
+    settlementTotal: payload.settlement_total ?? null,
+    externalReceivableId: payload.external_receivable_id ?? null,
+    externalReceivableStatus: payload.external_receivable_status ?? null,
+    sources: (payload.sources ?? []).map((source) => ({
+      sourceType: source.source_type,
+      label: source.label,
+      amount: source.amount ?? null,
+      dueDate: source.due_date ?? null,
+      installments: source.installments ?? 1,
+      generatesInstallments: Boolean(source.generates_installments),
+    })),
+    paymentPlan: {
+      receivableId: plan.receivable_id ?? null,
+      receivableStatus: plan.receivable_status ?? null,
+      receivableDescription: plan.receivable_description ?? "",
+      receivableTotalAmount: plan.receivable_total_amount ?? null,
+      contractId: plan.contract_id ?? null,
+      contractCode: plan.contract_code ?? "",
+      contractStatus: plan.contract_status ?? "",
+      contractContentHtml: plan.contract_content_html ?? "",
+      installmentsTotal: plan.installments_total ?? 0,
+      paidTotal: plan.paid_total ?? 0,
+      openTotal: plan.open_total ?? 0,
+      overdueCount: plan.overdue_count ?? 0,
+      erpUnavailableReason: plan.erp_unavailable_reason ?? "",
+      installments: (plan.installments ?? []).map((installment) => ({
+        id: installment.id,
+        installmentNumber: installment.installment_number,
+        totalInstallments: installment.total_installments,
+        dueDate: installment.due_date,
+        amount: installment.amount ?? null,
+        paidAmount: installment.paid_amount ?? null,
+        paymentDate: installment.payment_date ?? null,
+        status: installment.status,
+        documentNumber: installment.document_number ?? "",
+      })),
+    },
+  }
+}
+
+export async function listConstructionServiceTemplates({ bridge, search = null, onlyActive = true } = {}) {
+  const params = new URLSearchParams()
+  if (search) {
+    params.set("search", search)
+  }
+
+  params.set("only_active", onlyActive ? "true" : "false")
+
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/service-templates?${params.toString()}`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toServiceTemplateView),
+    total: payload.total ?? 0,
+  }
+}
+
+export async function updateConstructionServiceTemplate({ bridge, serviceTemplateId, templateData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/service-templates/${serviceTemplateId}`,
+    method: "PATCH",
+    body: {
+      name: toNullableString(templateData.name),
+      is_active: templateData.isActive,
+    },
+  })
+
+  return toServiceTemplateView(payload)
+}
+
+export async function importConstructionServiceTemplates({ bridge, files }) {
+  const apiBaseUrl = bridge?.constructionApiBaseUrl || DEFAULT_CONSTRUCTION_API_URL
+  const headers = { ...(bridge?.getAuthHeaders?.() ?? {}) }
+
+  if (!headers.Authorization || !headers["X-Company-ID"]) {
+    throw new Error("Contexto autenticado da empresa indisponível.")
+  }
+
+  const formData = new FormData()
+  for (const file of files) {
+    formData.append("files", file, file.name)
+  }
+
+  const response = await fetch(`${apiBaseUrl}/v1/construction/service-templates/import`, {
+    method: "POST",
+    headers,
+    body: formData,
+  })
+
+  if (!response.ok) {
+    let errorMessage = "Não foi possível importar a planilha de serviços."
+    try {
+      const payload = await response.json()
+      errorMessage = payload?.detail?.message || payload?.detail || payload?.message || errorMessage
+    } catch {
+      // resposta sem corpo JSON mantém a mensagem padrão
+    }
+    throw new Error(typeof errorMessage === "string" ? errorMessage : "Falha ao importar a planilha.")
+  }
+
+  const payload = await response.json()
+
+  return {
+    results: (payload.results ?? []).map((result) => ({
+      fileName: result.file_name,
+      status: result.status,
+      serviceTemplateId: result.service_template_id ?? null,
+      serviceName: result.service_name ?? "",
+      itemsCount: result.items_count ?? 0,
+      message: result.message ?? "",
+    })),
+    created: payload.created ?? 0,
+    updated: payload.updated ?? 0,
+    skipped: payload.skipped ?? 0,
+    failed: payload.failed ?? 0,
+  }
+}
+
+export async function submitConstructionMeasurement({ bridge, measurementId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurements/${measurementId}/submit`,
+    method: "POST",
+  })
+
+  return toMeasurementView(payload)
+}
+
+export async function listConstructionMeasurementItems({ bridge, measurementId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurements/${measurementId}/items`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toMeasurementItemView),
+    total: payload.total ?? 0,
+    totalAmount: payload.total_amount ?? 0,
+  }
+}
+
+export async function createConstructionMeasurementItem({ bridge, measurementId, itemData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurements/${measurementId}/items`,
+    method: "POST",
+    body: toMeasurementItemPayload(itemData),
+  })
+
+  return toMeasurementItemView(payload)
+}
+
+export async function updateConstructionMeasurementItem({ bridge, itemId, itemData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurement-items/${itemId}`,
+    method: "PATCH",
+    body: toMeasurementItemPayload(itemData),
+  })
+
+  return toMeasurementItemView(payload)
+}
+
+export async function deleteConstructionMeasurementItem({ bridge, itemId }) {
+  await requestJson({
+    bridge,
+    path: `/v1/construction/measurement-items/${itemId}`,
+    method: "DELETE",
+  })
+}
+
+export async function createConstructionMeasurementInspection({ bridge, itemId, inspectionData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurement-items/${itemId}/inspections`,
+    method: "POST",
+    body: {
+      description: inspectionData.description,
+      verification_method: toNullableString(inspectionData.verificationMethod),
+      start_date: toNullableString(inspectionData.startDate),
+      end_date: toNullableString(inspectionData.endDate),
+      inspector_person_id: toNullableString(inspectionData.inspectorPersonId),
+    },
+  })
+
+  return toMeasurementInspectionView(payload)
+}
+
+export async function verifyConstructionMeasurementInspection({ bridge, inspectionId, checkNumber, status }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurement-inspections/${inspectionId}/verify`,
+    method: "POST",
+    body: {
+      check_number: checkNumber,
+      status,
+    },
+  })
+
+  return toMeasurementInspectionView(payload)
+}
+
+export async function deleteConstructionMeasurementInspection({ bridge, inspectionId }) {
+  await requestJson({
+    bridge,
+    path: `/v1/construction/measurement-inspections/${inspectionId}`,
+    method: "DELETE",
+  })
+}
+
+export async function createConstructionMeasurementOccurrence({ bridge, itemId, occurrenceData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurement-items/${itemId}/occurrences`,
+    method: "POST",
+    body: {
+      problem: occurrenceData.problem,
+      solution: toNullableString(occurrenceData.solution),
+      opened_at: toNullableString(occurrenceData.openedAt),
+      inspector_person_id: toNullableString(occurrenceData.inspectorPersonId),
+    },
+  })
+
+  return toMeasurementOccurrenceView(payload)
+}
+
+export async function updateConstructionMeasurementOccurrence({ bridge, occurrenceId, occurrenceData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurement-occurrences/${occurrenceId}`,
+    method: "PATCH",
+    body: {
+      problem: toNullableString(occurrenceData.problem),
+      solution: toNullableString(occurrenceData.solution),
+      status: toNullableString(occurrenceData.status),
+      closed_at: toNullableString(occurrenceData.closedAt),
+    },
+  })
+
+  return toMeasurementOccurrenceView(payload)
+}
+
+export async function deleteConstructionMeasurementOccurrence({ bridge, occurrenceId }) {
+  await requestJson({
+    bridge,
+    path: `/v1/construction/measurement-occurrences/${occurrenceId}`,
+    method: "DELETE",
+  })
 }
 
 export async function listConstructionMeasurements({ bridge, projectId }) {

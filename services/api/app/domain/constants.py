@@ -45,6 +45,45 @@ class ConstructionMeasurementStatus:
     PAID = "paid"
 
 
+class ConstructionUnitPaymentSource:
+    DOWN_PAYMENT = "down_payment"
+    DIRECT_BUILDER = "direct_builder"
+    GOVERNMENT_SUBSIDY = "government_subsidy"
+    FGTS = "fgts"
+    FINANCING = "financing"
+
+    ALL_SOURCES = {DOWN_PAYMENT, DIRECT_BUILDER, GOVERNMENT_SUBSIDY, FGTS, FINANCING}
+
+    INSTALLMENT_SOURCES = {DOWN_PAYMENT, DIRECT_BUILDER}
+
+    SETTLEMENT_SOURCES = {GOVERNMENT_SUBSIDY, FGTS, FINANCING}
+
+    LABELS = {
+        DOWN_PAYMENT: "Entrada",
+        DIRECT_BUILDER: "Parcelas construtora",
+        GOVERNMENT_SUBSIDY: "Subsidio",
+        FGTS: "FGTS",
+        FINANCING: "Financiamento",
+    }
+
+
+class ConstructionInspectionStatus:
+    PENDING = "pending"
+    COMPLIANT = "compliant"
+    NON_COMPLIANT = "non_compliant"
+
+    ALL_STATUSES = {PENDING, COMPLIANT, NON_COMPLIANT}
+    RESOLVED_STATUSES = {COMPLIANT, NON_COMPLIANT}
+
+
+class ConstructionOccurrenceStatus:
+    OPEN = "open"
+    RESOLVED = "resolved"
+    CANCELLED = "cancelled"
+
+    ALL_STATUSES = {OPEN, RESOLVED, CANCELLED}
+
+
 class ConstructionProcurementStatus:
     DRAFT = "draft"
     PENDING_APPROVAL = "pending_approval"

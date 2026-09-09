@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   BarChart3,
   Building2,
+  ChevronDown,
   ChevronLeft,
   CheckCircle,
   Clock,
   FileCog,
+  FileText,
   HandCoins,
   Home,
   Layers3,
@@ -15,7 +17,11 @@ import {
   Plus,
   RefreshCw,
   Route,
+  Send,
+  ShieldCheck,
+  Upload,
   ShoppingCart,
+  TriangleAlert,
   Trash2,
   Unlock,
 } from "lucide-react"
@@ -27,32 +33,46 @@ import {
   confirmConstructionUnitSale,
   createConstructionBlock,
   createConstructionMeasurement,
+  createConstructionMeasurementInspection,
+  createConstructionMeasurementItem,
+  createConstructionMeasurementOccurrence,
   createConstructionProcurementRequest,
   createConstructionProject,
   createConstructionSchedulePhase,
   createConstructionUnit,
   deleteConstructionBlock,
   deleteConstructionMeasurement,
+  deleteConstructionMeasurementInspection,
+  deleteConstructionMeasurementItem,
+  deleteConstructionMeasurementOccurrence,
   deleteConstructionProcurementRequest,
   deleteConstructionProject,
   deleteConstructionSchedulePhase,
   deleteConstructionUnit,
   fetchConstructionAddressByZip,
   listConstructionBlocks,
+  getConstructionUnitPaymentPlan,
+  importConstructionServiceTemplates,
+  listConstructionMeasurementItems,
   listConstructionMeasurements,
   listConstructionPersonSummaries,
   listConstructionProcurementRequests,
   listConstructionProjects,
   listConstructionSchedulePhases,
+  listConstructionServiceTemplates,
   listConstructionUnits,
   rejectConstructionProcurementRequest,
   rejectConstructionMeasurement,
   releaseConstructionUnitReservation,
   reserveConstructionUnit,
+  submitConstructionMeasurement,
   submitConstructionProcurementRequest,
   updateConstructionBlock,
   updateConstructionMeasurement,
+  updateConstructionMeasurementItem,
+  updateConstructionMeasurementOccurrence,
   updateConstructionProcurementRequest,
+  verifyConstructionMeasurementInspection,
   updateConstructionProject,
   updateConstructionSchedulePhase,
   updateConstructionUnit,
@@ -145,6 +165,7 @@ const unitDetailTabs = [
   { id: "summary", label: "Resumo", icon: Home },
   { id: "measurements", label: "Medicoes", icon: HandCoins },
   { id: "installments", label: "Parcelas", icon: ShoppingCart },
+  { id: "contract", label: "Contrato", icon: FileText },
 ]
 
 const statusOptions = Object.entries(statusLabel)
@@ -256,7 +277,12 @@ const defaultReserveUnitForm = {
 
 const defaultSaleUnitForm = {
   buyerPersonId: "",
+  secondaryBuyerPersonId: "",
+  brokerPersonId: "",
   salePrice: "",
+  discountAmount: "",
+  contractSignatureDate: "",
+  saleNotes: "",
   downPaymentAmount: "",
   downPaymentDueDate: "",
   downPaymentInstallments: "1",
@@ -273,6 +299,8 @@ const defaultSaleUnitForm = {
   financingDueDate: "",
   financingInstallments: "1",
 }
+
+const SALE_INSTALLMENT_SOURCE_TYPES = ["down_payment", "direct_builder"]
 
 const salePaymentSourceDefinitions = [
   {
@@ -311,6 +339,48 @@ const salePaymentSourceDefinitions = [
     installmentsField: "financingInstallments",
   },
 ]
+
+const receivableInstallmentStatusLabel = {
+  OPEN: "Aberta",
+  PAID: "Paga",
+  PARTIALLY_PAID: "Parcial",
+  OVERDUE: "Vencida",
+  CANCELED: "Cancelada",
+}
+
+const inspectionStatusLabel = {
+  pending: "Pendente",
+  compliant: "Procedente",
+  non_compliant: "Improcedente",
+}
+
+const occurrenceStatusLabel = {
+  open: "Aberta",
+  resolved: "Resolvida",
+  cancelled: "Cancelada",
+}
+
+const defaultMeasurementItemForm = {
+  serviceTemplateId: "",
+  description: "",
+  amount: "",
+  productDescription: "",
+  startDate: "",
+  endDate: "",
+  inspectorPersonId: "",
+}
+
+const defaultInspectionForm = {
+  description: "",
+  verificationMethod: "",
+  startDate: "",
+  endDate: "",
+}
+
+const defaultOccurrenceForm = {
+  problem: "",
+  solution: "",
+}
 
 const defaultMeasurementForm = {
   code: "",
@@ -599,6 +669,21 @@ function requiredSaleFieldError(formSale) {
     return "Informe a pessoa compradora para confirmar a venda."
   }
 
+  const secondaryBuyerPersonId = String(formSale.secondaryBuyerPersonId ?? "").trim()
+  if (secondaryBuyerPersonId && secondaryBuyerPersonId === String(formSale.buyerPersonId ?? "").trim()) {
+    return "O comprador secundario deve ser diferente do comprador principal."
+  }
+
+  const grossSalePrice = parseCurrencyFormValue(formSale.salePrice)
+  const discountAmount = parseCurrencyFormValue(formSale.discountAmount)
+  if (discountAmount < 0) {
+    return "O desconto nao pode ser negativo."
+  }
+
+  if (grossSalePrice > 0 && discountAmount >= grossSalePrice) {
+    return "O desconto deve ser menor que o preco da venda."
+  }
+
   const paymentSources = buildSalePaymentSourcesFromForm(formSale)
   if (paymentSources.length) {
     for (const paymentSource of paymentSources) {
@@ -612,10 +697,25 @@ function requiredSaleFieldError(formSale) {
       }
     }
 
-    const salePrice = parseCurrencyFormValue(formSale.salePrice)
     const sourcesTotal = paymentSources.reduce((total, paymentSource) => total + paymentSource.amountValue, 0)
-    if (salePrice > 0 && Math.abs(sourcesTotal - salePrice) > 0.01) {
-      return "A soma da composicao financeira deve ser igual ao preco da venda."
+    if (grossSalePrice > 0 && Math.abs(sourcesTotal + discountAmount - grossSalePrice) > 0.01) {
+      return "A composicao financeira somada ao desconto deve ser igual ao preco da venda."
+    }
+
+    const installmentTotal = paymentSources
+      .filter((paymentSource) => SALE_INSTALLMENT_SOURCE_TYPES.includes(paymentSource.sourceType))
+      .reduce((total, paymentSource) => total + paymentSource.amountValue, 0)
+    if (installmentTotal <= 0) {
+      return "A venda precisa de entrada ou parcelas construtora: subsidio, FGTS e financiamento nao geram parcela."
+    }
+
+    for (const paymentSource of paymentSources) {
+      if (
+        !SALE_INSTALLMENT_SOURCE_TYPES.includes(paymentSource.sourceType) &&
+        Number(paymentSource.installments) > 1
+      ) {
+        return `${paymentSource.label} depende de liberacao do banco e nao pode ser parcelado.`
+      }
     }
 
     return null
@@ -725,6 +825,17 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [submittingReserve, setSubmittingReserve] = useState(false)
 
   const [isSaleModalOpen, setIsSaleModalOpen] = useState(false)
+  const [itemsTargetMeasurement, setItemsTargetMeasurement] = useState(null)
+  const [measurementItems, setMeasurementItems] = useState([])
+  const [loadingMeasurementItems, setLoadingMeasurementItems] = useState(false)
+  const [measurementItemsError, setMeasurementItemsError] = useState(null)
+  const [savingMeasurementItem, setSavingMeasurementItem] = useState(false)
+  const [serviceTemplates, setServiceTemplates] = useState([])
+  const [loadingServiceTemplates, setLoadingServiceTemplates] = useState(false)
+  const [importingServiceTemplates, setImportingServiceTemplates] = useState(false)
+  const [unitPaymentPlan, setUnitPaymentPlan] = useState(null)
+  const [loadingUnitPaymentPlan, setLoadingUnitPaymentPlan] = useState(false)
+  const [unitPaymentPlanError, setUnitPaymentPlanError] = useState(null)
   const [saleUnitForm, setSaleUnitForm] = useState(defaultSaleUnitForm)
   const [saleTargetUnit, setSaleTargetUnit] = useState(null)
   const [submittingSale, setSubmittingSale] = useState(false)
@@ -1120,11 +1231,16 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const openUnitDetail = (unit) => {
     setActiveUnitId(unit.id)
     setUnitDetailTab("summary")
+    setUnitPaymentPlan(null)
+    setUnitPaymentPlanError(null)
+    void loadUnitPaymentPlan(unit.id)
   }
 
   const closeUnitDetail = () => {
     setActiveUnitId(null)
     setUnitDetailTab("summary")
+    setUnitPaymentPlan(null)
+    setUnitPaymentPlanError(null)
   }
 
   const reloadProjectDetail = async () => {
@@ -1650,8 +1766,13 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     setSaleUnitForm({
       ...defaultSaleUnitForm,
       buyerPersonId: unit.buyerPersonId ?? "",
-      salePrice: unit.salePrice === null || unit.salePrice === undefined ? "" : String(unit.salePrice),
-      directBuilderAmount: unit.salePrice === null || unit.salePrice === undefined ? "" : String(unit.salePrice),
+      secondaryBuyerPersonId: unit.secondaryBuyerPersonId ?? "",
+      brokerPersonId: unit.brokerPersonId ?? "",
+      salePrice: formatCurrencyFromNumber(unit.salePrice),
+      discountAmount: formatCurrencyFromNumber(unit.discountAmount),
+      contractSignatureDate: unit.contractSignatureDate ?? "",
+      saleNotes: unit.saleNotes ?? "",
+      directBuilderAmount: formatCurrencyFromNumber(unit.netSalePrice ?? unit.salePrice),
     })
     setIsSaleModalOpen(true)
   }
@@ -1701,6 +1822,290 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel confirmar a venda da unidade.")
     } finally {
       setSubmittingSale(false)
+    }
+  }
+
+  const loadMeasurementItems = useCallback(
+    async (measurementId) => {
+      if (!measurementId) {
+        return
+      }
+
+      setLoadingMeasurementItems(true)
+      setMeasurementItemsError(null)
+      try {
+        const result = await listConstructionMeasurementItems({ bridge, measurementId })
+        setMeasurementItems(result.items)
+      } catch (requestError) {
+        setMeasurementItems([])
+        setMeasurementItemsError(requestError?.message ?? "Nao foi possivel carregar os itens da medicao.")
+      } finally {
+        setLoadingMeasurementItems(false)
+      }
+    },
+    [bridge]
+  )
+
+  const loadUnitPaymentPlan = useCallback(
+    async (unitId) => {
+      if (!unitId) {
+        return
+      }
+
+      setLoadingUnitPaymentPlan(true)
+      setUnitPaymentPlanError(null)
+      try {
+        const plan = await getConstructionUnitPaymentPlan({ bridge, unitId })
+        setUnitPaymentPlan(plan)
+      } catch (requestError) {
+        setUnitPaymentPlan(null)
+        setUnitPaymentPlanError(requestError?.message ?? "Nao foi possivel carregar as parcelas da unidade.")
+      } finally {
+        setLoadingUnitPaymentPlan(false)
+      }
+    },
+    [bridge]
+  )
+
+  const loadServiceTemplates = useCallback(async () => {
+    setLoadingServiceTemplates(true)
+    try {
+      const result = await listConstructionServiceTemplates({ bridge })
+      setServiceTemplates(result.items)
+    } catch (requestError) {
+      setServiceTemplates([])
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel carregar o catalogo de servicos.")
+    } finally {
+      setLoadingServiceTemplates(false)
+    }
+  }, [bridge])
+
+  const handleImportServiceTemplates = async (fileList) => {
+    const files = Array.from(fileList ?? [])
+    if (!files.length) {
+      return
+    }
+
+    setImportingServiceTemplates(true)
+    try {
+      const result = await importConstructionServiceTemplates({ bridge, files })
+      const summary = [
+        result.created ? `${result.created} servico(s) criado(s)` : "",
+        result.updated ? `${result.updated} atualizado(s)` : "",
+        result.skipped ? `${result.skipped} ja cadastrado(s)` : "",
+        result.failed ? `${result.failed} com erro` : "",
+      ]
+        .filter(Boolean)
+        .join(", ")
+
+      if (result.failed) {
+        const failures = result.results
+          .filter((item) => item.status === "failed")
+          .map((item) => `${item.fileName}: ${item.message}`)
+          .join(" | ")
+        bridge?.feedback?.warning?.(`${summary}. ${failures}`)
+      } else {
+        bridge?.feedback?.success?.(`Importacao concluida: ${summary}.`)
+      }
+
+      await loadServiceTemplates()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel importar a planilha de servicos.")
+    } finally {
+      setImportingServiceTemplates(false)
+    }
+  }
+
+  const openMeasurementItems = (measurement) => {
+    if (!personSummaries.length) {
+      void loadPersonSummaries()
+    }
+
+    setItemsTargetMeasurement(measurement)
+    setMeasurementItems([])
+    void loadMeasurementItems(measurement.id)
+    if (!serviceTemplates.length) {
+      void loadServiceTemplates()
+    }
+  }
+
+  const closeMeasurementItems = () => {
+    if (savingMeasurementItem) {
+      return
+    }
+
+    setItemsTargetMeasurement(null)
+    setMeasurementItems([])
+    setMeasurementItemsError(null)
+  }
+
+  const handleCreateMeasurementItem = async (itemForm) => {
+    if (!itemsTargetMeasurement) {
+      return false
+    }
+
+    if (!String(itemForm.serviceTemplateId ?? "").trim() && !String(itemForm.description ?? "").trim()) {
+      bridge?.feedback?.warning?.("Escolha o servico do catalogo ou informe a descricao.")
+      return false
+    }
+
+    if (parseCurrencyFormValue(itemForm.amount) <= 0) {
+      bridge?.feedback?.warning?.("Informe o valor do servico medido.")
+      return false
+    }
+
+    setSavingMeasurementItem(true)
+    try {
+      await createConstructionMeasurementItem({
+        bridge,
+        measurementId: itemsTargetMeasurement.id,
+        itemData: itemForm,
+      })
+      bridge?.feedback?.success?.("Item de servico adicionado.")
+      await loadMeasurementItems(itemsTargetMeasurement.id)
+      await loadMeasurements()
+      return true
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel adicionar o item de servico.")
+      return false
+    } finally {
+      setSavingMeasurementItem(false)
+    }
+  }
+
+  const handleDeleteMeasurementItem = async (item) => {
+    if (!itemsTargetMeasurement) {
+      return
+    }
+
+    setSavingMeasurementItem(true)
+    try {
+      await deleteConstructionMeasurementItem({ bridge, itemId: item.id })
+      bridge?.feedback?.success?.("Item de servico removido.")
+      await loadMeasurementItems(itemsTargetMeasurement.id)
+      await loadMeasurements()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover o item de servico.")
+    } finally {
+      setSavingMeasurementItem(false)
+    }
+  }
+
+  const handleCreateInspection = async (itemId, inspectionForm) => {
+    if (!String(inspectionForm.description ?? "").trim()) {
+      bridge?.feedback?.warning?.("Informe o que sera verificado.")
+      return false
+    }
+
+    setSavingMeasurementItem(true)
+    try {
+      await createConstructionMeasurementInspection({ bridge, itemId, inspectionData: inspectionForm })
+      bridge?.feedback?.success?.("Item de inspecao adicionado.")
+      await loadMeasurementItems(itemsTargetMeasurement.id)
+      return true
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel adicionar o item de inspecao.")
+      return false
+    } finally {
+      setSavingMeasurementItem(false)
+    }
+  }
+
+  const handleVerifyInspection = async (inspection, checkNumber, status) => {
+    setSavingMeasurementItem(true)
+    try {
+      await verifyConstructionMeasurementInspection({
+        bridge,
+        inspectionId: inspection.id,
+        checkNumber,
+        status,
+      })
+      bridge?.feedback?.success?.(
+        checkNumber === 1 ? "Primeira verificacao registrada." : "Segunda verificacao registrada."
+      )
+      await loadMeasurementItems(itemsTargetMeasurement.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel registrar a verificacao.")
+    } finally {
+      setSavingMeasurementItem(false)
+    }
+  }
+
+  const handleDeleteInspection = async (inspection) => {
+    setSavingMeasurementItem(true)
+    try {
+      await deleteConstructionMeasurementInspection({ bridge, inspectionId: inspection.id })
+      await loadMeasurementItems(itemsTargetMeasurement.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover o item de inspecao.")
+    } finally {
+      setSavingMeasurementItem(false)
+    }
+  }
+
+  const handleCreateOccurrence = async (itemId, occurrenceForm) => {
+    if (!String(occurrenceForm.problem ?? "").trim()) {
+      bridge?.feedback?.warning?.("Descreva o problema encontrado.")
+      return false
+    }
+
+    setSavingMeasurementItem(true)
+    try {
+      await createConstructionMeasurementOccurrence({ bridge, itemId, occurrenceData: occurrenceForm })
+      bridge?.feedback?.success?.("Ocorrencia registrada.")
+      await loadMeasurementItems(itemsTargetMeasurement.id)
+      return true
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel registrar a ocorrencia.")
+      return false
+    } finally {
+      setSavingMeasurementItem(false)
+    }
+  }
+
+  const handleResolveOccurrence = async (occurrence, solution) => {
+    if (!String(solution ?? "").trim()) {
+      bridge?.feedback?.warning?.("Descreva a solucao antes de resolver a ocorrencia.")
+      return false
+    }
+
+    setSavingMeasurementItem(true)
+    try {
+      await updateConstructionMeasurementOccurrence({
+        bridge,
+        occurrenceId: occurrence.id,
+        occurrenceData: { status: "resolved", solution },
+      })
+      bridge?.feedback?.success?.("Ocorrencia resolvida.")
+      await loadMeasurementItems(itemsTargetMeasurement.id)
+      return true
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel resolver a ocorrencia.")
+      return false
+    } finally {
+      setSavingMeasurementItem(false)
+    }
+  }
+
+  const handleDeleteOccurrence = async (occurrence) => {
+    setSavingMeasurementItem(true)
+    try {
+      await deleteConstructionMeasurementOccurrence({ bridge, occurrenceId: occurrence.id })
+      await loadMeasurementItems(itemsTargetMeasurement.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover a ocorrencia.")
+    } finally {
+      setSavingMeasurementItem(false)
+    }
+  }
+
+  const handleSubmitMeasurement = async (measurement) => {
+    try {
+      await submitConstructionMeasurement({ bridge, measurementId: measurement.id })
+      bridge?.feedback?.success?.("Medicao enviada para aprovacao.")
+      await loadMeasurements()
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel enviar a medicao para aprovacao.")
     }
   }
 
@@ -2305,7 +2710,13 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                     onEditMeasurement={openEditMeasurement}
                     onDeleteMeasurement={handleDeleteMeasurement}
                     onApproveMeasurement={handleApproveMeasurement}
+                    onOpenMeasurementItems={openMeasurementItems}
+                    onSubmitMeasurement={handleSubmitMeasurement}
                     onRejectMeasurement={openRejectMeasurement}
+                    paymentPlan={unitPaymentPlan}
+                    loadingPaymentPlan={loadingUnitPaymentPlan}
+                    paymentPlanError={unitPaymentPlanError}
+                    onRetryPaymentPlan={loadUnitPaymentPlan}
                   />
                 ) : (
                   <UnitsList
@@ -2485,6 +2896,31 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           onChange={handleSaleUnitChange}
           onSubmit={handleSaleUnitSubmit}
           loading={submittingSale}
+        />
+      ) : null}
+
+      {itemsTargetMeasurement ? (
+        <MeasurementItemsModal
+          measurement={itemsTargetMeasurement}
+          items={measurementItems}
+          people={personSummaries}
+          serviceTemplates={serviceTemplates}
+          loadingServiceTemplates={loadingServiceTemplates}
+          importingServiceTemplates={importingServiceTemplates}
+          onImportServiceTemplates={handleImportServiceTemplates}
+          loading={loadingMeasurementItems}
+          error={measurementItemsError}
+          saving={savingMeasurementItem}
+          onClose={closeMeasurementItems}
+          onRetry={() => loadMeasurementItems(itemsTargetMeasurement.id)}
+          onCreateItem={handleCreateMeasurementItem}
+          onDeleteItem={handleDeleteMeasurementItem}
+          onCreateInspection={handleCreateInspection}
+          onVerifyInspection={handleVerifyInspection}
+          onDeleteInspection={handleDeleteInspection}
+          onCreateOccurrence={handleCreateOccurrence}
+          onResolveOccurrence={handleResolveOccurrence}
+          onDeleteOccurrence={handleDeleteOccurrence}
         />
       ) : null}
 
@@ -2903,24 +3339,30 @@ function ProjectList({ projects, loading, error, onRetry, onOpenDetails, onEdit,
                 </span>
               </td>
               <td>
-                <div className={styles.rowActions}>
-                  <button type="button" className={styles.iconButton} onClick={() => onOpenDetails(project)}>
-                    <Building2 size={14} />
-                    Detalhes
-                  </button>
-                  <button type="button" className={styles.iconButton} onClick={() => onEdit(project)}>
-                    <Pencil size={14} />
-                    Editar
-                  </button>
-                  <button
-                    type="button"
-                    className={`${styles.iconButton} ${styles.dangerButton}`}
-                    onClick={() => onDelete(project)}
-                  >
-                    <Trash2 size={14} />
-                    Excluir
-                  </button>
-                </div>
+                <RowActionsMenu
+                  actions={[
+                    {
+                      key: "details",
+                      label: "Detalhes",
+                      icon: Building2,
+                      onSelect: () => onOpenDetails(project),
+                    },
+                    {
+                      key: "edit",
+                      label: "Editar",
+                      icon: Pencil,
+                      onSelect: () => onEdit(project),
+                    },
+                    {
+                      key: "delete",
+                      label: "Excluir",
+                      icon: Trash2,
+                      danger: true,
+                      dividerBefore: true,
+                      onSelect: () => onDelete(project),
+                    },
+                  ]}
+                />
               </td>
             </tr>
           ))}
@@ -2988,20 +3430,24 @@ function BlocksList({ blocks, loading, error, onRetry, onEdit, onDelete }) {
                 </span>
               </td>
               <td>
-                <div className={styles.rowActions}>
-                  <button type="button" className={styles.iconButton} onClick={() => onEdit(block)}>
-                    <Pencil size={14} />
-                    Editar
-                  </button>
-                  <button
-                    type="button"
-                    className={`${styles.iconButton} ${styles.dangerButton}`}
-                    onClick={() => onDelete(block)}
-                  >
-                    <Trash2 size={14} />
-                    Excluir
-                  </button>
-                </div>
+                <RowActionsMenu
+                  actions={[
+                    {
+                      key: "edit",
+                      label: "Editar",
+                      icon: Pencil,
+                      onSelect: () => onEdit(block),
+                    },
+                    {
+                      key: "delete",
+                      label: "Excluir",
+                      icon: Trash2,
+                      danger: true,
+                      dividerBefore: true,
+                      onSelect: () => onDelete(block),
+                    },
+                  ]}
+                />
               </td>
             </tr>
           ))}
@@ -3029,7 +3475,13 @@ function UnitDetailPanel({
   onEditMeasurement,
   onDeleteMeasurement,
   onApproveMeasurement,
+  onOpenMeasurementItems,
+  onSubmitMeasurement,
   onRejectMeasurement,
+  paymentPlan,
+  loadingPaymentPlan,
+  paymentPlanError,
+  onRetryPaymentPlan,
 }) {
   const blockNameById = useMemo(() => {
     return Object.fromEntries(blocks.map((block) => [block.id, `${block.code} - ${block.name}`]))
@@ -3153,65 +3605,391 @@ function UnitDetailPanel({
             onEdit={onEditMeasurement}
             onDelete={onDeleteMeasurement}
             onApprove={onApproveMeasurement}
+            onOpenItems={onOpenMeasurementItems}
+            onSubmit={onSubmitMeasurement}
             onReject={onRejectMeasurement}
           />
         </>
       ) : null}
 
-      {activeTab === "installments" ? <UnitInstallmentsPanel unit={unit} onSale={onSale} /> : null}
+      {activeTab === "installments" ? (
+        <UnitInstallmentsPanel
+          unit={unit}
+          plan={paymentPlan}
+          loading={loadingPaymentPlan}
+          error={paymentPlanError}
+          onRetry={() => onRetryPaymentPlan(unit.id)}
+          onSale={onSale}
+        />
+      ) : null}
+
+      {activeTab === "contract" ? (
+        <UnitContractPanel
+          unit={unit}
+          plan={paymentPlan}
+          loading={loadingPaymentPlan}
+          error={paymentPlanError}
+          onRetry={() => onRetryPaymentPlan(unit.id)}
+        />
+      ) : null}
     </div>
   )
 }
 
-function UnitInstallmentsPanel({ unit, onSale }) {
+function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale }) {
   const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
+
+  if (loading) {
+    return (
+      <div className={styles.empty} aria-busy="true">
+        <RefreshCw className={styles.spinIcon} size={16} />
+        Carregando composicao e parcelas...
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className={styles.empty}>
+        <span>{error}</span>
+        <button type="button" className={styles.secondaryButton} onClick={onRetry}>
+          <RefreshCw size={16} />
+          Tentar novamente
+        </button>
+      </div>
+    )
+  }
+
+  const composition = plan ?? {}
+  const paymentPlan = composition.paymentPlan ?? {}
+  const sources = composition.sources ?? []
+  const installmentSources = sources.filter((source) => source.generatesInstallments)
+  const settlementSources = sources.filter((source) => !source.generatesInstallments)
+  const installments = paymentPlan.installments ?? []
 
   return (
     <div className={styles.integrationPanel}>
       <div className={styles.integrationGrid}>
         <article className={styles.integrationCard}>
           <h3>Preco de venda</h3>
-          <p className={styles.metricValue}>{formatMoney(unit.salePrice)}</p>
-          <p className={styles.metricHint}>{unit.soldAt ? `vendida em ${formatDate(unit.soldAt)}` : "venda pendente"}</p>
+          <p className={styles.metricValue}>{formatMoney(composition.salePrice ?? unit.salePrice)}</p>
+          <p className={styles.metricHint}>
+            {composition.discountAmount > 0 ? `desconto de ${formatMoney(composition.discountAmount)}` : "sem desconto"}
+          </p>
         </article>
         <article className={styles.integrationCard}>
-          <h3>Contrato ERP</h3>
-          <p className={styles.metricValue}>{unit.externalContractId ? "Vinculado" : "Pendente"}</p>
-          <p className={styles.metricHint}>{unit.externalContractStatus || "sem status externo"}</p>
+          <h3>Liberado pelo banco</h3>
+          <p className={styles.metricValue}>{formatMoney(composition.settlementTotal)}</p>
+          <p className={styles.metricHint}>subsidio, FGTS e financiamento - nao geram parcela</p>
         </article>
         <article className={styles.integrationCard}>
-          <h3>Recebivel ERP</h3>
-          <p className={styles.metricValue}>{unit.externalReceivableId ? "Vinculado" : "Pendente"}</p>
-          <p className={styles.metricHint}>{unit.externalReceivableStatus || "sem parcelas vinculadas"}</p>
+          <h3>Cobrado em parcelas</h3>
+          <p className={styles.metricValue}>{formatMoney(composition.installmentTotal)}</p>
+          <p className={styles.metricHint}>{installments.length} parcela(s) no contas a receber</p>
+        </article>
+        <article className={styles.integrationCard}>
+          <h3>Em aberto</h3>
+          <p className={styles.metricValue}>{formatMoney(paymentPlan.openTotal)}</p>
+          <p className={styles.metricHint}>
+            {paymentPlan.overdueCount ? `${paymentPlan.overdueCount} vencida(s)` : "nenhuma vencida"}
+            {paymentPlan.paidTotal ? ` - ${formatMoney(paymentPlan.paidTotal)} pago` : ""}
+          </p>
         </article>
       </div>
 
-      <div className={styles.tableWrapper}>
-        <table className={styles.table}>
-          <thead>
-            <tr>
-              <th>Origem</th>
-              <th>Status</th>
-              <th>Referencia externa</th>
-              <th>Acoes</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Contrato</td>
-              <td>{unit.externalContractStatus || (unit.externalContractId ? "Vinculado" : "Pendente")}</td>
-              <td>{unit.externalContractId || "-"}</td>
-              <td>{canSale ? <button type="button" className={styles.iconButton} onClick={() => onSale(unit)}>Confirmar venda</button> : "-"}</td>
-            </tr>
-            <tr>
-              <td>Recebivel / parcelas</td>
-              <td>{unit.externalReceivableStatus || (unit.externalReceivableId ? "Vinculado" : "Pendente")}</td>
-              <td>{unit.externalReceivableId || "-"}</td>
-              <td>{unit.externalReceivableId ? <span className={styles.badgeSuccess}>AR vinculada</span> : <span className={styles.badgeMuted}>Pendente</span>}</td>
-            </tr>
-          </tbody>
-        </table>
+      <div className={styles.card}>
+        <strong>Como a venda foi composta</strong>
+        <p className={styles.metricHint}>
+          O que o banco libera (subsidio, FGTS e financiamento) entra no preco da venda mas nao vira parcela: a
+          data de pagamento depende da liberacao. Somente entrada e parcelas da construtora sao cobradas do
+          comprador e aparecem no contas a receber.
+        </p>
+        {sources.length ? (
+          <div className={styles.tableWrapper}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>Fonte</th>
+                  <th>Valor</th>
+                  <th>Composicao</th>
+                  <th>Data</th>
+                </tr>
+              </thead>
+              <tbody>
+                {installmentSources.concat(settlementSources).map((source) => (
+                  <tr key={source.sourceType}>
+                    <td>
+                      <strong>{source.label}</strong>
+                      <div className={styles.rowSecondaryText}>
+                        {source.generatesInstallments ? "cobrado do comprador" : "liberado pelo banco"}
+                      </div>
+                    </td>
+                    <td>{formatMoney(source.amount)}</td>
+                    <td>
+                      {source.generatesInstallments
+                        ? `${source.installments} x ${formatMoney(Number(source.amount ?? 0) / Math.max(source.installments, 1))}`
+                        : "a vista, sem parcela"}
+                    </td>
+                    <td>{source.dueDate ? formatDate(source.dueDate) : "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className={styles.metricHint}>
+            {canSale
+              ? "Unidade ainda nao vendida - confirme a venda para compor o valor."
+              : "Sem composicao registrada para esta unidade."}
+          </p>
+        )}
+        {canSale ? (
+          <div className={styles.filtersFooter}>
+            <button type="button" className={styles.primaryButton} onClick={() => onSale(unit)}>
+              <ShoppingCart size={16} />
+              Confirmar venda
+            </button>
+          </div>
+        ) : null}
       </div>
+
+      <div className={styles.card}>
+        <strong>Parcelas no contas a receber</strong>
+        {paymentPlan.erpUnavailableReason ? (
+          <p className={styles.metricHint}>
+            Nao foi possivel consultar o ERP agora: {paymentPlan.erpUnavailableReason}
+          </p>
+        ) : null}
+        {installments.length ? (
+          <div className={styles.tableWrapper}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>Parcela</th>
+                  <th>Origem</th>
+                  <th>Vencimento</th>
+                  <th>Valor</th>
+                  <th>Pago</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {installments.map((installment) => (
+                  <tr key={installment.id}>
+                    <td>
+                      <strong>
+                        {installment.installmentNumber}/{installment.totalInstallments}
+                      </strong>
+                    </td>
+                    <td>{installment.documentNumber || "-"}</td>
+                    <td>{formatDate(installment.dueDate)}</td>
+                    <td>{formatMoney(installment.amount)}</td>
+                    <td>
+                      {installment.paymentDate ? formatDate(installment.paymentDate) : "-"}
+                      <div className={styles.rowSecondaryText}>
+                        {installment.paidAmount ? formatMoney(installment.paidAmount) : ""}
+                      </div>
+                    </td>
+                    <td>
+                      <span className={`${styles.statusPill} ${styles[`status${installment.status}`] || ""}`}>
+                        {receivableInstallmentStatusLabel[installment.status] ?? installment.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className={styles.metricHint}>
+            {unit.externalReceivableId
+              ? "O recebivel existe no ERP mas nao retornou parcelas."
+              : "Nenhuma parcela gerada - a venda ainda nao foi confirmada ou o ERP nao respondeu."}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function UnitContractPanel({ unit, plan, loading, error, onRetry }) {
+  if (loading) {
+    return (
+      <div className={styles.empty} aria-busy="true">
+        <RefreshCw className={styles.spinIcon} size={16} />
+        Carregando contrato...
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className={styles.empty}>
+        <span>{error}</span>
+        <button type="button" className={styles.secondaryButton} onClick={onRetry}>
+          <RefreshCw size={16} />
+          Tentar novamente
+        </button>
+      </div>
+    )
+  }
+
+  const paymentPlan = plan?.paymentPlan ?? {}
+
+  return (
+    <div className={styles.integrationPanel}>
+      <div className={styles.integrationGrid}>
+        <article className={styles.integrationCard}>
+          <h3>Contrato</h3>
+          <p className={styles.metricValue}>{paymentPlan.contractCode || "Pendente"}</p>
+          <p className={styles.metricHint}>{paymentPlan.contractStatus || "sem status no ERP"}</p>
+        </article>
+        <article className={styles.integrationCard}>
+          <h3>Assinatura</h3>
+          <p className={styles.metricValue}>
+            {unit.contractSignatureDate ? formatDate(unit.contractSignatureDate) : "-"}
+          </p>
+          <p className={styles.metricHint}>data informada na confirmacao da venda</p>
+        </article>
+        <article className={styles.integrationCard}>
+          <h3>Recebivel vinculado</h3>
+          <p className={styles.metricValue}>{paymentPlan.receivableId ? "Sim" : "Pendente"}</p>
+          <p className={styles.metricHint}>{paymentPlan.receivableStatus || "sem recebivel"}</p>
+        </article>
+      </div>
+
+      {unit.saleNotes ? (
+        <div className={styles.card}>
+          <strong>Observacao da venda</strong>
+          <p className={styles.metricHint}>{unit.saleNotes}</p>
+        </div>
+      ) : null}
+
+      <div className={styles.card}>
+        <strong>Conteudo do contrato</strong>
+        {paymentPlan.contractContentHtml ? (
+          <div
+            className={styles.contractContent}
+            // eslint-disable-next-line react/no-danger
+            dangerouslySetInnerHTML={{ __html: paymentPlan.contractContentHtml }}
+          />
+        ) : (
+          <p className={styles.metricHint}>
+            {paymentPlan.contractId
+              ? "O contrato existe no ERP mas nao trouxe conteudo."
+              : "Nenhum contrato gerado - confirme a venda da unidade."}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function RowActionsMenu({ label = "Acoes", actions }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const [menuPosition, setMenuPosition] = useState(null)
+  const wrapperRef = useRef(null)
+
+  const visibleActions = actions.filter((action) => action.visible !== false)
+
+  const updateMenuPosition = useCallback(() => {
+    if (!wrapperRef.current) {
+      return
+    }
+
+    const triggerRect = wrapperRef.current.getBoundingClientRect()
+    const estimatedHeight = visibleActions.length * 40 + 16
+    const opensUpwards = triggerRect.bottom + estimatedHeight > window.innerHeight
+    setMenuPosition({
+      top: opensUpwards ? Math.max(triggerRect.top - estimatedHeight - 6, 8) : triggerRect.bottom + 6,
+      right: Math.max(window.innerWidth - triggerRect.right, 8),
+    })
+  }, [visibleActions.length])
+
+  useEffect(() => {
+    if (!isOpen) {
+      return undefined
+    }
+
+    updateMenuPosition()
+
+    const handleClickOutside = (event) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
+        setIsOpen(false)
+      }
+    }
+
+    const handleDismiss = () => setIsOpen(false)
+
+    document.addEventListener("mousedown", handleClickOutside)
+    window.addEventListener("resize", handleDismiss)
+    window.addEventListener("scroll", handleDismiss, true)
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside)
+      window.removeEventListener("resize", handleDismiss)
+      window.removeEventListener("scroll", handleDismiss, true)
+    }
+  }, [isOpen, updateMenuPosition])
+
+  if (!visibleActions.length) {
+    return <span className={styles.badgeMuted}>-</span>
+  }
+
+  const triggerClassName = isOpen
+    ? `${styles.actionsTrigger} ${styles.actionsTriggerOpen}`
+    : styles.actionsTrigger
+  const chevronClassName = isOpen
+    ? `${styles.actionsChevron} ${styles.actionsChevronOpen}`
+    : styles.actionsChevron
+
+  return (
+    <div className={styles.actionsDropdownWrapper} ref={wrapperRef}>
+      <button
+        type="button"
+        className={triggerClassName}
+        onClick={() => setIsOpen((previous) => !previous)}
+        aria-expanded={isOpen}
+        aria-haspopup="menu"
+      >
+        {label}
+        <ChevronDown size={14} className={chevronClassName} />
+      </button>
+
+      {isOpen && menuPosition ? (
+        <div className={styles.actionsDropdown} role="menu" style={menuPosition}>
+          {visibleActions.flatMap((action, index) => {
+            const ActionIcon = action.icon
+            const itemClassName = action.danger
+              ? `${styles.actionsDropdownItem} ${styles.actionsDropdownItemDanger}`
+              : styles.actionsDropdownItem
+            const renderedAction = (
+              <button
+                key={action.key}
+                type="button"
+                role="menuitem"
+                className={itemClassName}
+                onClick={() => {
+                  setIsOpen(false)
+                  action.onSelect()
+                }}
+                disabled={action.disabled}
+              >
+                {ActionIcon ? <ActionIcon size={16} /> : null}
+                <span>{action.label}</span>
+              </button>
+            )
+
+            if (action.dividerBefore && index > 0) {
+              return [
+                <div key={`${action.key}-divider`} className={styles.actionsDropdownDivider} />,
+                renderedAction,
+              ]
+            }
+
+            return [renderedAction]
+          })}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -3308,42 +4086,54 @@ function UnitsList({ units, blocks, loading, error, onRetry, onOpenDetails, onEd
                   )}
                 </td>
                 <td>
-                  <div className={styles.rowActions}>
-                    <button type="button" className={styles.iconButton} onClick={() => onOpenDetails(unit)}>
-                      <Home size={14} />
-                      Detalhes
-                    </button>
-                    <button type="button" className={styles.iconButton} onClick={() => onEdit(unit)}>
-                      <Pencil size={14} />
-                      Editar
-                    </button>
-                    {canReserve ? (
-                      <button type="button" className={styles.iconButton} onClick={() => onReserve(unit)}>
-                        <Clock size={14} />
-                        Reservar
-                      </button>
-                    ) : null}
-                    {canRelease ? (
-                      <button type="button" className={styles.iconButton} onClick={() => onRelease(unit)}>
-                        <Unlock size={14} />
-                        Liberar
-                      </button>
-                    ) : null}
-                    {canSale ? (
-                      <button type="button" className={styles.iconButton} onClick={() => onSale(unit)}>
-                        <ShoppingCart size={14} />
-                        Vender
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      className={`${styles.iconButton} ${styles.dangerButton}`}
-                      onClick={() => onDelete(unit)}
-                    >
-                      <Trash2 size={14} />
-                      Excluir
-                    </button>
-                  </div>
+                  <RowActionsMenu
+                    actions={[
+                      {
+                        key: "details",
+                        label: "Detalhes",
+                        icon: Home,
+                        onSelect: () => onOpenDetails(unit),
+                      },
+                      {
+                        key: "edit",
+                        label: "Editar",
+                        icon: Pencil,
+                        onSelect: () => onEdit(unit),
+                      },
+                      {
+                        key: "reserve",
+                        label: "Reservar",
+                        icon: Clock,
+                        visible: canReserve,
+                        dividerBefore: true,
+                        onSelect: () => onReserve(unit),
+                      },
+                      {
+                        key: "release",
+                        label: "Liberar reserva",
+                        icon: Unlock,
+                        visible: canRelease,
+                        dividerBefore: true,
+                        onSelect: () => onRelease(unit),
+                      },
+                      {
+                        key: "sale",
+                        label: "Confirmar venda",
+                        icon: ShoppingCart,
+                        visible: canSale,
+                        dividerBefore: !canReserve && !canRelease,
+                        onSelect: () => onSale(unit),
+                      },
+                      {
+                        key: "delete",
+                        label: "Excluir",
+                        icon: Trash2,
+                        danger: true,
+                        dividerBefore: true,
+                        onSelect: () => onDelete(unit),
+                      },
+                    ]}
+                  />
                 </td>
               </tr>
             )
@@ -3416,20 +4206,24 @@ function ScheduleList({ phases, loading, error, onRetry, onEdit, onDelete }) {
               <td>{formatDate(phase.plannedEndDate)}</td>
               <td>{Number(phase.progressPercent ?? 0)}%</td>
               <td>
-                <div className={styles.rowActions}>
-                  <button type="button" className={styles.iconButton} onClick={() => onEdit(phase)}>
-                    <Pencil size={14} />
-                    Editar
-                  </button>
-                  <button
-                    type="button"
-                    className={`${styles.iconButton} ${styles.dangerButton}`}
-                    onClick={() => onDelete(phase)}
-                  >
-                    <Trash2 size={14} />
-                    Excluir
-                  </button>
-                </div>
+                <RowActionsMenu
+                  actions={[
+                    {
+                      key: "edit",
+                      label: "Editar",
+                      icon: Pencil,
+                      onSelect: () => onEdit(phase),
+                    },
+                    {
+                      key: "delete",
+                      label: "Excluir",
+                      icon: Trash2,
+                      danger: true,
+                      dividerBefore: true,
+                      onSelect: () => onDelete(phase),
+                    },
+                  ]}
+                />
               </td>
             </tr>
           ))}
@@ -3451,6 +4245,8 @@ function MeasurementsList({
   onDelete,
   onApprove,
   onReject,
+  onOpenItems,
+  onSubmit,
 }) {
   const unitNameById = useMemo(() => {
     return Object.fromEntries(units.map((unit) => [unit.id, `${unit.code} - ${unit.description || unit.unitType}`]))
@@ -3501,6 +4297,7 @@ function MeasurementsList({
             <th>Unidade</th>
             <th>Tipo</th>
             <th>Status</th>
+            <th>Itens / inspecao</th>
             <th>Valor liquido</th>
             <th>Vencimento</th>
             <th>Financeiro ERP</th>
@@ -3509,6 +4306,7 @@ function MeasurementsList({
         </thead>
         <tbody>
           {measurements.map((measurement) => {
+            const canSubmit = ["draft", "rejected"].includes(measurement.status)
             const canApprove = ["draft", "submitted", "in_approval", "rejected"].includes(measurement.status)
             const canReject = ["draft", "submitted", "in_approval"].includes(measurement.status)
             const canEdit = measurement.status !== "approved" && measurement.status !== "paid"
@@ -3534,6 +4332,22 @@ function MeasurementsList({
                   <span className={`${styles.statusPill} ${styles[`status${measurement.status}`] || ""}`}>
                     {measurementStatusLabel[measurement.status] ?? measurement.status}
                   </span>
+                  {measurement.approvedByUserId ? (
+                    <div className={styles.rowSecondaryText}>aprovada por usuario registrado</div>
+                  ) : measurement.submittedByUserId ? (
+                    <div className={styles.rowSecondaryText}>aguardando aprovador diferente</div>
+                  ) : null}
+                </td>
+                <td>
+                  {measurement.itemsCount ? `${measurement.itemsCount} item(ns)` : "valor unico"}
+                  <div className={styles.rowSecondaryText}>
+                    {measurement.pendingInspectionsCount
+                      ? `${measurement.pendingInspectionsCount} verificacao(oes) pendente(s)`
+                      : "sem verificacao pendente"}
+                    {measurement.openOccurrencesCount
+                      ? ` - ${measurement.openOccurrencesCount} ocorrencia(s)`
+                      : ""}
+                  </div>
                 </td>
                 <td>{formatMoney(measurement.netAmount ?? measurement.measuredAmount)}</td>
                 <td>{formatDate(measurement.dueDate)}</td>
@@ -3548,36 +4362,55 @@ function MeasurementsList({
                   )}
                 </td>
                 <td>
-                  <div className={styles.rowActions}>
-                    {canEdit ? (
-                      <button type="button" className={styles.iconButton} onClick={() => onEdit(measurement)}>
-                        <Pencil size={14} />
-                        Editar
-                      </button>
-                    ) : null}
-                    {canApprove ? (
-                      <button type="button" className={styles.iconButton} onClick={() => onApprove(measurement)}>
-                        <CheckCircle size={14} />
-                        Aprovar
-                      </button>
-                    ) : null}
-                    {canReject ? (
-                      <button type="button" className={styles.iconButton} onClick={() => onReject(measurement)}>
-                        <Clock size={14} />
-                        Rejeitar
-                      </button>
-                    ) : null}
-                    {canDelete ? (
-                      <button
-                        type="button"
-                        className={`${styles.iconButton} ${styles.dangerButton}`}
-                        onClick={() => onDelete(measurement)}
-                      >
-                        <Trash2 size={14} />
-                        Excluir
-                      </button>
-                    ) : null}
-                  </div>
+                  <RowActionsMenu
+                    actions={[
+                      {
+                        key: "items",
+                        label: "Itens e inspecao",
+                        icon: ListChecks,
+                        onSelect: () => onOpenItems(measurement),
+                      },
+                      {
+                        key: "edit",
+                        label: "Editar",
+                        icon: Pencil,
+                        visible: canEdit,
+                        onSelect: () => onEdit(measurement),
+                      },
+                      {
+                        key: "submit",
+                        label: "Enviar para aprovacao",
+                        icon: Send,
+                        visible: canSubmit,
+                        dividerBefore: true,
+                        onSelect: () => onSubmit(measurement),
+                      },
+                      {
+                        key: "approve",
+                        label: "Aprovar",
+                        icon: CheckCircle,
+                        visible: canApprove,
+                        dividerBefore: !canSubmit,
+                        onSelect: () => onApprove(measurement),
+                      },
+                      {
+                        key: "reject",
+                        label: "Rejeitar",
+                        icon: Clock,
+                        visible: canReject,
+                        onSelect: () => onReject(measurement),
+                      },
+                      {
+                        key: "delete",
+                        label: "Excluir",
+                        icon: Trash2,
+                        danger: true,
+                        visible: canDelete,
+                        dividerBefore: true,
+                        onSelect: () => onDelete(measurement),
+                      },
+                    ]}
+                  />
                 </td>
               </tr>
             )
@@ -3679,42 +4512,49 @@ function ProcurementList({
                   )}
                 </td>
                 <td>
-                  <div className={styles.rowActions}>
-                    {canEdit ? (
-                      <button type="button" className={styles.iconButton} onClick={() => onEdit(procurementRequest)}>
-                        <Pencil size={14} />
-                        Editar
-                      </button>
-                    ) : null}
-                    {canSubmit ? (
-                      <button type="button" className={styles.iconButton} onClick={() => onSubmit(procurementRequest)}>
-                        <RefreshCw size={14} />
-                        Enviar
-                      </button>
-                    ) : null}
-                    {canApprove ? (
-                      <button type="button" className={styles.iconButton} onClick={() => onApprove(procurementRequest)}>
-                        <CheckCircle size={14} />
-                        Aprovar
-                      </button>
-                    ) : null}
-                    {canReject ? (
-                      <button type="button" className={styles.iconButton} onClick={() => onReject(procurementRequest)}>
-                        <Clock size={14} />
-                        Rejeitar
-                      </button>
-                    ) : null}
-                    {canDelete ? (
-                      <button
-                        type="button"
-                        className={`${styles.iconButton} ${styles.dangerButton}`}
-                        onClick={() => onDelete(procurementRequest)}
-                      >
-                        <Trash2 size={14} />
-                        Excluir
-                      </button>
-                    ) : null}
-                  </div>
+                  <RowActionsMenu
+                    actions={[
+                      {
+                        key: "edit",
+                        label: "Editar",
+                        icon: Pencil,
+                        visible: canEdit,
+                        onSelect: () => onEdit(procurementRequest),
+                      },
+                      {
+                        key: "submit",
+                        label: "Enviar ao ERP",
+                        icon: Send,
+                        visible: canSubmit,
+                        dividerBefore: true,
+                        onSelect: () => onSubmit(procurementRequest),
+                      },
+                      {
+                        key: "approve",
+                        label: "Aprovar",
+                        icon: CheckCircle,
+                        visible: canApprove,
+                        dividerBefore: !canSubmit,
+                        onSelect: () => onApprove(procurementRequest),
+                      },
+                      {
+                        key: "reject",
+                        label: "Rejeitar",
+                        icon: Clock,
+                        visible: canReject,
+                        onSelect: () => onReject(procurementRequest),
+                      },
+                      {
+                        key: "delete",
+                        label: "Excluir",
+                        icon: Trash2,
+                        danger: true,
+                        visible: canDelete,
+                        dividerBefore: true,
+                        onSelect: () => onDelete(procurementRequest),
+                      },
+                    ]}
+                  />
                 </td>
               </tr>
             )
@@ -4636,6 +5476,34 @@ function ReserveUnitModal({ reserveForm, unit, people, onClose, onChange, onSubm
 }
 
 function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, loading }) {
+  const grossSalePrice = parseCurrencyFormValue(saleForm.salePrice)
+  const discountAmount = parseCurrencyFormValue(saleForm.discountAmount)
+  const netSalePrice = Math.max(grossSalePrice - discountAmount, 0)
+
+  const sources = salePaymentSourceDefinitions.map((definition) => {
+    const amountValue = parseCurrencyFormValue(saleForm[definition.amountField])
+    const installments = Math.max(Number(saleForm[definition.installmentsField] || 1), 1)
+    const generatesInstallments = SALE_INSTALLMENT_SOURCE_TYPES.includes(definition.sourceType)
+    return {
+      ...definition,
+      amountValue,
+      installments,
+      generatesInstallments,
+      installmentAmount: generatesInstallments && installments > 0 ? amountValue / installments : amountValue,
+    }
+  })
+
+  const installmentSources = sources.filter((source) => source.generatesInstallments)
+  const settlementSources = sources.filter((source) => !source.generatesInstallments)
+  const receivableTotal = installmentSources.reduce((total, source) => total + source.amountValue, 0)
+  const settlementTotal = settlementSources.reduce((total, source) => total + source.amountValue, 0)
+  const installmentCount = installmentSources
+    .filter((source) => source.amountValue > 0)
+    .reduce((total, source) => total + source.installments, 0)
+  const composedTotal = receivableTotal + settlementTotal + discountAmount
+  const remaining = grossSalePrice - composedTotal
+  const isBalanced = grossSalePrice > 0 && Math.abs(remaining) <= 0.01
+
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
       <section
@@ -4654,163 +5522,200 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <div className={styles.formGrid}>
             <PersonIdInput
-              label="Comprador (ID)*"
+              label="Comprador*"
               value={saleForm.buyerPersonId}
               onChange={(value) => onChange("buyerPersonId", value)}
               people={people}
               required
             />
+            <PersonIdInput
+              label="Comprador secundario"
+              value={saleForm.secondaryBuyerPersonId}
+              onChange={(value) => onChange("secondaryBuyerPersonId", value)}
+              people={people}
+              emptyLabel="Sem comprador secundario"
+            />
+            <PersonIdInput
+              label="Corretor"
+              value={saleForm.brokerPersonId}
+              onChange={(value) => onChange("brokerPersonId", value)}
+              people={people}
+              emptyLabel="Sem corretor"
+            />
             <label className={styles.filterControl}>
-              <span>Preco da venda</span>
+              <span>Preco da venda*</span>
               <input
-                type="number"
-                min="0"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
                 value={saleForm.salePrice}
-                onChange={(event) => onChange("salePrice", event.target.value)}
+                onChange={(event) => onChange("salePrice", formatCurrencyInput(event.target.value))}
+                placeholder="0,00"
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Entrada</span>
+              <span>Desconto</span>
               <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={saleForm.downPaymentAmount}
-                onChange={(event) => onChange("downPaymentAmount", event.target.value)}
+                type="text"
+                inputMode="decimal"
+                value={saleForm.discountAmount}
+                onChange={(event) => onChange("discountAmount", formatCurrencyInput(event.target.value))}
+                placeholder="0,00"
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Vencimento entrada</span>
-              <input
-                type="date"
-                value={saleForm.downPaymentDueDate}
-                onChange={(event) => onChange("downPaymentDueDate", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Parcelas entrada</span>
-              <input
-                type="number"
-                min="1"
-                max="120"
-                value={saleForm.downPaymentInstallments}
-                onChange={(event) => onChange("downPaymentInstallments", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Parcelas construtora</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={saleForm.directBuilderAmount}
-                onChange={(event) => onChange("directBuilderAmount", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Vencimento construtora</span>
+              <span>Assinatura do contrato</span>
               <input
                 type="date"
-                value={saleForm.firstDueDate}
-                onChange={(event) => onChange("firstDueDate", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Qtd. parcelas construtora</span>
-              <input
-                type="number"
-                min="1"
-                max="120"
-                value={saleForm.installments}
-                onChange={(event) => onChange("installments", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Subsidio</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={saleForm.governmentSubsidyAmount}
-                onChange={(event) => onChange("governmentSubsidyAmount", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Vencimento subsidio</span>
-              <input
-                type="date"
-                value={saleForm.governmentSubsidyDueDate}
-                onChange={(event) => onChange("governmentSubsidyDueDate", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Parcelas subsidio</span>
-              <input
-                type="number"
-                min="1"
-                max="120"
-                value={saleForm.governmentSubsidyInstallments}
-                onChange={(event) => onChange("governmentSubsidyInstallments", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>FGTS</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={saleForm.fgtsAmount}
-                onChange={(event) => onChange("fgtsAmount", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Vencimento FGTS</span>
-              <input
-                type="date"
-                value={saleForm.fgtsDueDate}
-                onChange={(event) => onChange("fgtsDueDate", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Parcelas FGTS</span>
-              <input
-                type="number"
-                min="1"
-                max="120"
-                value={saleForm.fgtsInstallments}
-                onChange={(event) => onChange("fgtsInstallments", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Financiamento</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={saleForm.financingAmount}
-                onChange={(event) => onChange("financingAmount", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Vencimento financiamento</span>
-              <input
-                type="date"
-                value={saleForm.financingDueDate}
-                onChange={(event) => onChange("financingDueDate", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Parcelas financiamento</span>
-              <input
-                type="number"
-                min="1"
-                max="120"
-                value={saleForm.financingInstallments}
-                onChange={(event) => onChange("financingInstallments", event.target.value)}
+                value={saleForm.contractSignatureDate}
+                onChange={(event) => onChange("contractSignatureDate", event.target.value)}
               />
             </label>
           </div>
+
+          <div className={styles.card}>
+            <div className={styles.scopeMeta}>
+              <strong>Cobrado do comprador</strong>
+              <span className={styles.metricHint}>
+                Gera contas a receber. O valor informado e o <strong>total da fonte</strong> e e dividido pela
+                quantidade de parcelas.
+              </span>
+            </div>
+            {installmentSources.map((source) => (
+              <div key={source.sourceType} className={styles.formGrid}>
+                <label className={styles.filterControl}>
+                  <span>{source.label} - valor total</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={saleForm[source.amountField]}
+                    onChange={(event) =>
+                      onChange(source.amountField, formatCurrencyInput(event.target.value))
+                    }
+                    placeholder="0,00"
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Parcelas</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="120"
+                    value={saleForm[source.installmentsField]}
+                    onChange={(event) => onChange(source.installmentsField, event.target.value)}
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>1o vencimento</span>
+                  <input
+                    type="date"
+                    value={saleForm[source.dueDateField]}
+                    onChange={(event) => onChange(source.dueDateField, event.target.value)}
+                  />
+                </label>
+                <div className={styles.filterControl}>
+                  <span>Fica</span>
+                  <strong className={styles.installmentPreview}>
+                    {source.amountValue > 0
+                      ? `${source.installments} x ${formatMoney(source.installmentAmount)}`
+                      : "-"}
+                  </strong>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className={styles.card}>
+            <div className={styles.scopeMeta}>
+              <strong>Liberado pelo banco</strong>
+              <span className={styles.metricHint}>
+                Compoe o preco da venda e <strong>nao gera parcela</strong>: a data de pagamento depende da
+                liberacao, entao a data informada e apenas a previsao.
+              </span>
+            </div>
+            {settlementSources.map((source) => (
+              <div key={source.sourceType} className={styles.formGrid}>
+                <label className={styles.filterControl}>
+                  <span>{source.label}</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={saleForm[source.amountField]}
+                    onChange={(event) =>
+                      onChange(source.amountField, formatCurrencyInput(event.target.value))
+                    }
+                    placeholder="0,00"
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Previsao de liberacao</span>
+                  <input
+                    type="date"
+                    value={saleForm[source.dueDateField]}
+                    onChange={(event) => onChange(source.dueDateField, event.target.value)}
+                  />
+                </label>
+                <div className={styles.filterControl}>
+                  <span>Entra na venda como</span>
+                  <strong className={styles.installmentPreview}>
+                    {source.amountValue > 0 ? `${formatMoney(source.amountValue)} a vista` : "-"}
+                  </strong>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <label className={styles.filterControl}>
+            <span>Observacao</span>
+            <textarea
+              rows={3}
+              value={saleForm.saleNotes}
+              onChange={(event) => onChange("saleNotes", event.target.value)}
+              placeholder="Condicoes acordadas, pendencias, referencias do contrato"
+            />
+          </label>
+
+          <div className={styles.card}>
+            <strong>Composicao da venda</strong>
+            <div className={styles.tableWrapper}>
+              <table className={styles.table}>
+                <tbody>
+                  <tr>
+                    <td>Preco da venda</td>
+                    <td className={styles.textRight}>{formatMoney(grossSalePrice)}</td>
+                  </tr>
+                  <tr>
+                    <td>Desconto</td>
+                    <td className={styles.textRight}>- {formatMoney(discountAmount)}</td>
+                  </tr>
+                  <tr>
+                    <td>Liberado pelo banco (subsidio + FGTS + financiamento)</td>
+                    <td className={styles.textRight}>- {formatMoney(settlementTotal)}</td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <strong>Cobrado do comprador em parcelas</strong>
+                      <div className={styles.rowSecondaryText}>
+                        {installmentCount ? `${installmentCount} parcela(s) no total` : "nenhuma parcela"}
+                      </div>
+                    </td>
+                    <td className={styles.textRight}>
+                      <strong>{formatMoney(receivableTotal)}</strong>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <span className={isBalanced ? styles.badgeSuccess : styles.badgeMuted}>
+              {grossSalePrice <= 0
+                ? "Informe o preco da venda"
+                : isBalanced
+                  ? "Composicao fecha com o preco da venda"
+                  : remaining > 0
+                    ? `Falta compor ${formatMoney(remaining)}`
+                    : `Composicao excede o preco em ${formatMoney(Math.abs(remaining))}`}
+            </span>
+          </div>
+
           <footer className={styles.modalFooter}>
             <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
               Cancelar
@@ -4822,6 +5727,632 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
         </form>
       </section>
     </div>
+  )
+}
+
+function MeasurementItemsModal({
+  measurement,
+  items,
+  people,
+  serviceTemplates,
+  loadingServiceTemplates,
+  importingServiceTemplates,
+  onImportServiceTemplates,
+  loading,
+  error,
+  saving,
+  onClose,
+  onRetry,
+  onCreateItem,
+  onDeleteItem,
+  onCreateInspection,
+  onVerifyInspection,
+  onDeleteInspection,
+  onCreateOccurrence,
+  onResolveOccurrence,
+  onDeleteOccurrence,
+}) {
+  const [itemForm, setItemForm] = useState(defaultMeasurementItemForm)
+  const [expandedItemId, setExpandedItemId] = useState(null)
+
+  const selectedTemplate = serviceTemplates.find((template) => template.id === itemForm.serviceTemplateId)
+  const selectedTemplateName = selectedTemplate?.name ?? ""
+
+  const isLocked = measurement.status === "approved" || measurement.status === "paid"
+  const itemsTotal = items.reduce((total, item) => total + Number(item.amount ?? 0), 0)
+  const pendingChecks = items.reduce(
+    (total, item) =>
+      total + item.inspections.filter((inspection) => !inspection.isDoubleChecked).length,
+    0
+  )
+  const openOccurrences = items.reduce(
+    (total, item) => total + item.occurrences.filter((occurrence) => occurrence.status === "open").length,
+    0
+  )
+
+  const handleItemChange = (field, value) => {
+    setItemForm((currentForm) => ({ ...currentForm, [field]: value }))
+  }
+
+  const handleItemSubmit = async (event) => {
+    event.preventDefault()
+    const created = await onCreateItem(itemForm)
+    if (created) {
+      setItemForm(defaultMeasurementItemForm)
+    }
+  }
+
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Itens da medicao ${measurement.code}`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>Itens da medicao {measurement.code}</h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={saving}>
+            Fechar
+          </button>
+        </header>
+        <div className={styles.modalBody}>
+          <div className={styles.integrationGrid}>
+            <article className={styles.integrationCard}>
+              <h3>Total dos itens</h3>
+              <p className={styles.metricValue}>{formatMoney(itemsTotal)}</p>
+              <p className={styles.metricHint}>{items.length} item(ns) de servico</p>
+            </article>
+            <article className={styles.integrationCard}>
+              <h3>Verificacoes pendentes</h3>
+              <p className={styles.metricValue}>{pendingChecks}</p>
+              <p className={styles.metricHint}>dupla verificacao incompleta</p>
+            </article>
+            <article className={styles.integrationCard}>
+              <h3>Ocorrencias abertas</h3>
+              <p className={styles.metricValue}>{openOccurrences}</p>
+              <p className={styles.metricHint}>problema sem solucao registrada</p>
+            </article>
+          </div>
+
+          {isLocked ? (
+            <p className={styles.metricHint}>
+              Medicao {measurementStatusLabel[measurement.status] ?? measurement.status} - itens em somente leitura.
+            </p>
+          ) : (
+            <form className={styles.card} onSubmit={handleItemSubmit}>
+              <div className={styles.scopeHeader}>
+                <div className={styles.scopeMeta}>
+                  <strong>Novo servico medido</strong>
+                  <span className={styles.metricHint}>
+                    {loadingServiceTemplates
+                      ? "Carregando catalogo de servicos..."
+                      : serviceTemplates.length
+                        ? `${serviceTemplates.length} servico(s) no catalogo, com os itens de inspecao da planilha da Caixa`
+                        : "Catalogo vazio - importe a planilha de verificacao de servico (FVS) da Caixa"}
+                  </span>
+                </div>
+                <label className={styles.secondaryButton}>
+                  <Upload size={16} />
+                  {importingServiceTemplates ? "Importando..." : "Importar planilha (FVS)"}
+                  <input
+                    type="file"
+                    accept=".xlsx,.xlsm"
+                    multiple
+                    hidden
+                    disabled={importingServiceTemplates}
+                    onChange={(event) => {
+                      void onImportServiceTemplates(event.target.files)
+                      event.target.value = ""
+                    }}
+                  />
+                </label>
+              </div>
+              <div className={styles.formGrid}>
+                <label className={styles.filterControl}>
+                  <span>Servico do catalogo</span>
+                  <select
+                    value={itemForm.serviceTemplateId}
+                    onChange={(event) => handleItemChange("serviceTemplateId", event.target.value)}
+                    disabled={loadingServiceTemplates}
+                  >
+                    <option value="">
+                      {serviceTemplates.length ? "Servico fora do catalogo" : "Catalogo vazio"}
+                    </option>
+                    {serviceTemplates.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.name} ({template.items.length} item(ns) de inspecao)
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className={styles.filterControl}>
+                  <span>{itemForm.serviceTemplateId ? "Descricao (opcional)" : "Servico medido*"}</span>
+                  <input
+                    type="text"
+                    value={itemForm.description}
+                    onChange={(event) => handleItemChange("description", event.target.value)}
+                    placeholder={
+                      itemForm.serviceTemplateId
+                        ? selectedTemplateName || "Usa o nome do servico do catalogo"
+                        : "Alvenaria de vedacao do pavimento 3"
+                    }
+                    required={!itemForm.serviceTemplateId}
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Valor*</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={itemForm.amount}
+                    onChange={(event) => handleItemChange("amount", formatCurrencyInput(event.target.value))}
+                    placeholder="0,00"
+                    required
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Produto / referencia</span>
+                  <input
+                    type="text"
+                    value={itemForm.productDescription}
+                    onChange={(event) => handleItemChange("productDescription", event.target.value)}
+                    placeholder="Codigo ou nome do servico no cadastro"
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Inicio</span>
+                  <input
+                    type="date"
+                    value={itemForm.startDate}
+                    onChange={(event) => handleItemChange("startDate", event.target.value)}
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Fim</span>
+                  <input
+                    type="date"
+                    value={itemForm.endDate}
+                    onChange={(event) => handleItemChange("endDate", event.target.value)}
+                  />
+                </label>
+                <PersonIdInput
+                  label="Conferente"
+                  value={itemForm.inspectorPersonId}
+                  onChange={(value) => handleItemChange("inspectorPersonId", value)}
+                  people={people}
+                  emptyLabel="Sem conferente"
+                />
+              </div>
+              <div className={styles.filtersFooter}>
+                <button type="submit" className={styles.primaryButton} disabled={saving}>
+                  <Plus size={16} />
+                  Adicionar item
+                </button>
+              </div>
+            </form>
+          )}
+
+          {loading ? (
+            <div className={styles.empty}>
+              <RefreshCw className={styles.spinIcon} size={16} />
+              Carregando itens...
+            </div>
+          ) : error ? (
+            <div className={styles.empty}>
+              <span>{error}</span>
+              <button type="button" className={styles.secondaryButton} onClick={onRetry}>
+                <RefreshCw size={16} />
+                Tentar novamente
+              </button>
+            </div>
+          ) : !items.length ? (
+            <div className={styles.empty}>
+              Nenhum item de servico lancado. Sem itens, a medicao vale o valor unico informado no cadastro.
+            </div>
+          ) : (
+            <div className={styles.tableWrapper}>
+              <table className={styles.table}>
+                <thead>
+                  <tr>
+                    <th>Seq.</th>
+                    <th>Servico</th>
+                    <th>Periodo</th>
+                    <th>Valor</th>
+                    <th>Inspecao</th>
+                    <th>Acoes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((item) => (
+                    <MeasurementItemRow
+                      key={item.id}
+                      item={item}
+                      people={people}
+                      isLocked={isLocked}
+                      saving={saving}
+                      expanded={expandedItemId === item.id}
+                      onToggle={() => setExpandedItemId(expandedItemId === item.id ? null : item.id)}
+                      onDeleteItem={onDeleteItem}
+                      onCreateInspection={onCreateInspection}
+                      onVerifyInspection={onVerifyInspection}
+                      onDeleteInspection={onDeleteInspection}
+                      onCreateOccurrence={onCreateOccurrence}
+                      onResolveOccurrence={onResolveOccurrence}
+                      onDeleteOccurrence={onDeleteOccurrence}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function MeasurementItemRow({
+  item,
+  people,
+  isLocked,
+  saving,
+  expanded,
+  onToggle,
+  onDeleteItem,
+  onCreateInspection,
+  onVerifyInspection,
+  onDeleteInspection,
+  onCreateOccurrence,
+  onResolveOccurrence,
+  onDeleteOccurrence,
+}) {
+  const [inspectionForm, setInspectionForm] = useState(defaultInspectionForm)
+  const [occurrenceForm, setOccurrenceForm] = useState(defaultOccurrenceForm)
+  const [solutionDrafts, setSolutionDrafts] = useState({})
+
+  const inspectorNameById = useMemo(
+    () => Object.fromEntries(people.map((person) => [person.id, person.name])),
+    [people]
+  )
+
+  const handleInspectionSubmit = async (event) => {
+    event.preventDefault()
+    const created = await onCreateInspection(item.id, inspectionForm)
+    if (created) {
+      setInspectionForm(defaultInspectionForm)
+    }
+  }
+
+  const handleOccurrenceSubmit = async (event) => {
+    event.preventDefault()
+    const created = await onCreateOccurrence(item.id, occurrenceForm)
+    if (created) {
+      setOccurrenceForm(defaultOccurrenceForm)
+    }
+  }
+
+  return (
+    <>
+      <tr>
+        <td>{item.sequenceNumber}</td>
+        <td>
+          <strong>{item.description}</strong>
+          <div className={styles.rowSecondaryText}>{item.productDescription || "sem referencia de produto"}</div>
+        </td>
+        <td>
+          {item.startDate ? formatDate(item.startDate) : "-"}
+          <div className={styles.rowSecondaryText}>{item.endDate ? formatDate(item.endDate) : "em aberto"}</div>
+        </td>
+        <td>{formatMoney(item.amount)}</td>
+        <td>
+          <span className={styles.statusPill}>
+            {inspectionStatusLabel[item.inspectionStatus] ?? item.inspectionStatus}
+          </span>
+          <div className={styles.rowSecondaryText}>
+            {item.inspections.length} verificacao(oes) - {item.occurrences.filter((o) => o.status === "open").length} ocorrencia(s) aberta(s)
+          </div>
+        </td>
+        <td>
+          <div className={styles.rowActions}>
+            <button type="button" className={styles.iconButton} onClick={onToggle}>
+              <ShieldCheck size={14} />
+              {expanded ? "Recolher" : "Inspecao"}
+            </button>
+            {isLocked ? null : (
+              <button
+                type="button"
+                className={`${styles.iconButton} ${styles.dangerButton}`}
+                onClick={() => onDeleteItem(item)}
+                disabled={saving}
+              >
+                <Trash2 size={14} />
+                Excluir
+              </button>
+            )}
+          </div>
+        </td>
+      </tr>
+      {expanded ? (
+        <tr>
+          <td colSpan={6}>
+            <div className={styles.card}>
+              <strong>Itens de inspecao</strong>
+              {item.inspections.length ? (
+                <div className={styles.tableWrapper}>
+                  <table className={styles.table}>
+                    <thead>
+                      <tr>
+                        <th>Seq.</th>
+                        <th>Verificacao</th>
+                        <th>Metodo</th>
+                        <th>1a conferencia</th>
+                        <th>2a conferencia</th>
+                        <th>Acoes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {item.inspections.map((inspection) => (
+                        <tr key={inspection.id}>
+                          <td>{inspection.sequenceNumber}</td>
+                          <td>{inspection.description}</td>
+                          <td>{inspection.verificationMethod || "-"}</td>
+                          <td>
+                            <span className={styles.statusPill}>
+                              {inspectionStatusLabel[inspection.firstStatus] ?? inspection.firstStatus}
+                            </span>
+                            <div className={styles.rowSecondaryText}>
+                              {inspection.firstStatusAt ? formatDate(inspection.firstStatusAt) : "nao conferido"}
+                            </div>
+                          </td>
+                          <td>
+                            <span className={styles.statusPill}>
+                              {inspectionStatusLabel[inspection.secondStatus] ?? inspection.secondStatus}
+                            </span>
+                            <div className={styles.rowSecondaryText}>
+                              {inspection.secondStatusAt ? formatDate(inspection.secondStatusAt) : "nao conferido"}
+                            </div>
+                          </td>
+                          <td>
+                            <div className={styles.rowActions}>
+                              {isLocked ? null : (
+                                <>
+                                  {inspection.firstStatus === "pending" ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className={styles.iconButton}
+                                        onClick={() => onVerifyInspection(inspection, 1, "compliant")}
+                                        disabled={saving}
+                                      >
+                                        <CheckCircle size={14} />
+                                        1a OK
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className={styles.iconButton}
+                                        onClick={() => onVerifyInspection(inspection, 1, "non_compliant")}
+                                        disabled={saving}
+                                      >
+                                        <TriangleAlert size={14} />
+                                        1a NOK
+                                      </button>
+                                    </>
+                                  ) : inspection.secondStatus === "pending" ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        className={styles.iconButton}
+                                        onClick={() => onVerifyInspection(inspection, 2, "compliant")}
+                                        disabled={saving}
+                                      >
+                                        <CheckCircle size={14} />
+                                        2a OK
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className={styles.iconButton}
+                                        onClick={() => onVerifyInspection(inspection, 2, "non_compliant")}
+                                        disabled={saving}
+                                      >
+                                        <TriangleAlert size={14} />
+                                        2a NOK
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <span className={styles.badgeSuccess}>Dupla verificacao concluida</span>
+                                  )}
+                                  <button
+                                    type="button"
+                                    className={`${styles.iconButton} ${styles.dangerButton}`}
+                                    onClick={() => onDeleteInspection(inspection)}
+                                    disabled={saving}
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className={styles.metricHint}>Nenhum item de inspecao cadastrado.</p>
+              )}
+
+              {isLocked ? null : (
+                <form className={styles.formGrid} onSubmit={handleInspectionSubmit}>
+                  <label className={styles.filterControl}>
+                    <span>Nova verificacao*</span>
+                    <input
+                      type="text"
+                      value={inspectionForm.description}
+                      onChange={(event) =>
+                        setInspectionForm((form) => ({ ...form, description: event.target.value }))
+                      }
+                      placeholder="Prumo e alinhamento"
+                      required
+                    />
+                  </label>
+                  <label className={styles.filterControl}>
+                    <span>Metodo</span>
+                    <input
+                      type="text"
+                      value={inspectionForm.verificationMethod}
+                      onChange={(event) =>
+                        setInspectionForm((form) => ({ ...form, verificationMethod: event.target.value }))
+                      }
+                      placeholder="Regua de 2m em 3 pontos"
+                    />
+                  </label>
+                  <label className={styles.filterControl}>
+                    <span>&nbsp;</span>
+                    <button type="submit" className={styles.primaryButton} disabled={saving}>
+                      <Plus size={16} />
+                      Adicionar verificacao
+                    </button>
+                  </label>
+                </form>
+              )}
+
+              <strong>Ocorrencias</strong>
+              {item.occurrences.length ? (
+                <div className={styles.tableWrapper}>
+                  <table className={styles.table}>
+                    <thead>
+                      <tr>
+                        <th>Seq.</th>
+                        <th>Problema</th>
+                        <th>Solucao</th>
+                        <th>Status</th>
+                        <th>Acoes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {item.occurrences.map((occurrence) => (
+                        <tr key={occurrence.id}>
+                          <td>{occurrence.sequenceNumber}</td>
+                          <td>
+                            {occurrence.problem}
+                            <div className={styles.rowSecondaryText}>
+                              {occurrence.openedAt ? formatDate(occurrence.openedAt) : "-"}
+                              {occurrence.inspectorPersonId
+                                ? ` - ${inspectorNameById[occurrence.inspectorPersonId] ?? "conferente"}`
+                                : ""}
+                            </div>
+                          </td>
+                          <td>
+                            {occurrence.status === "open" && !isLocked ? (
+                              <input
+                                type="text"
+                                value={solutionDrafts[occurrence.id] ?? ""}
+                                onChange={(event) =>
+                                  setSolutionDrafts((drafts) => ({
+                                    ...drafts,
+                                    [occurrence.id]: event.target.value,
+                                  }))
+                                }
+                                placeholder="Descreva a solucao"
+                              />
+                            ) : (
+                              occurrence.solution || "-"
+                            )}
+                          </td>
+                          <td>
+                            <span className={styles.statusPill}>
+                              {occurrenceStatusLabel[occurrence.status] ?? occurrence.status}
+                            </span>
+                            <div className={styles.rowSecondaryText}>
+                              {occurrence.closedAt ? formatDate(occurrence.closedAt) : ""}
+                            </div>
+                          </td>
+                          <td>
+                            <div className={styles.rowActions}>
+                              {isLocked ? null : (
+                                <>
+                                  {occurrence.status === "open" ? (
+                                    <button
+                                      type="button"
+                                      className={styles.iconButton}
+                                      onClick={async () => {
+                                        const resolved = await onResolveOccurrence(
+                                          occurrence,
+                                          solutionDrafts[occurrence.id] ?? ""
+                                        )
+                                        if (resolved) {
+                                          setSolutionDrafts((drafts) => ({ ...drafts, [occurrence.id]: "" }))
+                                        }
+                                      }}
+                                      disabled={saving}
+                                    >
+                                      <CheckCircle size={14} />
+                                      Resolver
+                                    </button>
+                                  ) : null}
+                                  <button
+                                    type="button"
+                                    className={`${styles.iconButton} ${styles.dangerButton}`}
+                                    onClick={() => onDeleteOccurrence(occurrence)}
+                                    disabled={saving}
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className={styles.metricHint}>Nenhuma ocorrencia registrada.</p>
+              )}
+
+              {isLocked ? null : (
+                <form className={styles.formGrid} onSubmit={handleOccurrenceSubmit}>
+                  <label className={styles.filterControl}>
+                    <span>Novo problema*</span>
+                    <input
+                      type="text"
+                      value={occurrenceForm.problem}
+                      onChange={(event) =>
+                        setOccurrenceForm((form) => ({ ...form, problem: event.target.value }))
+                      }
+                      placeholder="Trinca na alvenaria junto ao pilar"
+                      required
+                    />
+                  </label>
+                  <label className={styles.filterControl}>
+                    <span>Solucao (opcional)</span>
+                    <input
+                      type="text"
+                      value={occurrenceForm.solution}
+                      onChange={(event) =>
+                        setOccurrenceForm((form) => ({ ...form, solution: event.target.value }))
+                      }
+                      placeholder="Deixe vazio para registrar so o problema"
+                    />
+                  </label>
+                  <label className={styles.filterControl}>
+                    <span>&nbsp;</span>
+                    <button type="submit" className={styles.primaryButton} disabled={saving}>
+                      <Plus size={16} />
+                      Registrar ocorrencia
+                    </button>
+                  </label>
+                </form>
+              )}
+            </div>
+          </td>
+        </tr>
+      ) : null}
+    </>
   )
 }
 

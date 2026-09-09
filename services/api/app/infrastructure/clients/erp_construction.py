@@ -73,6 +73,36 @@ class ErpConstructionClient:
             response.raise_for_status()
             return response.json()
 
+    async def get_unit_payment_plan(
+        self,
+        *,
+        company_id: UUID,
+        receivable_id: UUID | None,
+        contract_id: UUID | None,
+    ) -> dict[str, object]:
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for Construction payment plan integration.")
+
+        headers = {
+            "X-Service-Key": settings.erp_service_key,
+            "X-Company-ID": str(company_id),
+        }
+        params: dict[str, object] = {}
+        if receivable_id is not None:
+            params["receivable_id"] = str(receivable_id)
+
+        if contract_id is not None:
+            params["contract_id"] = str(contract_id)
+
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.get(
+                "/v1/internal/construction/unit-payment-plan",
+                headers=headers,
+                params=params,
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def create_cost_center_hierarchy(self, *, event: EventEnvelope) -> EventEnvelope:
         return await self.deliver_event(event=event)
 

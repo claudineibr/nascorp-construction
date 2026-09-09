@@ -8,6 +8,7 @@ from app.domain.constants import ConstructionMeasurementStatus, ConstructionProc
 from app.domain.exceptions import (
     ConstructionDuplicateCodeError,
     ConstructionInvalidStatusTransitionError,
+    ConstructionInvalidValueError,
     ConstructionNotFoundError,
 )
 from app.domain.events.constants import ConstructionEventType, ConstructionIntegrationMode, ErpEventType
@@ -15,13 +16,24 @@ from app.domain.events.contracts import EventEnvelope
 from app.domain.services import ConstructionIntegrationDispatcher, ConstructionProjectService
 from app.infrastructure.database.models import (
     ConstructionMeasurement,
+    ConstructionMeasurementItem,
+    ConstructionMeasurementItemInspection,
+    ConstructionMeasurementItemOccurrence,
     ConstructionProcurementRequest,
     ConstructionProject,
     ConstructionSchedulePhase,
+    ConstructionServiceTemplate,
+    ConstructionServiceTemplateItem,
     ConstructionUnit,
+    ConstructionUnitPaymentSource,
 )
 from app.schemas.construction import (
     ConstructionMeasurementCreate,
+    ConstructionMeasurementInspectionVerifyRequest,
+    ConstructionMeasurementItemCreate,
+    ConstructionMeasurementItemInspectionCreate,
+    ConstructionMeasurementItemOccurrenceCreate,
+    ConstructionMeasurementItemOccurrenceUpdate,
     ConstructionProcurementRequestCreate,
     ConstructionProjectCreate,
     ConstructionProjectUpdate,
@@ -37,7 +49,158 @@ class FakeConstructionRepository:
         self.units: dict[tuple[object, object], ConstructionUnit] = {}
         self.schedule_phases: dict[tuple[object, object], ConstructionSchedulePhase] = {}
         self.procurement_requests: dict[tuple[object, object], ConstructionProcurementRequest] = {}
+        self.measurement_items: dict[tuple[object, object], ConstructionMeasurementItem] = {}
+        self.inspections: dict[tuple[object, object], ConstructionMeasurementItemInspection] = {}
+        self.occurrences: dict[tuple[object, object], ConstructionMeasurementItemOccurrence] = {}
+        self.unit_payment_sources: dict[tuple[object, object], ConstructionUnitPaymentSource] = {}
+        self.service_templates: dict[tuple[object, object], ConstructionServiceTemplate] = {}
+        self.service_template_items: dict[tuple[object, object], ConstructionServiceTemplateItem] = {}
         self.commits = 0
+
+    def _template_items(self, *, company_id, service_template_id):
+        return sorted(
+            (
+                item
+                for (item_company_id, _), item in self.service_template_items.items()
+                if item_company_id == company_id and item.service_template_id == service_template_id
+            ),
+            key=lambda item: item.sequence_number,
+        )
+
+    async def list_unit_payment_sources(self, *, company_id, unit_id):
+        return sorted(
+            (
+                source
+                for (source_company_id, _), source in self.unit_payment_sources.items()
+                if source_company_id == company_id and source.unit_id == unit_id
+            ),
+            key=lambda source: source.source_type,
+        )
+
+    async def get_service_template(self, *, company_id, service_template_id):
+        template = self.service_templates.get((company_id, service_template_id))
+        if template is not None:
+            template.items = self._template_items(
+                company_id=company_id,
+                service_template_id=service_template_id,
+            )
+
+        return template
+
+    async def get_service_template_by_name(self, *, company_id, name):
+        for (template_company_id, template_id), template in self.service_templates.items():
+            if template_company_id == company_id and template.name == name:
+                template.items = self._template_items(
+                    company_id=company_id,
+                    service_template_id=template_id,
+                )
+                return template
+
+        return None
+
+    async def list_service_templates(self, *, company_id, only_active=True, search=None):
+        templates = []
+        for (template_company_id, template_id), template in self.service_templates.items():
+            if template_company_id != company_id:
+                continue
+
+            if only_active and not template.is_active:
+                continue
+
+            if search and search.lower() not in template.name.lower():
+                continue
+
+            template.items = self._template_items(
+                company_id=company_id,
+                service_template_id=template_id,
+            )
+            templates.append(template)
+
+        return sorted(templates, key=lambda template: template.name)
+
+    async def get_measurement_item(self, *, company_id, item_id):
+        return self.measurement_items.get((company_id, item_id))
+
+    async def list_measurement_items(self, *, company_id, measurement_id):
+        return sorted(
+            (
+                item
+                for (item_company_id, _), item in self.measurement_items.items()
+                if item_company_id == company_id and item.measurement_id == measurement_id
+            ),
+            key=lambda item: item.sequence_number,
+        )
+
+    async def get_next_measurement_item_sequence(self, *, company_id, measurement_id):
+        items = await self.list_measurement_items(company_id=company_id, measurement_id=measurement_id)
+        if not items:
+            return 1
+
+        return max(item.sequence_number for item in items) + 1
+
+    async def get_measurement_items_amount(self, *, company_id, measurement_id):
+        items = await self.list_measurement_items(company_id=company_id, measurement_id=measurement_id)
+        return sum((item.amount for item in items), Decimal("0"))
+
+    async def get_measurement_inspection(self, *, company_id, inspection_id):
+        return self.inspections.get((company_id, inspection_id))
+
+    async def list_measurement_item_inspections(self, *, company_id, measurement_item_id):
+        return sorted(
+            (
+                inspection
+                for (inspection_company_id, _), inspection in self.inspections.items()
+                if inspection_company_id == company_id and inspection.measurement_item_id == measurement_item_id
+            ),
+            key=lambda inspection: inspection.sequence_number,
+        )
+
+    async def get_next_inspection_sequence(self, *, company_id, measurement_item_id):
+        sequences = [
+            inspection.sequence_number
+            for (inspection_company_id, _), inspection in self.inspections.items()
+            if inspection_company_id == company_id and inspection.measurement_item_id == measurement_item_id
+        ]
+        if not sequences:
+            return 1
+
+        return max(sequences) + 1
+
+    async def count_pending_measurement_inspections(self, *, company_id, measurement_id):
+        items = await self.list_measurement_items(company_id=company_id, measurement_id=measurement_id)
+        item_ids = {item.id for item in items}
+        return sum(
+            1
+            for (inspection_company_id, _), inspection in self.inspections.items()
+            if inspection_company_id == company_id
+            and inspection.measurement_item_id in item_ids
+            and "pending" in {inspection.first_status, inspection.second_status}
+        )
+
+    async def get_measurement_occurrence(self, *, company_id, occurrence_id):
+        return self.occurrences.get((company_id, occurrence_id))
+
+    async def get_next_occurrence_sequence(self, *, company_id, measurement_item_id):
+        sequences = [
+            occurrence.sequence_number
+            for (occurrence_company_id, _), occurrence in self.occurrences.items()
+            if occurrence_company_id == company_id and occurrence.measurement_item_id == measurement_item_id
+        ]
+        if not sequences:
+            return 1
+
+        return max(sequences) + 1
+
+    async def count_open_measurement_occurrences(self, *, company_id, measurement_id):
+        items = await self.list_measurement_items(company_id=company_id, measurement_id=measurement_id)
+        item_ids = {item.id for item in items}
+        return sum(
+            1
+            for (occurrence_company_id, _), occurrence in self.occurrences.items()
+            if occurrence_company_id == company_id
+            and occurrence.measurement_item_id in item_ids
+            and occurrence.status == "open"
+        )
 
     async def add(
         self,
@@ -55,6 +218,30 @@ class FakeConstructionRepository:
 
         if isinstance(entity, ConstructionProcurementRequest):
             self.procurement_requests[(entity.company_id, entity.id)] = entity
+            return
+
+        if isinstance(entity, ConstructionUnitPaymentSource):
+            self.unit_payment_sources[(entity.company_id, entity.id)] = entity
+            return
+
+        if isinstance(entity, ConstructionServiceTemplate):
+            self.service_templates[(entity.company_id, entity.id)] = entity
+            return
+
+        if isinstance(entity, ConstructionServiceTemplateItem):
+            self.service_template_items[(entity.company_id, entity.id)] = entity
+            return
+
+        if isinstance(entity, ConstructionMeasurementItem):
+            self.measurement_items[(entity.company_id, entity.id)] = entity
+            return
+
+        if isinstance(entity, ConstructionMeasurementItemInspection):
+            self.inspections[(entity.company_id, entity.id)] = entity
+            return
+
+        if isinstance(entity, ConstructionMeasurementItemOccurrence):
+            self.occurrences[(entity.company_id, entity.id)] = entity
             return
 
         self.measurements[(entity.company_id, entity.id)] = entity
@@ -89,6 +276,10 @@ class FakeConstructionRepository:
         self,
         entity: ConstructionProject | ConstructionMeasurement | ConstructionUnit | ConstructionProcurementRequest,
     ) -> None:
+        if isinstance(entity, ConstructionUnitPaymentSource):
+            self.unit_payment_sources.pop((entity.company_id, entity.id), None)
+            return
+
         if isinstance(entity, ConstructionProject):
             self.projects.pop((entity.company_id, entity.id), None)
             return
@@ -936,8 +1127,10 @@ async def test_confirm_unit_sale_creates_contract_snapshot_once() -> None:
             "amount": "450000.00",
             "due_date": "2026-06-10",
             "installments": 12,
+            "generates_installments": True,
         }
     ]
+    assert erp_client.events[0].payload["receivable_amount"] == "450000.00"
 
 
 @pytest.mark.asyncio
@@ -1004,11 +1197,757 @@ async def test_confirm_unit_sale_dispatches_composed_payment_sources() -> None:
 
     assert result.status == "sold"
     assert erp_client.events[0].payload["payment_sources"] == [
-        {"source_type": "down_payment", "amount": "50000.00", "due_date": "2026-06-10", "installments": 1},
-        {"source_type": "direct_builder", "amount": "150000.00", "due_date": "2026-07-10", "installments": 12},
-        {"source_type": "fgts", "amount": "30000.00", "due_date": "2026-08-10", "installments": 1},
-        {"source_type": "financing", "amount": "270000.00", "due_date": "2026-09-10", "installments": 1},
+        {
+            "source_type": "down_payment",
+            "amount": "50000.00",
+            "due_date": "2026-06-10",
+            "installments": 1,
+            "generates_installments": True,
+        },
+        {
+            "source_type": "direct_builder",
+            "amount": "150000.00",
+            "due_date": "2026-07-10",
+            "installments": 12,
+            "generates_installments": True,
+        },
+        {
+            "source_type": "fgts",
+            "amount": "30000.00",
+            "due_date": "2026-08-10",
+            "installments": 1,
+            "generates_installments": False,
+        },
+        {
+            "source_type": "financing",
+            "amount": "270000.00",
+            "due_date": "2026-09-10",
+            "installments": 1,
+            "generates_installments": False,
+        },
     ]
+    assert erp_client.events[0].payload["receivable_amount"] == "200000.00"
+
+
+async def _build_measurement_scenario(*, measured_amount: Decimal = Decimal("10000.00")):
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-060",
+        name="Measurement items project",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    unit = ConstructionUnit(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        code="D-401",
+        unit_type="apartment",
+        analytic_cost_center_id=uuid4(),
+        status="available",
+    )
+    measurement = ConstructionMeasurement(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        unit_id=unit.id,
+        schedule_phase_id=uuid4(),
+        code="MED-060",
+        sequence_number=1,
+        gross_amount=measured_amount,
+        retentions_amount=Decimal("0"),
+        net_amount=measured_amount,
+        measured_amount=measured_amount,
+        due_date=date(2026, 7, 10),
+        status=ConstructionMeasurementStatus.DRAFT,
+    )
+    repository.projects[(company_id, project.id)] = project
+    repository.units[(company_id, unit.id)] = unit
+    repository.measurements[(company_id, measurement.id)] = measurement
+    service = ConstructionProjectService(repository=repository, erp_client=FakeErpMeasurementClient())
+    return company_id, measurement, service
+
+
+@pytest.mark.asyncio
+async def test_measurement_amount_follows_the_sum_of_its_items() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+
+    await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(
+            description="Alvenaria de vedacao",
+            amount=Decimal("4500.00"),
+        ),
+    )
+    await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(
+            description="Contrapiso",
+            amount=Decimal("2500.50"),
+        ),
+    )
+
+    assert measurement.gross_amount == Decimal("7000.50")
+    assert measurement.net_amount == Decimal("7000.50")
+    assert measurement.measured_amount == Decimal("7000.50")
+
+
+@pytest.mark.asyncio
+async def test_measurement_item_sequence_is_generated_per_measurement() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+
+    first_item = await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(description="Servico A", amount=Decimal("100.00")),
+    )
+    second_item = await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(description="Servico B", amount=Decimal("200.00")),
+    )
+
+    assert first_item.sequence_number == 1
+    assert second_item.sequence_number == 2
+
+
+@pytest.mark.asyncio
+async def test_approved_measurement_refuses_new_items() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    measurement.status = ConstructionMeasurementStatus.APPROVED
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.create_measurement_item(
+            company_id=company_id,
+            measurement_id=measurement.id,
+            request=ConstructionMeasurementItemCreate(description="Servico extra", amount=Decimal("100.00")),
+        )
+
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_LOCKED"
+
+
+@pytest.mark.asyncio
+async def test_item_period_rejects_end_date_before_start_date() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.create_measurement_item(
+            company_id=company_id,
+            measurement_id=measurement.id,
+            request=ConstructionMeasurementItemCreate(
+                description="Servico com periodo invertido",
+                amount=Decimal("100.00"),
+                start_date=date(2026, 7, 20),
+                end_date=date(2026, 7, 10),
+            ),
+        )
+
+    assert error.value.error_code == "CONSTRUCTION_INVALID_PERIOD"
+
+
+@pytest.mark.asyncio
+async def test_second_inspection_check_requires_the_first_one() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    item = await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(description="Impermeabilizacao", amount=Decimal("800.00")),
+    )
+    inspection = await service.create_measurement_item_inspection(
+        company_id=company_id,
+        item_id=item.id,
+        request=ConstructionMeasurementItemInspectionCreate(
+            description="Teste de estanqueidade",
+            verification_method="Lamina de agua por 72h",
+        ),
+    )
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.verify_measurement_item_inspection(
+            company_id=company_id,
+            inspection_id=inspection.id,
+            request=ConstructionMeasurementInspectionVerifyRequest(check_number=2, status="compliant"),
+            actor_user_id=uuid4(),
+        )
+
+    assert error.value.error_code == "CONSTRUCTION_INSPECTION_FIRST_CHECK_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_second_inspection_check_requires_a_different_verifier() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    item = await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(description="Impermeabilizacao", amount=Decimal("800.00")),
+    )
+    inspection = await service.create_measurement_item_inspection(
+        company_id=company_id,
+        item_id=item.id,
+        request=ConstructionMeasurementItemInspectionCreate(description="Teste de estanqueidade"),
+    )
+    first_verifier_id = uuid4()
+
+    await service.verify_measurement_item_inspection(
+        company_id=company_id,
+        inspection_id=inspection.id,
+        request=ConstructionMeasurementInspectionVerifyRequest(check_number=1, status="compliant"),
+        actor_user_id=first_verifier_id,
+    )
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.verify_measurement_item_inspection(
+            company_id=company_id,
+            inspection_id=inspection.id,
+            request=ConstructionMeasurementInspectionVerifyRequest(check_number=2, status="compliant"),
+            actor_user_id=first_verifier_id,
+        )
+
+    assert error.value.error_code == "CONSTRUCTION_INSPECTION_SAME_VERIFIER"
+
+
+@pytest.mark.asyncio
+async def test_item_becomes_compliant_only_after_both_checks_pass() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    item = await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(description="Pintura", amount=Decimal("1200.00")),
+    )
+    inspection = await service.create_measurement_item_inspection(
+        company_id=company_id,
+        item_id=item.id,
+        request=ConstructionMeasurementItemInspectionCreate(description="Uniformidade da tinta"),
+    )
+
+    await service.verify_measurement_item_inspection(
+        company_id=company_id,
+        inspection_id=inspection.id,
+        request=ConstructionMeasurementInspectionVerifyRequest(check_number=1, status="compliant"),
+        actor_user_id=uuid4(),
+    )
+
+    assert item.inspection_status == "pending"
+
+    await service.verify_measurement_item_inspection(
+        company_id=company_id,
+        inspection_id=inspection.id,
+        request=ConstructionMeasurementInspectionVerifyRequest(check_number=2, status="compliant"),
+        actor_user_id=uuid4(),
+    )
+
+    assert item.inspection_status == "compliant"
+    assert inspection.is_double_checked is True
+
+
+@pytest.mark.asyncio
+async def test_non_compliant_check_marks_the_whole_item_as_non_compliant() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    item = await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(description="Pintura", amount=Decimal("1200.00")),
+    )
+    inspection = await service.create_measurement_item_inspection(
+        company_id=company_id,
+        item_id=item.id,
+        request=ConstructionMeasurementItemInspectionCreate(description="Uniformidade da tinta"),
+    )
+
+    await service.verify_measurement_item_inspection(
+        company_id=company_id,
+        inspection_id=inspection.id,
+        request=ConstructionMeasurementInspectionVerifyRequest(check_number=1, status="non_compliant"),
+        actor_user_id=uuid4(),
+    )
+
+    assert item.inspection_status == "non_compliant"
+
+
+@pytest.mark.asyncio
+async def test_occurrence_requires_solution_to_be_resolved() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    item = await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(description="Esquadrias", amount=Decimal("900.00")),
+    )
+    occurrence = await service.create_measurement_item_occurrence(
+        company_id=company_id,
+        item_id=item.id,
+        request=ConstructionMeasurementItemOccurrenceCreate(problem="Janela desalinhada"),
+    )
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.update_measurement_item_occurrence(
+            company_id=company_id,
+            occurrence_id=occurrence.id,
+            request=ConstructionMeasurementItemOccurrenceUpdate(status="resolved"),
+        )
+
+    assert error.value.error_code == "CONSTRUCTION_OCCURRENCE_SOLUTION_REQUIRED"
+
+    resolved_occurrence = await service.update_measurement_item_occurrence(
+        company_id=company_id,
+        occurrence_id=occurrence.id,
+        request=ConstructionMeasurementItemOccurrenceUpdate(
+            status="resolved",
+            solution="Esquadria reinstalada e conferida",
+        ),
+    )
+
+    assert resolved_occurrence.status == "resolved"
+    assert resolved_occurrence.closed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_submit_and_approve_record_who_did_each_step() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    submitter_id = uuid4()
+    approver_id = uuid4()
+
+    await service.submit_measurement(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        actor_user_id=submitter_id,
+    )
+
+    assert measurement.status == ConstructionMeasurementStatus.SUBMITTED
+    assert measurement.submitted_by_user_id == submitter_id
+    assert measurement.submitted_at is not None
+
+    await service.approve_measurement(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        actor_user_id=approver_id,
+    )
+
+    assert measurement.status == ConstructionMeasurementStatus.APPROVED
+    assert measurement.approved_by_user_id == approver_id
+    assert measurement.approved_at is not None
+
+
+@pytest.mark.asyncio
+async def test_approval_refuses_the_user_who_submitted_the_measurement() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    submitter_id = uuid4()
+
+    await service.submit_measurement(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        actor_user_id=submitter_id,
+    )
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.approve_measurement(
+            company_id=company_id,
+            measurement_id=measurement.id,
+            actor_user_id=submitter_id,
+        )
+
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_SELF_APPROVAL"
+    assert measurement.status == ConstructionMeasurementStatus.SUBMITTED
+
+
+@pytest.mark.asyncio
+async def test_rejection_records_who_rejected_and_is_cleared_on_resubmit() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    rejecter_id = uuid4()
+
+    await service.reject_measurement(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        reason="Faltou o relatorio de inspecao",
+        actor_user_id=rejecter_id,
+    )
+
+    assert measurement.status == ConstructionMeasurementStatus.REJECTED
+    assert measurement.rejected_by_user_id == rejecter_id
+    assert measurement.rejected_at is not None
+
+    await service.submit_measurement(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        actor_user_id=uuid4(),
+    )
+
+    assert measurement.rejection_reason is None
+    assert measurement.rejected_by_user_id is None
+    assert measurement.rejected_at is None
+
+
+@pytest.mark.asyncio
+async def test_measurement_items_summary_counts_pending_checks_and_open_occurrences() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    item = await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(description="Cobertura", amount=Decimal("3200.00")),
+    )
+    await service.create_measurement_item_inspection(
+        company_id=company_id,
+        item_id=item.id,
+        request=ConstructionMeasurementItemInspectionCreate(description="Alinhamento das telhas"),
+    )
+    await service.create_measurement_item_occurrence(
+        company_id=company_id,
+        item_id=item.id,
+        request=ConstructionMeasurementItemOccurrenceCreate(problem="Telha trincada"),
+    )
+
+    summary = await service.build_measurement_items_summary(
+        company_id=company_id,
+        measurement_id=measurement.id,
+    )
+
+    assert summary["items_count"] == 1
+    assert summary["items_total_amount"] == Decimal("3200.00")
+    assert summary["pending_inspections_count"] == 1
+    assert summary["open_occurrences_count"] == 1
+
+
+def _build_sale_scenario(*, project_code: str, unit_code: str, sale_price: Decimal):
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    erp_client = FakeErpMeasurementClient()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code=project_code,
+        name="Sale details project",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    unit = ConstructionUnit(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        code=unit_code,
+        unit_type="apartment",
+        sale_price=sale_price,
+        analytic_cost_center_id=uuid4(),
+        status="available",
+    )
+    repository.projects[(company_id, project.id)] = project
+    repository.units[(company_id, unit.id)] = unit
+    service = ConstructionProjectService(repository=repository, erp_client=erp_client)
+    return company_id, unit, service, erp_client
+
+
+@pytest.mark.asyncio
+async def test_confirm_unit_sale_composition_matches_price_net_of_discount() -> None:
+    company_id, unit, service, erp_client = _build_sale_scenario(
+        project_code="OBRA-050",
+        unit_code="C-301",
+        sale_price=Decimal("400000.00"),
+    )
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("400000.00"),
+        discount_amount=Decimal("40000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+        payment_sources=[
+            {
+                "source_type": "down_payment",
+                "amount": Decimal("60000.00"),
+                "due_date": date(2026, 6, 10),
+                "installments": 1,
+            },
+            {
+                "source_type": "direct_builder",
+                "amount": Decimal("300000.00"),
+                "due_date": date(2026, 7, 10),
+                "installments": 60,
+            },
+        ],
+    )
+
+    result = await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert result.status == "sold"
+    assert result.sale_price == Decimal("400000.00")
+    assert result.discount_amount == Decimal("40000.00")
+    assert result.net_sale_price == Decimal("360000.00")
+    assert erp_client.events[0].payload["discount_amount"] == "40000.00"
+    assert erp_client.events[0].payload["net_sale_price"] == "360000.00"
+    assert erp_client.events[0].payload["receivable_amount"] == "360000.00"
+
+
+@pytest.mark.asyncio
+async def test_confirm_unit_sale_rejects_composition_that_ignores_discount() -> None:
+    company_id, unit, service, _ = _build_sale_scenario(
+        project_code="OBRA-051",
+        unit_code="C-302",
+        sale_price=Decimal("400000.00"),
+    )
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("400000.00"),
+        discount_amount=Decimal("40000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=1,
+        payment_sources=[
+            {
+                "source_type": "direct_builder",
+                "amount": Decimal("400000.00"),
+                "due_date": date(2026, 6, 10),
+                "installments": 1,
+            },
+        ],
+    )
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert error.value.error_code == "CONSTRUCTION_UNIT_PAYMENT_SOURCES_TOTAL_MISMATCH"
+    assert unit.status == "available"
+
+
+@pytest.mark.asyncio
+async def test_bank_released_sources_do_not_become_installments() -> None:
+    company_id, unit, service, erp_client = _build_sale_scenario(
+        project_code="OBRA-056",
+        unit_code="C-307",
+        sale_price=Decimal("300000.00"),
+    )
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=1,
+        payment_sources=[
+            {
+                "source_type": "down_payment",
+                "amount": Decimal("20000.00"),
+                "due_date": date(2026, 6, 10),
+                "installments": 2,
+            },
+            {
+                "source_type": "government_subsidy",
+                "amount": Decimal("30000.00"),
+                "due_date": date(2026, 7, 10),
+                "installments": 1,
+            },
+            {
+                "source_type": "fgts",
+                "amount": Decimal("50000.00"),
+                "due_date": date(2026, 7, 10),
+                "installments": 1,
+            },
+            {
+                "source_type": "financing",
+                "amount": Decimal("200000.00"),
+                "due_date": date(2026, 8, 10),
+                "installments": 1,
+            },
+        ],
+    )
+
+    await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    payload = erp_client.events[0].payload
+    installment_sources = [
+        source for source in payload["payment_sources"] if source["generates_installments"]
+    ]
+    settlement_sources = [
+        source for source in payload["payment_sources"] if not source["generates_installments"]
+    ]
+
+    assert [source["source_type"] for source in installment_sources] == ["down_payment"]
+    assert sorted(source["source_type"] for source in settlement_sources) == [
+        "fgts",
+        "financing",
+        "government_subsidy",
+    ]
+    assert payload["receivable_amount"] == "20000.00"
+
+    composition = await service.build_unit_sale_composition(company_id=company_id, unit_id=unit.id)
+
+    assert composition["installment_total"] == Decimal("20000.00")
+    assert composition["settlement_total"] == Decimal("280000.00")
+
+
+@pytest.mark.asyncio
+async def test_bank_released_source_cannot_be_split_into_installments() -> None:
+    company_id, unit, service, _ = _build_sale_scenario(
+        project_code="OBRA-057",
+        unit_code="C-308",
+        sale_price=Decimal("300000.00"),
+    )
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=1,
+        payment_sources=[
+            {
+                "source_type": "down_payment",
+                "amount": Decimal("100000.00"),
+                "due_date": date(2026, 6, 10),
+                "installments": 1,
+            },
+            {
+                "source_type": "financing",
+                "amount": Decimal("200000.00"),
+                "due_date": date(2026, 8, 10),
+                "installments": 24,
+            },
+        ],
+    )
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert error.value.error_code == "CONSTRUCTION_UNIT_SETTLEMENT_SOURCE_NOT_INSTALLMENTABLE"
+
+
+@pytest.mark.asyncio
+async def test_sale_only_with_bank_released_sources_is_refused() -> None:
+    company_id, unit, service, _ = _build_sale_scenario(
+        project_code="OBRA-058",
+        unit_code="C-309",
+        sale_price=Decimal("300000.00"),
+    )
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=1,
+        payment_sources=[
+            {
+                "source_type": "financing",
+                "amount": Decimal("300000.00"),
+                "due_date": date(2026, 8, 10),
+                "installments": 1,
+            },
+        ],
+    )
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert error.value.error_code == "CONSTRUCTION_UNIT_WITHOUT_INSTALLMENT_SOURCE"
+
+
+@pytest.mark.asyncio
+async def test_confirm_unit_sale_without_composition_charges_price_net_of_discount() -> None:
+    company_id, unit, service, erp_client = _build_sale_scenario(
+        project_code="OBRA-052",
+        unit_code="C-303",
+        sale_price=Decimal("200000.00"),
+    )
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("200000.00"),
+        discount_amount=Decimal("20000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=10,
+    )
+
+    await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert erp_client.events[0].payload["payment_sources"] == [
+        {
+            "source_type": "direct_builder",
+            "amount": "180000.00",
+            "due_date": "2026-06-10",
+            "installments": 10,
+            "generates_installments": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_confirm_unit_sale_rejects_discount_equal_to_sale_price() -> None:
+    company_id, unit, service, _ = _build_sale_scenario(
+        project_code="OBRA-053",
+        unit_code="C-304",
+        sale_price=Decimal("150000.00"),
+    )
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("150000.00"),
+        discount_amount=Decimal("150000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=1,
+    )
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert error.value.error_code == "CONSTRUCTION_UNIT_DISCOUNT_EXCEEDS_SALE_PRICE"
+
+
+@pytest.mark.asyncio
+async def test_confirm_unit_sale_rejects_secondary_buyer_equal_to_buyer() -> None:
+    company_id, unit, service, _ = _build_sale_scenario(
+        project_code="OBRA-054",
+        unit_code="C-305",
+        sale_price=Decimal("150000.00"),
+    )
+    buyer_person_id = uuid4()
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=buyer_person_id,
+        secondary_buyer_person_id=buyer_person_id,
+        sale_price=Decimal("150000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=1,
+    )
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert error.value.error_code == "CONSTRUCTION_UNIT_DUPLICATE_BUYER"
+
+
+@pytest.mark.asyncio
+async def test_confirm_unit_sale_persists_broker_signature_and_notes() -> None:
+    company_id, unit, service, erp_client = _build_sale_scenario(
+        project_code="OBRA-055",
+        unit_code="C-306",
+        sale_price=Decimal("300000.00"),
+    )
+    secondary_buyer_person_id = uuid4()
+    broker_person_id = uuid4()
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        secondary_buyer_person_id=secondary_buyer_person_id,
+        broker_person_id=broker_person_id,
+        sale_price=Decimal("300000.00"),
+        contract_signature_date=date(2026, 5, 28),
+        sale_notes="  Entrega das chaves apos quitacao da entrada.  ",
+        first_due_date=date(2026, 6, 10),
+        installments=24,
+    )
+
+    result = await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert result.secondary_buyer_person_id == secondary_buyer_person_id
+    assert result.broker_person_id == broker_person_id
+    assert result.contract_signature_date == date(2026, 5, 28)
+    assert result.sale_notes == "Entrega das chaves apos quitacao da entrada."
+
+    payload = erp_client.events[0].payload
+
+    assert payload["secondary_buyer_person_id"] == str(secondary_buyer_person_id)
+    assert payload["broker_person_id"] == str(broker_person_id)
+    assert payload["contract_signature_date"] == "2026-05-28"
+    assert payload["sale_notes"] == "Entrega das chaves apos quitacao da entrada."
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@
   --status-overdue-bg: rgba(245, 158, 11, 0.18);
   --status-overdue-text: #b45309;
   --font-family-display: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --date-icon-filter: invert(45%) sepia(8%) saturate(600%) hue-rotate(185deg);
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
   --radius-xl: 1rem;
@@ -56,6 +57,7 @@
   --status-canceled-text: #ef4444;
   --status-overdue-bg: rgba(245, 158, 11, 0.18);
   --status-overdue-text: #f59e0b;
+  --date-icon-filter: invert(1) brightness(1.2);
 }
 
 * {

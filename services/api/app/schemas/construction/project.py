@@ -166,6 +166,12 @@ class ConstructionUnitResponse(BaseModel):
     total_area: Decimal | None = None
     sale_price: Decimal | None = None
     buyer_person_id: UUID | None = None
+    secondary_buyer_person_id: UUID | None = None
+    broker_person_id: UUID | None = None
+    discount_amount: Decimal | None = None
+    net_sale_price: Decimal | None = None
+    contract_signature_date: date | None = None
+    sale_notes: str | None = None
     reserved_at: datetime | None = None
     reservation_expires_at: date | None = None
     sold_at: datetime | None = None
@@ -207,7 +213,12 @@ class ConstructionUnitSalePaymentSource(BaseModel):
 
 class ConstructionUnitSaleConfirmRequest(BaseModel):
     buyer_person_id: UUID
+    secondary_buyer_person_id: UUID | None = None
+    broker_person_id: UUID | None = None
     sale_price: Decimal | None = Field(default=None, gt=0)
+    discount_amount: Decimal | None = Field(default=None, ge=0)
+    contract_signature_date: date | None = None
+    sale_notes: str | None = None
     first_due_date: date
     installments: int = Field(default=1, ge=1, le=120)
     payment_sources: list[ConstructionUnitSalePaymentSource] | None = None
@@ -321,7 +332,17 @@ class ConstructionMeasurementResponse(BaseModel):
     supplier_person_id: UUID | None = None
     status: str
     rejection_reason: str | None = None
+    created_by_user_id: UUID | None = None
+    submitted_by_user_id: UUID | None = None
+    submitted_at: datetime | None = None
+    approved_by_user_id: UUID | None = None
     approved_at: datetime | None = None
+    rejected_by_user_id: UUID | None = None
+    rejected_at: datetime | None = None
+    items_total_amount: Decimal | None = None
+    items_count: int | None = None
+    pending_inspections_count: int | None = None
+    open_occurrences_count: int | None = None
     external_accounts_payable_id: UUID | None = None
     external_accounts_payable_status: str | None = None
     created_at: datetime
@@ -331,6 +352,195 @@ class ConstructionMeasurementResponse(BaseModel):
 class ConstructionMeasurementListResponse(BaseModel):
     items: list[ConstructionMeasurementResponse]
     total: int
+
+
+ConstructionInspectionStatusLiteral = Literal["pending", "compliant", "non_compliant"]
+
+ConstructionOccurrenceStatusLiteral = Literal["open", "resolved", "cancelled"]
+
+
+class ConstructionServiceTemplateItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    service_template_id: UUID
+    sequence_number: int
+    description: str
+    verification_method: str
+
+
+class ConstructionServiceTemplateResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    company_id: UUID
+    name: str
+    product_id: UUID | None = None
+    source_file_name: str | None = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    items: list[ConstructionServiceTemplateItemResponse] = []
+
+
+class ConstructionServiceTemplateListResponse(BaseModel):
+    items: list[ConstructionServiceTemplateResponse]
+    total: int
+
+
+class ConstructionServiceTemplateUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    product_id: UUID | None = None
+    is_active: bool | None = None
+
+
+class ConstructionServiceTemplateImportResult(BaseModel):
+    file_name: str
+    status: Literal["created", "updated", "skipped", "failed"]
+    service_template_id: UUID | None = None
+    service_name: str | None = None
+    items_count: int = 0
+    message: str | None = None
+
+
+class ConstructionServiceTemplateImportResponse(BaseModel):
+    results: list[ConstructionServiceTemplateImportResult]
+    created: int
+    updated: int
+    skipped: int
+    failed: int
+
+
+class ConstructionMeasurementItemCreate(BaseModel):
+    description: str | None = Field(default=None, min_length=1, max_length=2000)
+    amount: Decimal = Field(..., gt=0)
+    sequence_number: int | None = Field(default=None, ge=1)
+    service_template_id: UUID | None = None
+    product_id: UUID | None = None
+    product_description: str | None = Field(default=None, max_length=255)
+    start_date: date | None = None
+    end_date: date | None = None
+    inspector_person_id: UUID | None = None
+
+
+class ConstructionMeasurementItemUpdate(BaseModel):
+    description: str | None = Field(default=None, min_length=1, max_length=2000)
+    amount: Decimal | None = Field(default=None, gt=0)
+    product_id: UUID | None = None
+    product_description: str | None = Field(default=None, max_length=255)
+    start_date: date | None = None
+    end_date: date | None = None
+    inspector_person_id: UUID | None = None
+    inspection_status: ConstructionInspectionStatusLiteral | None = None
+
+
+class ConstructionMeasurementItemInspectionCreate(BaseModel):
+    description: str = Field(..., min_length=1, max_length=2000)
+    sequence_number: int | None = Field(default=None, ge=1)
+    verification_method: str | None = Field(default=None, max_length=255)
+    start_date: date | None = None
+    end_date: date | None = None
+    inspector_person_id: UUID | None = None
+
+
+class ConstructionMeasurementItemInspectionUpdate(BaseModel):
+    description: str | None = Field(default=None, min_length=1, max_length=2000)
+    verification_method: str | None = Field(default=None, max_length=255)
+    start_date: date | None = None
+    end_date: date | None = None
+    inspector_person_id: UUID | None = None
+
+
+class ConstructionMeasurementInspectionVerifyRequest(BaseModel):
+    check_number: Literal[1, 2]
+    status: ConstructionInspectionStatusLiteral
+
+
+class ConstructionMeasurementItemInspectionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    company_id: UUID
+    measurement_item_id: UUID
+    sequence_number: int
+    description: str
+    verification_method: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    inspector_person_id: UUID | None = None
+    first_status: str
+    first_status_at: datetime | None = None
+    first_status_by_user_id: UUID | None = None
+    second_status: str
+    second_status_at: datetime | None = None
+    second_status_by_user_id: UUID | None = None
+    is_double_checked: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConstructionMeasurementItemOccurrenceCreate(BaseModel):
+    problem: str = Field(..., min_length=1, max_length=2000)
+    sequence_number: int | None = Field(default=None, ge=1)
+    solution: str | None = Field(default=None, max_length=2000)
+    opened_at: date | None = None
+    inspector_person_id: UUID | None = None
+
+
+class ConstructionMeasurementItemOccurrenceUpdate(BaseModel):
+    problem: str | None = Field(default=None, min_length=1, max_length=2000)
+    solution: str | None = Field(default=None, max_length=2000)
+    status: ConstructionOccurrenceStatusLiteral | None = None
+    opened_at: date | None = None
+    closed_at: date | None = None
+    inspector_person_id: UUID | None = None
+
+
+class ConstructionMeasurementItemOccurrenceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    company_id: UUID
+    measurement_item_id: UUID
+    sequence_number: int
+    problem: str
+    solution: str | None = None
+    status: str
+    opened_at: date | None = None
+    closed_at: date | None = None
+    inspector_person_id: UUID | None = None
+    registered_by_user_id: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConstructionMeasurementItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    company_id: UUID
+    measurement_id: UUID
+    sequence_number: int
+    service_template_id: UUID | None = None
+    product_id: UUID | None = None
+    product_description: str | None = None
+    description: str
+    amount: Decimal
+    start_date: date | None = None
+    end_date: date | None = None
+    inspector_person_id: UUID | None = None
+    inspection_status: str
+    created_by_user_id: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+    inspections: list[ConstructionMeasurementItemInspectionResponse] = []
+    occurrences: list[ConstructionMeasurementItemOccurrenceResponse] = []
+
+
+class ConstructionMeasurementItemListResponse(BaseModel):
+    items: list[ConstructionMeasurementItemResponse]
+    total: int
+    total_amount: Decimal
 
 
 class ConstructionProcurementRequestCreate(BaseModel):

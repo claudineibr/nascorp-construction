@@ -5,6 +5,9 @@ from uuid import UUID, uuid4
 
 from app.domain.constants import (
     BLOCK_STATUSES,
+    ConstructionUnitPaymentSource,
+    ConstructionInspectionStatus,
+    ConstructionOccurrenceStatus,
     CONSTRUCTION_PROCUREMENT_APPROVAL_THRESHOLD,
     ConstructionMeasurementStatus,
     ConstructionProcurementStatus,
@@ -30,9 +33,16 @@ from app.domain.events.constants import (
 )
 from app.domain.events.contracts import EventEnvelope
 from app.domain.services.construction_integration_dispatcher import ConstructionIntegrationDispatchResult
+from app.domain.services.construction_service_template_parser import parse_service_template_spreadsheet
 from app.infrastructure.database.models import (
     ConstructionBlock,
     ConstructionMeasurement,
+    ConstructionMeasurementItem,
+    ConstructionServiceTemplate,
+    ConstructionServiceTemplateItem,
+    ConstructionUnitPaymentSource as ConstructionUnitPaymentSourceModel,
+    ConstructionMeasurementItemInspection,
+    ConstructionMeasurementItemOccurrence,
     ConstructionProcurementRequest,
     ConstructionProject,
     ConstructionSchedulePhase,
@@ -42,6 +52,13 @@ from app.infrastructure.repository.construction_repository import ConstructionRe
 from app.infrastructure.repository.event_repository import EventRepository
 from app.schemas.construction import (
     ConstructionBlockCreate,
+    ConstructionMeasurementInspectionVerifyRequest,
+    ConstructionMeasurementItemCreate,
+    ConstructionMeasurementItemInspectionCreate,
+    ConstructionMeasurementItemInspectionUpdate,
+    ConstructionMeasurementItemOccurrenceCreate,
+    ConstructionMeasurementItemOccurrenceUpdate,
+    ConstructionMeasurementItemUpdate,
     ConstructionBlockUpdate,
     ConstructionProjectCreate,
     ConstructionProjectUpdate,
@@ -50,6 +67,7 @@ from app.schemas.construction import (
     ConstructionMeasurementCreate,
     ConstructionMeasurementUpdate,
     ConstructionSchedulePhaseCreate,
+    ConstructionServiceTemplateUpdate,
     ConstructionSchedulePhaseUpdate,
     ConstructionUnitCreate,
     ConstructionUnitReserveRequest,
@@ -547,11 +565,42 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_UNIT_COST_CENTER_REQUIRED",
             )
 
-        payment_sources = self._build_sale_payment_sources(request=request, sale_price=sale_price)
+        discount_amount = (request.discount_amount or unit.discount_amount or Decimal("0")).quantize(Decimal("0.01"))
+        if discount_amount >= sale_price:
+            raise ConstructionInvalidValueError(
+                message="Unit sale discount must be lower than the sale price.",
+                error_code="CONSTRUCTION_UNIT_DISCOUNT_EXCEEDS_SALE_PRICE",
+            )
+
+        if request.secondary_buyer_person_id is not None and request.secondary_buyer_person_id == request.buyer_person_id:
+            raise ConstructionInvalidValueError(
+                message="Secondary buyer must be different from the main buyer.",
+                error_code="CONSTRUCTION_UNIT_DUPLICATE_BUYER",
+            )
+
+        net_sale_price = sale_price - discount_amount
+        payment_sources = self._build_sale_payment_sources(
+            request=request,
+            sale_price=sale_price,
+            discount_amount=discount_amount,
+        )
+        receivable_amount = self._sum_installment_sources(payment_sources=payment_sources)
+        if receivable_amount <= Decimal("0"):
+            raise ConstructionInvalidValueError(
+                message="The sale needs at least one installment source (down payment or builder installments).",
+                error_code="CONSTRUCTION_UNIT_WITHOUT_INSTALLMENT_SOURCE",
+            )
+
+        await self._replace_unit_payment_sources(unit=unit, payment_sources=payment_sources)
 
         unit.status = ConstructionUnitStatus.SOLD
         unit.buyer_person_id = request.buyer_person_id
+        unit.secondary_buyer_person_id = request.secondary_buyer_person_id
+        unit.broker_person_id = request.broker_person_id
         unit.sale_price = sale_price
+        unit.discount_amount = discount_amount
+        unit.contract_signature_date = request.contract_signature_date
+        unit.sale_notes = (request.sale_notes or "").strip() or None
         unit.sold_at = datetime.now(tz=UTC)
         unit.reservation_expires_at = None
 
@@ -561,6 +610,8 @@ class ConstructionProjectService:
             first_due_date=request.first_due_date,
             installments=request.installments,
             payment_sources=payment_sources,
+            net_sale_price=net_sale_price,
+            receivable_amount=receivable_amount,
             actor_user_id=actor_user_id,
         )
         dispatch_result = await self._dispatch_integration_event(event=sale_event)
@@ -821,6 +872,7 @@ class ConstructionProjectService:
         company_id: UUID,
         project_id: UUID,
         request: ConstructionMeasurementCreate,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurement:
         await self.get_project(company_id=company_id, project_id=project_id)
         unit = await self._get_unit(company_id=company_id, unit_id=request.unit_id)
@@ -886,6 +938,7 @@ class ConstructionProjectService:
             due_date=request.due_date,
             supplier_person_id=request.supplier_person_id,
             status=ConstructionMeasurementStatus.DRAFT,
+            created_by_user_id=actor_user_id,
         )
         await self.repository.add(measurement)
         await self.repository.commit()
@@ -977,12 +1030,38 @@ class ConstructionProjectService:
         await self.repository.refresh(measurement)
         return measurement
 
+    async def submit_measurement(
+        self,
+        *,
+        company_id: UUID,
+        measurement_id: UUID,
+        actor_user_id: UUID | None = None,
+    ) -> ConstructionMeasurement:
+        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
+        if measurement.status == ConstructionMeasurementStatus.APPROVED:
+            raise ConstructionInvalidValueError(
+                message="Approved measurements cannot be submitted again.",
+                error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
+            )
+
+        await self._sync_measurement_amounts_from_items(measurement=measurement)
+        measurement.status = ConstructionMeasurementStatus.SUBMITTED
+        measurement.rejection_reason = None
+        measurement.rejected_by_user_id = None
+        measurement.rejected_at = None
+        measurement.submitted_by_user_id = actor_user_id
+        measurement.submitted_at = datetime.now(tz=UTC)
+        await self.repository.commit()
+        await self.repository.refresh(measurement)
+        return measurement
+
     async def reject_measurement(
         self,
         *,
         company_id: UUID,
         measurement_id: UUID,
         reason: str | None = None,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurement:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
         if measurement.status == ConstructionMeasurementStatus.APPROVED:
@@ -993,6 +1072,8 @@ class ConstructionProjectService:
 
         measurement.status = ConstructionMeasurementStatus.REJECTED
         measurement.rejection_reason = reason.strip() if reason else None
+        measurement.rejected_by_user_id = actor_user_id
+        measurement.rejected_at = datetime.now(tz=UTC)
         await self.repository.commit()
         await self.repository.refresh(measurement)
         return measurement
@@ -1030,8 +1111,19 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_UNIT_COST_CENTER_REQUIRED",
             )
 
+        if actor_user_id is not None and measurement.submitted_by_user_id == actor_user_id:
+            raise ConstructionInvalidValueError(
+                message="Measurement must be approved by a user other than the one who submitted it.",
+                error_code="CONSTRUCTION_MEASUREMENT_SELF_APPROVAL",
+            )
+
+        await self._sync_measurement_amounts_from_items(measurement=measurement)
+
         measurement.status = ConstructionMeasurementStatus.APPROVED
         measurement.rejection_reason = None
+        measurement.rejected_by_user_id = None
+        measurement.rejected_at = None
+        measurement.approved_by_user_id = actor_user_id
         if measurement.approved_at is None:
             measurement.approved_at = datetime.now(tz=UTC)
 
@@ -1051,6 +1143,767 @@ class ConstructionProjectService:
         await self.repository.commit()
         await self.repository.refresh(measurement)
         return measurement
+
+    async def list_measurement_items(
+        self,
+        *,
+        company_id: UUID,
+        measurement_id: UUID,
+    ) -> list[ConstructionMeasurementItem]:
+        await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
+        return await self.repository.list_measurement_items(company_id=company_id, measurement_id=measurement_id)
+
+    async def get_measurement_item(self, *, company_id: UUID, item_id: UUID) -> ConstructionMeasurementItem:
+        item = await self.repository.get_measurement_item(company_id=company_id, item_id=item_id)
+        if not item:
+            raise ConstructionNotFoundError(resource_name="Construction measurement item")
+
+        return item
+
+    async def create_measurement_item(
+        self,
+        *,
+        company_id: UUID,
+        measurement_id: UUID,
+        request: ConstructionMeasurementItemCreate,
+        actor_user_id: UUID | None = None,
+    ) -> ConstructionMeasurementItem:
+        measurement = await self._get_editable_measurement(company_id=company_id, measurement_id=measurement_id)
+
+        service_template = None
+        if request.service_template_id is not None:
+            service_template = await self.repository.get_service_template(
+                company_id=company_id,
+                service_template_id=request.service_template_id,
+            )
+            if service_template is None:
+                raise ConstructionNotFoundError(resource_name="Construction service template")
+
+        description = (request.description or "").strip()
+        if not description and service_template is not None:
+            description = service_template.name
+
+        if not description:
+            raise ConstructionInvalidValueError(
+                message="Measurement item requires a description or a service template.",
+                error_code="CONSTRUCTION_MEASUREMENT_ITEM_DESCRIPTION_REQUIRED",
+            )
+
+        existing_items = await self.repository.list_measurement_items(
+            company_id=company_id,
+            measurement_id=measurement_id,
+        )
+        for existing_item in existing_items:
+            same_template = (
+                service_template is not None and existing_item.service_template_id == service_template.id
+            )
+            if same_template or existing_item.description.casefold() == description.casefold():
+                raise ConstructionInvalidValueError(
+                    message=f"Service {description} is already part of this measurement.",
+                    error_code="CONSTRUCTION_MEASUREMENT_ITEM_DUPLICATE_SERVICE",
+                )
+
+        sequence_number = request.sequence_number
+        if sequence_number is None:
+            sequence_number = await self.repository.get_next_measurement_item_sequence(
+                company_id=company_id,
+                measurement_id=measurement_id,
+            )
+
+        item = ConstructionMeasurementItem(
+            company_id=company_id,
+            measurement_id=measurement_id,
+            sequence_number=sequence_number,
+            service_template_id=service_template.id if service_template is not None else None,
+            product_id=request.product_id or (service_template.product_id if service_template else None),
+            product_description=(request.product_description or "").strip() or None,
+            description=description,
+            amount=request.amount.quantize(Decimal("0.01")),
+            start_date=request.start_date,
+            end_date=request.end_date,
+            inspector_person_id=request.inspector_person_id,
+            inspection_status=ConstructionInspectionStatus.PENDING,
+            created_by_user_id=actor_user_id,
+        )
+        self._validate_item_period(start_date=item.start_date, end_date=item.end_date)
+        self._validate_not_in_the_future(start_date=item.start_date, end_date=item.end_date)
+        if item.end_date is not None and service_template is not None and service_template.items:
+            raise ConstructionInvalidValueError(
+                message="End date can only be set after every inspection item is verified.",
+                error_code="CONSTRUCTION_MEASUREMENT_ITEM_END_DATE_BLOCKED",
+            )
+
+        await self.repository.add(item)
+        await self.repository.commit()
+        await self.repository.refresh(item)
+
+        if service_template is not None:
+            for template_item in service_template.items:
+                await self.repository.add(
+                    ConstructionMeasurementItemInspection(
+                        company_id=company_id,
+                        measurement_item_id=item.id,
+                        sequence_number=template_item.sequence_number,
+                        description=template_item.description,
+                        verification_method=template_item.verification_method,
+                        inspector_person_id=item.inspector_person_id,
+                        first_status=ConstructionInspectionStatus.PENDING,
+                        second_status=ConstructionInspectionStatus.PENDING,
+                    )
+                )
+            await self.repository.commit()
+
+        await self._sync_measurement_amounts_from_items(measurement=measurement)
+        await self.repository.commit()
+        return await self.get_measurement_item(company_id=company_id, item_id=item.id)
+
+    async def update_measurement_item(
+        self,
+        *,
+        company_id: UUID,
+        item_id: UUID,
+        request: ConstructionMeasurementItemUpdate,
+    ) -> ConstructionMeasurementItem:
+        item = await self.get_measurement_item(company_id=company_id, item_id=item_id)
+        measurement = await self._get_editable_measurement(
+            company_id=company_id,
+            measurement_id=item.measurement_id,
+        )
+
+        updates = request.model_dump(exclude_unset=True)
+        if "description" in updates and updates["description"]:
+            updates["description"] = updates["description"].strip()
+
+        if "product_description" in updates:
+            updates["product_description"] = (updates["product_description"] or "").strip() or None
+
+        if "amount" in updates and updates["amount"] is not None:
+            updates["amount"] = updates["amount"].quantize(Decimal("0.01"))
+
+        self._apply_updates(entity=item, updates=updates)
+        self._validate_item_period(start_date=item.start_date, end_date=item.end_date)
+        self._validate_not_in_the_future(start_date=item.start_date, end_date=item.end_date)
+        if "end_date" in updates and item.end_date is not None:
+            await self._assert_every_inspection_is_verified(item=item)
+
+        await self._sync_measurement_amounts_from_items(measurement=measurement)
+        await self.repository.commit()
+        return await self.get_measurement_item(company_id=company_id, item_id=item.id)
+
+    async def delete_measurement_item(self, *, company_id: UUID, item_id: UUID) -> None:
+        item = await self.get_measurement_item(company_id=company_id, item_id=item_id)
+        measurement = await self._get_editable_measurement(
+            company_id=company_id,
+            measurement_id=item.measurement_id,
+        )
+        await self.repository.delete(item)
+        await self.repository.commit()
+        await self._sync_measurement_amounts_from_items(measurement=measurement)
+        await self.repository.commit()
+
+    async def create_measurement_item_inspection(
+        self,
+        *,
+        company_id: UUID,
+        item_id: UUID,
+        request: ConstructionMeasurementItemInspectionCreate,
+    ) -> ConstructionMeasurementItemInspection:
+        item = await self.get_measurement_item(company_id=company_id, item_id=item_id)
+        await self._get_editable_measurement(company_id=company_id, measurement_id=item.measurement_id)
+
+        sequence_number = request.sequence_number
+        if sequence_number is None:
+            sequence_number = await self.repository.get_next_inspection_sequence(
+                company_id=company_id,
+                measurement_item_id=item_id,
+            )
+
+        inspection = ConstructionMeasurementItemInspection(
+            company_id=company_id,
+            measurement_item_id=item_id,
+            sequence_number=sequence_number,
+            description=request.description.strip(),
+            verification_method=(request.verification_method or "").strip() or None,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            inspector_person_id=request.inspector_person_id or item.inspector_person_id,
+            first_status=ConstructionInspectionStatus.PENDING,
+            second_status=ConstructionInspectionStatus.PENDING,
+        )
+        self._validate_item_period(start_date=inspection.start_date, end_date=inspection.end_date)
+        await self.repository.add(inspection)
+        await self.repository.commit()
+        await self.repository.refresh(inspection)
+        return inspection
+
+    async def update_measurement_item_inspection(
+        self,
+        *,
+        company_id: UUID,
+        inspection_id: UUID,
+        request: ConstructionMeasurementItemInspectionUpdate,
+    ) -> ConstructionMeasurementItemInspection:
+        inspection = await self._get_inspection(company_id=company_id, inspection_id=inspection_id)
+        item = await self.get_measurement_item(company_id=company_id, item_id=inspection.measurement_item_id)
+        await self._get_editable_measurement(company_id=company_id, measurement_id=item.measurement_id)
+
+        updates = request.model_dump(exclude_unset=True)
+        if "description" in updates and updates["description"]:
+            updates["description"] = updates["description"].strip()
+
+        if "verification_method" in updates:
+            updates["verification_method"] = (updates["verification_method"] or "").strip() or None
+
+        self._apply_updates(entity=inspection, updates=updates)
+        self._validate_item_period(start_date=inspection.start_date, end_date=inspection.end_date)
+        await self.repository.commit()
+        await self.repository.refresh(inspection)
+        return inspection
+
+    async def verify_measurement_item_inspection(
+        self,
+        *,
+        company_id: UUID,
+        inspection_id: UUID,
+        request: ConstructionMeasurementInspectionVerifyRequest,
+        actor_user_id: UUID | None = None,
+    ) -> ConstructionMeasurementItemInspection:
+        inspection = await self._get_inspection(company_id=company_id, inspection_id=inspection_id)
+        item = await self.get_measurement_item(company_id=company_id, item_id=inspection.measurement_item_id)
+        measurement = await self.get_measurement(company_id=company_id, measurement_id=item.measurement_id)
+        if measurement.status == ConstructionMeasurementStatus.APPROVED:
+            raise ConstructionInvalidValueError(
+                message="Approved measurements cannot have inspections verified.",
+                error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
+            )
+
+        if request.check_number == 2 and inspection.first_status == ConstructionInspectionStatus.PENDING:
+            raise ConstructionInvalidValueError(
+                message="First verification must be recorded before the second one.",
+                error_code="CONSTRUCTION_INSPECTION_FIRST_CHECK_REQUIRED",
+            )
+
+        if (
+            request.check_number == 2
+            and actor_user_id is not None
+            and inspection.first_status_by_user_id == actor_user_id
+        ):
+            raise ConstructionInvalidValueError(
+                message="Second verification must be recorded by a different user.",
+                error_code="CONSTRUCTION_INSPECTION_SAME_VERIFIER",
+            )
+
+        verified_at = datetime.now(tz=UTC)
+        if request.check_number == 1:
+            inspection.first_status = request.status
+            inspection.first_status_at = verified_at
+            inspection.first_status_by_user_id = actor_user_id
+        else:
+            inspection.second_status = request.status
+            inspection.second_status_at = verified_at
+            inspection.second_status_by_user_id = actor_user_id
+
+        item.inspection_status = await self._resolve_item_inspection_status(item=item)
+        await self.repository.commit()
+        await self.repository.refresh(inspection)
+        return inspection
+
+    async def delete_measurement_item_inspection(self, *, company_id: UUID, inspection_id: UUID) -> None:
+        inspection = await self._get_inspection(company_id=company_id, inspection_id=inspection_id)
+        item = await self.get_measurement_item(company_id=company_id, item_id=inspection.measurement_item_id)
+        await self._get_editable_measurement(company_id=company_id, measurement_id=item.measurement_id)
+        await self.repository.delete(inspection)
+        await self.repository.commit()
+
+    async def create_measurement_item_occurrence(
+        self,
+        *,
+        company_id: UUID,
+        item_id: UUID,
+        request: ConstructionMeasurementItemOccurrenceCreate,
+        actor_user_id: UUID | None = None,
+    ) -> ConstructionMeasurementItemOccurrence:
+        item = await self.get_measurement_item(company_id=company_id, item_id=item_id)
+        await self.get_measurement(company_id=company_id, measurement_id=item.measurement_id)
+
+        sequence_number = request.sequence_number
+        if sequence_number is None:
+            sequence_number = await self.repository.get_next_occurrence_sequence(
+                company_id=company_id,
+                measurement_item_id=item_id,
+            )
+
+        occurrence = ConstructionMeasurementItemOccurrence(
+            company_id=company_id,
+            measurement_item_id=item_id,
+            sequence_number=sequence_number,
+            problem=request.problem.strip(),
+            solution=(request.solution or "").strip() or None,
+            status=ConstructionOccurrenceStatus.OPEN,
+            opened_at=request.opened_at or datetime.now(tz=UTC).date(),
+            inspector_person_id=request.inspector_person_id or item.inspector_person_id,
+            registered_by_user_id=actor_user_id,
+        )
+        await self.repository.add(occurrence)
+        await self.repository.commit()
+        await self.repository.refresh(occurrence)
+        return occurrence
+
+    async def update_measurement_item_occurrence(
+        self,
+        *,
+        company_id: UUID,
+        occurrence_id: UUID,
+        request: ConstructionMeasurementItemOccurrenceUpdate,
+    ) -> ConstructionMeasurementItemOccurrence:
+        occurrence = await self._get_occurrence(company_id=company_id, occurrence_id=occurrence_id)
+
+        updates = request.model_dump(exclude_unset=True)
+        if "problem" in updates and updates["problem"]:
+            updates["problem"] = updates["problem"].strip()
+
+        if "solution" in updates:
+            updates["solution"] = (updates["solution"] or "").strip() or None
+
+        next_status = updates.get("status", occurrence.status)
+        if next_status == ConstructionOccurrenceStatus.RESOLVED:
+            solution = updates.get("solution", occurrence.solution)
+            if not solution:
+                raise ConstructionInvalidValueError(
+                    message="Occurrence solution is required to resolve it.",
+                    error_code="CONSTRUCTION_OCCURRENCE_SOLUTION_REQUIRED",
+                )
+
+            if not updates.get("closed_at") and occurrence.closed_at is None:
+                updates["closed_at"] = datetime.now(tz=UTC).date()
+
+        if next_status == ConstructionOccurrenceStatus.OPEN:
+            updates["closed_at"] = None
+
+        self._apply_updates(entity=occurrence, updates=updates)
+        await self.repository.commit()
+        await self.repository.refresh(occurrence)
+        return occurrence
+
+    async def delete_measurement_item_occurrence(self, *, company_id: UUID, occurrence_id: UUID) -> None:
+        occurrence = await self._get_occurrence(company_id=company_id, occurrence_id=occurrence_id)
+        await self.repository.delete(occurrence)
+        await self.repository.commit()
+
+    async def build_measurement_items_summary(self, *, company_id: UUID, measurement_id: UUID) -> dict[str, Any]:
+        items = await self.repository.list_measurement_items(company_id=company_id, measurement_id=measurement_id)
+        pending_inspections = await self.repository.count_pending_measurement_inspections(
+            company_id=company_id,
+            measurement_id=measurement_id,
+        )
+        open_occurrences = await self.repository.count_open_measurement_occurrences(
+            company_id=company_id,
+            measurement_id=measurement_id,
+        )
+        return {
+            "items_total_amount": sum((item.amount for item in items), Decimal("0")),
+            "items_count": len(items),
+            "pending_inspections_count": pending_inspections,
+            "open_occurrences_count": open_occurrences,
+        }
+
+    async def list_service_templates(
+        self,
+        *,
+        company_id: UUID,
+        only_active: bool = True,
+        search: str | None = None,
+    ) -> list[ConstructionServiceTemplate]:
+        return await self.repository.list_service_templates(
+            company_id=company_id,
+            only_active=only_active,
+            search=search,
+        )
+
+    async def get_service_template(
+        self,
+        *,
+        company_id: UUID,
+        service_template_id: UUID,
+    ) -> ConstructionServiceTemplate:
+        service_template = await self.repository.get_service_template(
+            company_id=company_id,
+            service_template_id=service_template_id,
+        )
+        if service_template is None:
+            raise ConstructionNotFoundError(resource_name="Construction service template")
+
+        return service_template
+
+    async def update_service_template(
+        self,
+        *,
+        company_id: UUID,
+        service_template_id: UUID,
+        request: ConstructionServiceTemplateUpdate,
+    ) -> ConstructionServiceTemplate:
+        service_template = await self.get_service_template(
+            company_id=company_id,
+            service_template_id=service_template_id,
+        )
+        updates = request.model_dump(exclude_unset=True)
+        if "name" in updates and updates["name"]:
+            next_name = updates["name"].strip().upper()
+            if next_name != service_template.name:
+                duplicated = await self.repository.get_service_template_by_name(
+                    company_id=company_id,
+                    name=next_name,
+                )
+                if duplicated is not None:
+                    raise ConstructionDuplicateCodeError(
+                        resource_name="Construction service template",
+                        code=next_name,
+                    )
+
+            updates["name"] = next_name
+
+        self._apply_updates(entity=service_template, updates=updates)
+        await self.repository.commit()
+        return await self.get_service_template(
+            company_id=company_id,
+            service_template_id=service_template.id,
+        )
+
+    async def import_service_templates(
+        self,
+        *,
+        company_id: UUID,
+        files: list[tuple[str, bytes]],
+    ) -> list[dict[str, Any]]:
+        if not files:
+            raise ConstructionInvalidValueError(
+                message="No spreadsheet was sent for import.",
+                error_code="CONSTRUCTION_TEMPLATE_NO_FILE",
+            )
+
+        results: list[dict[str, Any]] = []
+        for file_name, content in files:
+            try:
+                parsed = parse_service_template_spreadsheet(file_name=file_name, content=content)
+            except ConstructionInvalidValueError as parse_error:
+                results.append(
+                    {
+                        "file_name": file_name,
+                        "status": "failed",
+                        "message": parse_error.message,
+                    }
+                )
+                continue
+
+            existing_template = await self.repository.get_service_template_by_name(
+                company_id=company_id,
+                name=parsed.name,
+            )
+            if existing_template is not None:
+                if existing_template.items:
+                    results.append(
+                        {
+                            "file_name": file_name,
+                            "status": "skipped",
+                            "service_template_id": existing_template.id,
+                            "service_name": existing_template.name,
+                            "items_count": len(existing_template.items),
+                            "message": "Service already has inspection items.",
+                        }
+                    )
+                    continue
+
+                existing_template.source_file_name = file_name
+                for parsed_item in parsed.items:
+                    await self.repository.add(
+                        ConstructionServiceTemplateItem(
+                            company_id=company_id,
+                            service_template_id=existing_template.id,
+                            sequence_number=parsed_item.sequence_number,
+                            description=parsed_item.description,
+                            verification_method=parsed_item.verification_method,
+                        )
+                    )
+
+                await self.repository.commit()
+                results.append(
+                    {
+                        "file_name": file_name,
+                        "status": "updated",
+                        "service_template_id": existing_template.id,
+                        "service_name": existing_template.name,
+                        "items_count": len(parsed.items),
+                    }
+                )
+                continue
+
+            service_template = ConstructionServiceTemplate(
+                company_id=company_id,
+                name=parsed.name,
+                source_file_name=file_name,
+                is_active=True,
+            )
+            await self.repository.add(service_template)
+            await self.repository.commit()
+            await self.repository.refresh(service_template)
+
+            for parsed_item in parsed.items:
+                await self.repository.add(
+                    ConstructionServiceTemplateItem(
+                        company_id=company_id,
+                        service_template_id=service_template.id,
+                        sequence_number=parsed_item.sequence_number,
+                        description=parsed_item.description,
+                        verification_method=parsed_item.verification_method,
+                    )
+                )
+
+            await self.repository.commit()
+            results.append(
+                {
+                    "file_name": file_name,
+                    "status": "created",
+                    "service_template_id": service_template.id,
+                    "service_name": service_template.name,
+                    "items_count": len(parsed.items),
+                }
+            )
+
+        return results
+
+    async def _assert_every_inspection_is_verified(self, *, item: ConstructionMeasurementItem) -> None:
+        inspections = await self.repository.list_measurement_item_inspections(
+            company_id=item.company_id,
+            measurement_item_id=item.id,
+        )
+        pending = [
+            inspection
+            for inspection in inspections
+            if ConstructionInspectionStatus.PENDING in {inspection.first_status, inspection.second_status}
+        ]
+        if pending:
+            raise ConstructionInvalidValueError(
+                message="End date can only be set after every inspection item is verified.",
+                error_code="CONSTRUCTION_MEASUREMENT_ITEM_END_DATE_BLOCKED",
+            )
+
+    @staticmethod
+    def _sum_installment_sources(*, payment_sources: list[dict[str, Any]]) -> Decimal:
+        return sum(
+            (
+                Decimal(str(payment_source["amount"]))
+                for payment_source in payment_sources
+                if payment_source.get("generates_installments")
+            ),
+            Decimal("0"),
+        ).quantize(Decimal("0.01"))
+
+    async def _replace_unit_payment_sources(
+        self,
+        *,
+        unit: ConstructionUnit,
+        payment_sources: list[dict[str, Any]],
+    ) -> None:
+        current_sources = await self.repository.list_unit_payment_sources(
+            company_id=unit.company_id,
+            unit_id=unit.id,
+        )
+        for current_source in current_sources:
+            await self.repository.delete(current_source)
+
+        for payment_source in payment_sources:
+            due_date = payment_source.get("due_date")
+            await self.repository.add(
+                ConstructionUnitPaymentSourceModel(
+                    company_id=unit.company_id,
+                    unit_id=unit.id,
+                    source_type=str(payment_source["source_type"]),
+                    amount=Decimal(str(payment_source["amount"])),
+                    due_date=date.fromisoformat(str(due_date)) if due_date else None,
+                    installments=int(payment_source.get("installments") or 1),
+                    generates_installments=bool(payment_source.get("generates_installments")),
+                )
+            )
+
+    async def build_unit_payment_plan(self, *, company_id: UUID, unit_id: UUID) -> dict[str, Any]:
+        composition = await self.build_unit_sale_composition(company_id=company_id, unit_id=unit_id)
+        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+
+        plan: dict[str, Any] = {
+            "installments": [],
+            "installments_total": Decimal("0"),
+            "paid_total": Decimal("0"),
+            "open_total": Decimal("0"),
+            "overdue_count": 0,
+            "contract_id": unit.external_contract_id,
+            "contract_status": unit.external_contract_status,
+            "contract_code": None,
+            "contract_content_html": None,
+            "erp_unavailable_reason": None,
+        }
+
+        if self.erp_client is not None and (
+            unit.external_receivable_id is not None or unit.external_contract_id is not None
+        ):
+            try:
+                erp_plan = await self.erp_client.get_unit_payment_plan(
+                    company_id=company_id,
+                    receivable_id=unit.external_receivable_id,
+                    contract_id=unit.external_contract_id,
+                )
+                plan.update(erp_plan)
+            except Exception as request_error:
+                plan["erp_unavailable_reason"] = str(request_error)
+
+        composition["payment_plan"] = plan
+        return composition
+
+    async def build_unit_sale_composition(self, *, company_id: UUID, unit_id: UUID) -> dict[str, Any]:
+        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        payment_sources = await self.repository.list_unit_payment_sources(
+            company_id=company_id,
+            unit_id=unit_id,
+        )
+        sale_price = unit.sale_price or Decimal("0")
+        discount_amount = unit.discount_amount or Decimal("0")
+        installment_total = sum(
+            (source.amount for source in payment_sources if source.generates_installments),
+            Decimal("0"),
+        )
+        settlement_total = sum(
+            (source.amount for source in payment_sources if not source.generates_installments),
+            Decimal("0"),
+        )
+        return {
+            "construction_unit_id": unit.id,
+            "unit_code": unit.code,
+            "sale_price": sale_price,
+            "discount_amount": discount_amount,
+            "installment_total": installment_total,
+            "settlement_total": settlement_total,
+            "external_receivable_id": unit.external_receivable_id,
+            "external_receivable_status": unit.external_receivable_status,
+            "sources": [
+                {
+                    "source_type": source.source_type,
+                    "label": ConstructionUnitPaymentSource.LABELS.get(source.source_type, source.source_type),
+                    "amount": source.amount,
+                    "due_date": source.due_date,
+                    "installments": source.installments,
+                    "generates_installments": source.generates_installments,
+                }
+                for source in payment_sources
+            ],
+        }
+
+    @staticmethod
+    def _validate_not_in_the_future(*, start_date, end_date) -> None:
+        today = datetime.now(tz=UTC).date()
+        if start_date is not None and start_date > today:
+            raise ConstructionInvalidValueError(
+                message="Start date cannot be in the future.",
+                error_code="CONSTRUCTION_INVALID_PERIOD",
+            )
+
+        if end_date is not None and end_date > today:
+            raise ConstructionInvalidValueError(
+                message="End date cannot be in the future.",
+                error_code="CONSTRUCTION_INVALID_PERIOD",
+            )
+
+    async def _get_editable_measurement(
+        self,
+        *,
+        company_id: UUID,
+        measurement_id: UUID,
+    ) -> ConstructionMeasurement:
+        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
+        if measurement.status == ConstructionMeasurementStatus.APPROVED:
+            raise ConstructionInvalidValueError(
+                message="Approved measurements cannot be edited.",
+                error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
+            )
+
+        return measurement
+
+    async def _get_inspection(
+        self,
+        *,
+        company_id: UUID,
+        inspection_id: UUID,
+    ) -> ConstructionMeasurementItemInspection:
+        inspection = await self.repository.get_measurement_inspection(
+            company_id=company_id,
+            inspection_id=inspection_id,
+        )
+        if not inspection:
+            raise ConstructionNotFoundError(resource_name="Construction measurement inspection")
+
+        return inspection
+
+    async def _get_occurrence(
+        self,
+        *,
+        company_id: UUID,
+        occurrence_id: UUID,
+    ) -> ConstructionMeasurementItemOccurrence:
+        occurrence = await self.repository.get_measurement_occurrence(
+            company_id=company_id,
+            occurrence_id=occurrence_id,
+        )
+        if not occurrence:
+            raise ConstructionNotFoundError(resource_name="Construction measurement occurrence")
+
+        return occurrence
+
+    async def _sync_measurement_amounts_from_items(self, *, measurement: ConstructionMeasurement) -> None:
+        items_amount = await self.repository.get_measurement_items_amount(
+            company_id=measurement.company_id,
+            measurement_id=measurement.id,
+        )
+        if items_amount <= Decimal("0"):
+            return
+
+        retentions_amount = measurement.retentions_amount or Decimal("0")
+        net_amount = items_amount - retentions_amount
+        if net_amount <= Decimal("0"):
+            raise ConstructionInvalidValueError(
+                message="Measurement retentions cannot be greater than the sum of its items.",
+                error_code="CONSTRUCTION_MEASUREMENT_RETENTIONS_INVALID",
+            )
+
+        measurement.gross_amount = items_amount
+        measurement.net_amount = net_amount
+        measurement.measured_amount = net_amount
+
+    async def _resolve_item_inspection_status(self, *, item: ConstructionMeasurementItem) -> str:
+        inspections = await self.repository.list_measurement_item_inspections(
+            company_id=item.company_id,
+            measurement_item_id=item.id,
+        )
+        if not inspections:
+            return ConstructionInspectionStatus.PENDING
+
+        statuses = [
+            status
+            for inspection in inspections
+            for status in (inspection.first_status, inspection.second_status)
+        ]
+        if any(status == ConstructionInspectionStatus.NON_COMPLIANT for status in statuses):
+            return ConstructionInspectionStatus.NON_COMPLIANT
+
+        if all(status == ConstructionInspectionStatus.COMPLIANT for status in statuses):
+            return ConstructionInspectionStatus.COMPLIANT
+
+        return ConstructionInspectionStatus.PENDING
+
+    @staticmethod
+    def _validate_item_period(*, start_date, end_date) -> None:
+        if start_date is not None and end_date is not None and end_date < start_date:
+            raise ConstructionInvalidValueError(
+                message="End date cannot be earlier than start date.",
+                error_code="CONSTRUCTION_INVALID_PERIOD",
+            )
 
     async def delete_measurement(self, *, company_id: UUID, measurement_id: UUID) -> None:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
@@ -1384,14 +2237,18 @@ class ConstructionProjectService:
         *,
         request: ConstructionUnitSaleConfirmRequest,
         sale_price: Decimal,
+        discount_amount: Decimal,
     ) -> list[dict[str, Any]]:
         if not request.payment_sources:
             return [
                 {
-                    "source_type": "direct_builder",
-                    "amount": ConstructionProjectService._format_event_decimal(value=sale_price),
+                    "source_type": ConstructionUnitPaymentSource.DIRECT_BUILDER,
+                    "amount": ConstructionProjectService._format_event_decimal(
+                        value=sale_price - discount_amount
+                    ),
                     "due_date": ConstructionProjectService._format_event_date(value=request.first_due_date),
                     "installments": request.installments,
+                    "generates_installments": True,
                 }
             ]
 
@@ -1400,18 +2257,32 @@ class ConstructionProjectService:
         for payment_source in request.payment_sources:
             source_amount = payment_source.amount.quantize(Decimal("0.01"))
             total_amount += source_amount
+            generates_installments = (
+                payment_source.source_type in ConstructionUnitPaymentSource.INSTALLMENT_SOURCES
+            )
+            if not generates_installments and payment_source.installments > 1:
+                raise ConstructionInvalidValueError(
+                    message=(
+                        f"{ConstructionUnitPaymentSource.LABELS.get(payment_source.source_type, payment_source.source_type)}"
+                        " is released by the bank and cannot be split into installments."
+                    ),
+                    error_code="CONSTRUCTION_UNIT_SETTLEMENT_SOURCE_NOT_INSTALLMENTABLE",
+                )
+
             payment_sources.append(
                 {
                     "source_type": payment_source.source_type,
                     "amount": ConstructionProjectService._format_event_decimal(value=source_amount),
                     "due_date": ConstructionProjectService._format_event_date(value=payment_source.due_date),
-                    "installments": payment_source.installments,
+                    "installments": payment_source.installments if generates_installments else 1,
+                    "generates_installments": generates_installments,
                 }
             )
 
-        if total_amount.quantize(Decimal("0.01")) != sale_price.quantize(Decimal("0.01")):
+        composed_total = (total_amount + discount_amount).quantize(Decimal("0.01"))
+        if composed_total != sale_price.quantize(Decimal("0.01")):
             raise ConstructionInvalidValueError(
-                message="Payment source amounts must match the unit sale price.",
+                message="Payment sources plus discount must match the unit sale price.",
                 error_code="CONSTRUCTION_UNIT_PAYMENT_SOURCES_TOTAL_MISMATCH",
             )
 
@@ -1425,6 +2296,8 @@ class ConstructionProjectService:
         first_due_date: date,
         installments: int,
         payment_sources: list[dict[str, Any]],
+        net_sale_price: Decimal,
+        receivable_amount: Decimal,
         actor_user_id: UUID | None,
     ) -> EventEnvelope:
         event_id = uuid4()
@@ -1434,11 +2307,30 @@ class ConstructionProjectService:
             "unit_code": unit.code,
             "buyer_person_id": str(unit.buyer_person_id),
             "sale_price": ConstructionProjectService._format_event_decimal(value=unit.sale_price or Decimal("0")),
+            "discount_amount": ConstructionProjectService._format_event_decimal(
+                value=unit.discount_amount or Decimal("0")
+            ),
+            "net_sale_price": ConstructionProjectService._format_event_decimal(value=net_sale_price),
+            "receivable_amount": ConstructionProjectService._format_event_decimal(value=receivable_amount),
             "first_due_date": ConstructionProjectService._format_event_date(value=first_due_date),
             "installments": installments,
             "payment_sources": payment_sources,
             "analytic_cost_center_id": str(analytic_cost_center_id),
         }
+        if unit.secondary_buyer_person_id is not None:
+            payload["secondary_buyer_person_id"] = str(unit.secondary_buyer_person_id)
+
+        if unit.broker_person_id is not None:
+            payload["broker_person_id"] = str(unit.broker_person_id)
+
+        if unit.contract_signature_date is not None:
+            payload["contract_signature_date"] = ConstructionProjectService._format_event_date(
+                value=unit.contract_signature_date
+            )
+
+        if unit.sale_notes:
+            payload["sale_notes"] = unit.sale_notes
+
         if actor_user_id is not None:
             payload["user_id"] = str(actor_user_id)
 

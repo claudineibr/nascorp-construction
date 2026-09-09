@@ -36,6 +36,11 @@ async def test_alembic_upgrade_downgrade_upgrade_smoke() -> None:
     assert_alembic_success(run_alembic_command("upgrade", "head"))
 
     current_result = run_alembic_command("current")
+    heads_result = run_alembic_command("heads")
 
     assert_alembic_success(current_result)
-    assert "20260505_0009" in current_result.stdout
+    assert_alembic_success(heads_result)
+
+    head_revision = heads_result.stdout.split()[0]
+
+    assert head_revision in current_result.stdout
