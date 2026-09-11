@@ -687,6 +687,46 @@ export async function confirmConstructionUnitSale({ bridge, unitId, saleData }) 
   return toUnitView(payload)
 }
 
+export async function updateConstructionUnitInstallment({ bridge, unitId, installmentNumber, changes }) {
+  return requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/installments/${installmentNumber}`,
+    method: "PATCH",
+    body: changes,
+  })
+}
+
+export async function getConstructionProjectSummary({ bridge, projectId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/summary`,
+  })
+
+  return {
+    unitsCount: payload.units_count ?? 0,
+    unitsSoldCount: payload.units_sold_count ?? 0,
+    unitsReservedCount: payload.units_reserved_count ?? 0,
+    unitsAvailableCount: payload.units_available_count ?? 0,
+    unitsTotalAmount: payload.units_total_amount ?? 0,
+    unitsSoldAmount: payload.units_sold_amount ?? 0,
+    discountAmount: payload.discount_amount ?? 0,
+    plannedCostAmount: payload.planned_cost_amount ?? 0,
+    measuredCostAmount: payload.measured_cost_amount ?? 0,
+    paidCostAmount: payload.paid_cost_amount ?? 0,
+    costDifferenceAmount: payload.cost_difference_amount ?? 0,
+    measurementsCount: payload.measurements_count ?? 0,
+    measurementsApprovedCount: payload.measurements_approved_count ?? 0,
+    procurementRequestsCount: payload.procurement_requests_count ?? 0,
+    receivablesCount: payload.receivables_count ?? 0,
+    receivableTotalAmount: payload.receivable_total_amount ?? 0,
+    receivedAmount: payload.received_amount ?? 0,
+    openAmount: payload.open_amount ?? 0,
+    overdueAmount: payload.overdue_amount ?? 0,
+    overdueCount: payload.overdue_count ?? 0,
+    erpUnavailableReason: payload.erp_unavailable_reason ?? "",
+  }
+}
+
 export async function getConstructionUnitPaymentPlan({ bridge, unitId }) {
   const payload = await requestJson({
     bridge,
@@ -736,6 +776,8 @@ export async function getConstructionUnitPaymentPlan({ bridge, unitId }) {
         paymentDate: installment.payment_date ?? null,
         status: installment.status,
         documentNumber: installment.document_number ?? "",
+        observation: installment.observation ?? "",
+        paymentMethod: installment.payment_method ?? "",
       })),
     },
   }

@@ -384,7 +384,8 @@
 .detailMetaGrid {
   display: grid;
   gap: 0.75rem;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* auto-fit para o cabecalho acomodar de 4 a 5 cards sem deixar buraco */
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
 .detailMetaItem {
@@ -409,6 +410,14 @@
   color: var(--color-text);
   font-size: 0.86rem;
   overflow-wrap: anywhere;
+}
+
+/* Linha de apoio do card: sem o uppercase do rotulo. */
+.detailMetaItem .detailMetaHint {
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+  text-transform: none;
 }
 
 .detailActions,
@@ -879,6 +888,29 @@
   flex-direction: column;
   gap: 0.45rem;
   padding: 0.85rem;
+}
+
+/* Blocos do resumo: um titulo por grupo de indicadores. */
+.summaryGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.summaryGroupTitle {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.summaryValuePositive {
+  color: var(--color-success-text);
+}
+
+.summaryValueNegative {
+  color: var(--color-danger-text);
 }
 
 .integrationCard h3 {

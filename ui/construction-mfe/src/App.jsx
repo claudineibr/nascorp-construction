@@ -51,7 +51,9 @@ import {
   deleteConstructionUnit,
   fetchConstructionAddressByZip,
   listConstructionBlocks,
+  getConstructionProjectSummary,
   getConstructionUnitPaymentPlan,
+  updateConstructionUnitInstallment,
   importConstructionServiceTemplates,
   listConstructionMeasurementItems,
   listConstructionMeasurements,
@@ -89,7 +91,7 @@ const statusLabel = {
   draft: "Rascunho",
   active: "Ativa",
   paused: "Pausada",
-  completed: "Concluida",
+  completed: "Concluída",
   cancelled: "Cancelada",
   canceled: "Cancelada",
 }
@@ -113,19 +115,19 @@ const blockStatusOptions = [
 const scheduleStatusOptions = [
   { value: "planned", label: "Planejada" },
   { value: "in_progress", label: "Em andamento" },
-  { value: "completed", label: "Concluida" },
+  { value: "completed", label: "Concluída" },
   { value: "cancelled", label: "Cancelada" },
 ]
 
 const scheduleStatusLabel = Object.fromEntries(scheduleStatusOptions.map((option) => [option.value, option.label]))
 
 const unitStatusOptions = [
-  { value: "available", label: "Disponivel" },
+  { value: "available", label: "Disponível" },
   { value: "reserved", label: "Reservada" },
   { value: "sold", label: "Vendida" },
   { value: "delivered", label: "Entregue" },
   { value: "terminated", label: "Distratada" },
-  { value: "unavailable", label: "Indisponivel" },
+  { value: "unavailable", label: "Indisponível" },
 ]
 
 const unitStatusLabel = Object.fromEntries(unitStatusOptions.map((option) => [option.value, option.label]))
@@ -133,7 +135,7 @@ const unitStatusLabel = Object.fromEntries(unitStatusOptions.map((option) => [op
 const measurementStatusOptions = [
   { value: "draft", label: "Rascunho" },
   { value: "submitted", label: "Enviada" },
-  { value: "in_approval", label: "Em aprovacao" },
+  { value: "in_approval", label: "Em aprovação" },
   { value: "approved", label: "Aprovada" },
   { value: "rejected", label: "Rejeitada" },
   { value: "paid", label: "Paga" },
@@ -143,7 +145,7 @@ const measurementStatusLabel = Object.fromEntries(measurementStatusOptions.map((
 
 const procurementStatusOptions = [
   { value: "draft", label: "Rascunho" },
-  { value: "pending_approval", label: "Aguardando aprovacao" },
+  { value: "pending_approval", label: "Aguardando aprovação" },
   { value: "approved", label: "Aprovada" },
   { value: "rejected", label: "Rejeitada" },
   { value: "sent_to_erp", label: "Enviada ao ERP" },
@@ -152,18 +154,18 @@ const procurementStatusOptions = [
 const procurementStatusLabel = Object.fromEntries(procurementStatusOptions.map((option) => [option.value, option.label]))
 
 const projectDetailTabs = [
-  { id: "overview", label: "Visao geral", icon: Building2 },
+  { id: "overview", label: "Visão geral", icon: Building2 },
   { id: "blocks", label: "Blocos/Torres", icon: Route },
   { id: "units", label: "Unidades", icon: Home },
   { id: "schedule", label: "Cronograma", icon: ListChecks },
-  { id: "procurement", label: "Requisicoes", icon: PackageSearch },
-  { id: "reports", label: "Relatorios", icon: BarChart3 },
-  { id: "integrations", label: "Integracoes", icon: FileCog },
+  { id: "procurement", label: "Requisições", icon: PackageSearch },
+  { id: "reports", label: "Relatórios", icon: BarChart3 },
+  { id: "integrations", label: "Integrações", icon: FileCog },
 ]
 
 const unitDetailTabs = [
   { id: "summary", label: "Resumo", icon: Home },
-  { id: "measurements", label: "Medicoes", icon: HandCoins },
+  { id: "measurements", label: "Medições", icon: HandCoins },
   { id: "installments", label: "Parcelas", icon: ShoppingCart },
   { id: "contract", label: "Contrato", icon: FileText },
 ]
@@ -275,6 +277,12 @@ const defaultReserveUnitForm = {
   reservationExpiresAt: "",
 }
 
+const defaultEditInstallmentForm = {
+  paymentMethod: "",
+  documentNumber: "",
+  observation: "",
+}
+
 const defaultSaleUnitForm = {
   buyerPersonId: "",
   secondaryBuyerPersonId: "",
@@ -286,7 +294,6 @@ const defaultSaleUnitForm = {
   downPaymentAmount: "",
   downPaymentDueDate: "",
   downPaymentInstallments: "1",
-  directBuilderAmount: "",
   firstDueDate: "",
   installments: "1",
   governmentSubsidyAmount: "",
@@ -300,7 +307,38 @@ const defaultSaleUnitForm = {
   financingInstallments: "1",
 }
 
-const SALE_INSTALLMENT_SOURCE_TYPES = ["down_payment", "direct_builder"]
+// Das fontes informadas, so a entrada vira parcela. O saldo tambem parcela,
+// mas nao esta aqui porque nao e digitado: ele e o que sobra do preco.
+const SALE_INSTALLMENT_SOURCE_TYPES = ["down_payment"]
+
+// O saldo nao tem campo de valor: ele e calculado. Do que veio gravado
+// aproveitamos so as parcelas e o primeiro vencimento que o usuario escolheu.
+const SALE_BALANCE_SOURCE_TYPES = ["balance", "direct_builder"]
+
+function saleFormFieldsFromSources(sources) {
+  const fields = {}
+
+  for (const source of sources ?? []) {
+    if (SALE_BALANCE_SOURCE_TYPES.includes(source.sourceType)) {
+      fields.installments = String(source.installments ?? 1)
+      fields.firstDueDate = source.dueDate ?? ""
+      continue
+    }
+
+    const definition = salePaymentSourceDefinitions.find(
+      (candidate) => candidate.sourceType === source.sourceType,
+    )
+    if (!definition) {
+      continue
+    }
+
+    fields[definition.amountField] = formatCurrencyFromNumber(source.amount)
+    fields[definition.dueDateField] = source.dueDate ?? ""
+    fields[definition.installmentsField] = String(source.installments ?? 1)
+  }
+
+  return fields
+}
 
 const salePaymentSourceDefinitions = [
   {
@@ -311,15 +349,8 @@ const salePaymentSourceDefinitions = [
     installmentsField: "downPaymentInstallments",
   },
   {
-    sourceType: "direct_builder",
-    label: "Parcelas construtora",
-    amountField: "directBuilderAmount",
-    dueDateField: "firstDueDate",
-    installmentsField: "installments",
-  },
-  {
     sourceType: "government_subsidy",
-    label: "Subsidio",
+    label: "Subsídio",
     amountField: "governmentSubsidyAmount",
     dueDateField: "governmentSubsidyDueDate",
     installmentsField: "governmentSubsidyInstallments",
@@ -346,6 +377,34 @@ const receivableInstallmentStatusLabel = {
   PARTIALLY_PAID: "Parcial",
   OVERDUE: "Vencida",
   CANCELED: "Cancelada",
+}
+
+// O ERP responde com os status em maiúsculas e em inglês (ACTIVE, OPEN...).
+// Sem estes mapas eles chegavam crus à tela.
+const erpContractStatusLabel = {
+  DRAFT: "Rascunho",
+  ACTIVE: "Ativo",
+  SUSPENDED: "Suspenso",
+  FINISHED: "Encerrado",
+  CANCELED: "Cancelado",
+  CANCELLED: "Cancelado",
+}
+
+const erpReceivableStatusLabel = {
+  OPEN: "Em aberto",
+  PARTIALLY_PAID: "Parcialmente pago",
+  PAID: "Pago",
+  OVERDUE: "Vencido",
+  CANCELED: "Cancelado",
+  CANCELLED: "Cancelado",
+}
+
+function translateErpStatus(labels, value, fallback = "") {
+  if (!value) {
+    return fallback
+  }
+
+  return labels[String(value).toUpperCase()] ?? value
 }
 
 const inspectionStatusLabel = {
@@ -553,7 +612,7 @@ function toFormProcurement(procurementRequest) {
 
 function requiredProjectFieldError(formProject) {
   if (!String(formProject.code ?? "").trim()) {
-    return "Informe o codigo da obra."
+    return "Informe o código da obra."
   }
 
   if (!String(formProject.name ?? "").trim()) {
@@ -573,7 +632,7 @@ function requiredProjectFieldError(formProject) {
 
 function requiredBlockFieldError(formBlock) {
   if (!String(formBlock.code ?? "").trim()) {
-    return "Informe o codigo do bloco."
+    return "Informe o código do bloco."
   }
 
   if (!String(formBlock.name ?? "").trim()) {
@@ -594,7 +653,7 @@ function requiredScheduleFieldError(formPhase) {
 
   const sequenceOrder = Number(formPhase.sequenceOrder)
   if (!Number.isInteger(sequenceOrder) || sequenceOrder <= 0) {
-    return "Informe uma ordem valida para a fase."
+    return "Informe uma ordem válida para a fase."
   }
 
   const progress = Number(formPhase.progressPercent)
@@ -613,10 +672,10 @@ function requiredUnitFieldError(formUnit, mode) {
     }
 
     if (!String(formUnit.description ?? "").trim()) {
-      return "Informe a descricao base das unidades."
+      return "Informe a descrição base das unidades."
     }
   } else if (!String(formUnit.code ?? "").trim()) {
-    return "Informe o codigo da unidade."
+    return "Informe o código da unidade."
   }
 
   if (!String(formUnit.unitType ?? "").trim()) {
@@ -671,17 +730,17 @@ function requiredSaleFieldError(formSale) {
 
   const secondaryBuyerPersonId = String(formSale.secondaryBuyerPersonId ?? "").trim()
   if (secondaryBuyerPersonId && secondaryBuyerPersonId === String(formSale.buyerPersonId ?? "").trim()) {
-    return "O comprador secundario deve ser diferente do comprador principal."
+    return "O comprador secundário deve ser diferente do comprador principal."
   }
 
   const grossSalePrice = parseCurrencyFormValue(formSale.salePrice)
   const discountAmount = parseCurrencyFormValue(formSale.discountAmount)
   if (discountAmount < 0) {
-    return "O desconto nao pode ser negativo."
+    return "O desconto não pode ser negativo."
   }
 
   if (grossSalePrice > 0 && discountAmount >= grossSalePrice) {
-    return "O desconto deve ser menor que o preco da venda."
+    return "O desconto deve ser menor que o preço da venda."
   }
 
   const paymentSources = buildSalePaymentSourcesFromForm(formSale)
@@ -698,15 +757,18 @@ function requiredSaleFieldError(formSale) {
     }
 
     const sourcesTotal = paymentSources.reduce((total, paymentSource) => total + paymentSource.amountValue, 0)
-    if (grossSalePrice > 0 && Math.abs(sourcesTotal + discountAmount - grossSalePrice) > 0.01) {
-      return "A composicao financeira somada ao desconto deve ser igual ao preco da venda."
+    // O que sobra do preço é o saldo, e o saldo é o que vira parcela. Só é erro
+    // quando as fontes informadas passam do preço, nunca quando sobra.
+    const balance = grossSalePrice - discountAmount - sourcesTotal
+    if (grossSalePrice > 0 && balance < -0.01) {
+      return `A composição somada ao desconto excede o preço da venda em ${formatMoney(Math.abs(balance))}.`
     }
 
-    const installmentTotal = paymentSources
+    const downPaymentTotal = paymentSources
       .filter((paymentSource) => SALE_INSTALLMENT_SOURCE_TYPES.includes(paymentSource.sourceType))
       .reduce((total, paymentSource) => total + paymentSource.amountValue, 0)
-    if (installmentTotal <= 0) {
-      return "A venda precisa de entrada ou parcelas construtora: subsidio, FGTS e financiamento nao geram parcela."
+    if (grossSalePrice > 0 && downPaymentTotal + Math.max(balance, 0) <= 0.01) {
+      return "Não sobrou nada para cobrar do comprador: entrada, desconto e liberações do banco já cobrem o preço."
     }
 
     for (const paymentSource of paymentSources) {
@@ -714,7 +776,7 @@ function requiredSaleFieldError(formSale) {
         !SALE_INSTALLMENT_SOURCE_TYPES.includes(paymentSource.sourceType) &&
         Number(paymentSource.installments) > 1
       ) {
-        return `${paymentSource.label} depende de liberacao do banco e nao pode ser parcelado.`
+        return `${paymentSource.label} depende de liberação do banco e não pode ser parcelado.`
       }
     }
 
@@ -735,15 +797,15 @@ function requiredSaleFieldError(formSale) {
 
 function requiredMeasurementFieldError(formMeasurement) {
   if (!String(formMeasurement.code ?? "").trim()) {
-    return "Informe o codigo da medicao."
+    return "Informe o código da medição."
   }
 
   if (!String(formMeasurement.unitId ?? "").trim()) {
-    return "Informe a unidade da medicao."
+    return "Informe a unidade da medição."
   }
 
   if (!String(formMeasurement.schedulePhaseId ?? "").trim()) {
-    return "Informe a etapa da medicao."
+    return "Informe a etapa da medição."
   }
 
   if (!String(formMeasurement.dueDate ?? "").trim()) {
@@ -752,7 +814,7 @@ function requiredMeasurementFieldError(formMeasurement) {
 
   const grossAmount = Number(formMeasurement.grossAmount || 0)
   if (Number.isNaN(grossAmount) || grossAmount <= 0) {
-    return "Informe o valor bruto da medicao."
+    return "Informe o valor bruto da medição."
   }
 
   return null
@@ -760,12 +822,12 @@ function requiredMeasurementFieldError(formMeasurement) {
 
 function requiredProcurementFieldError(formProcurement) {
   if (!String(formProcurement.title ?? "").trim()) {
-    return "Informe o titulo da requisicao."
+    return "Informe o título da requisição."
   }
 
   const estimatedAmount = Number(formProcurement.estimatedAmount || 0)
   if (Number.isNaN(estimatedAmount) || estimatedAmount <= 0) {
-    return "Informe o valor estimado da requisicao."
+    return "Informe o valor estimado da requisição."
   }
 
   return null
@@ -833,12 +895,18 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [serviceTemplates, setServiceTemplates] = useState([])
   const [loadingServiceTemplates, setLoadingServiceTemplates] = useState(false)
   const [importingServiceTemplates, setImportingServiceTemplates] = useState(false)
+  const [projectSummary, setProjectSummary] = useState(null)
+  const [loadingProjectSummary, setLoadingProjectSummary] = useState(false)
+  const [projectSummaryError, setProjectSummaryError] = useState(null)
   const [unitPaymentPlan, setUnitPaymentPlan] = useState(null)
   const [loadingUnitPaymentPlan, setLoadingUnitPaymentPlan] = useState(false)
   const [unitPaymentPlanError, setUnitPaymentPlanError] = useState(null)
   const [saleUnitForm, setSaleUnitForm] = useState(defaultSaleUnitForm)
   const [saleTargetUnit, setSaleTargetUnit] = useState(null)
   const [submittingSale, setSubmittingSale] = useState(false)
+  const [editingInstallment, setEditingInstallment] = useState(null)
+  const [editInstallmentForm, setEditInstallmentForm] = useState(defaultEditInstallmentForm)
+  const [savingInstallment, setSavingInstallment] = useState(false)
 
   const [measurements, setMeasurements] = useState([])
   const [loadingMeasurements, setLoadingMeasurements] = useState(false)
@@ -880,7 +948,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       setProjects(result.items)
       setTotalProjects(result.total)
     } catch (requestError) {
-      setError(requestError?.message ?? "Nao foi possivel carregar as obras.")
+      setError(requestError?.message ?? "Não foi possível carregar as obras.")
     } finally {
       setLoading(false)
     }
@@ -973,7 +1041,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       {
         label: "Centros pendentes",
         value: pendingCostCenters,
-        hint: "sem vinculo analitico",
+        hint: "sem vínculo analítico",
         icon: Clock,
         tone: "warning",
       },
@@ -1013,7 +1081,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       })
       setBlocks(result.items)
     } catch (requestError) {
-      setBlockError(requestError?.message ?? "Nao foi possivel carregar os blocos.")
+      setBlockError(requestError?.message ?? "Não foi possível carregar os blocos.")
     } finally {
       setLoadingBlocks(false)
     }
@@ -1034,7 +1102,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       })
       setSchedulePhases(result.items)
     } catch (requestError) {
-      setScheduleError(requestError?.message ?? "Nao foi possivel carregar o cronograma.")
+      setScheduleError(requestError?.message ?? "Não foi possível carregar o cronograma.")
     } finally {
       setLoadingSchedule(false)
     }
@@ -1055,7 +1123,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       })
       setUnits(result.items)
     } catch (requestError) {
-      setUnitError(requestError?.message ?? "Nao foi possivel carregar as unidades.")
+      setUnitError(requestError?.message ?? "Não foi possível carregar as unidades.")
     } finally {
       setLoadingUnits(false)
     }
@@ -1076,11 +1144,31 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       })
       setMeasurements(result.items)
     } catch (requestError) {
-      setMeasurementError(requestError?.message ?? "Nao foi possivel carregar as medicoes.")
+      setMeasurementError(requestError?.message ?? "Não foi possível carregar as medições.")
     } finally {
       setLoadingMeasurements(false)
     }
   }, [activeProjectId, bridge])
+
+  const loadProjectSummary = useCallback(
+    async (projectId) => {
+      if (!projectId) {
+        return
+      }
+
+      setLoadingProjectSummary(true)
+      setProjectSummaryError(null)
+      try {
+        setProjectSummary(await getConstructionProjectSummary({ bridge, projectId }))
+      } catch (requestError) {
+        setProjectSummary(null)
+        setProjectSummaryError(requestError?.message ?? "Não foi possível carregar o resumo da obra.")
+      } finally {
+        setLoadingProjectSummary(false)
+      }
+    },
+    [bridge]
+  )
 
   const loadProcurementRequests = useCallback(async () => {
     if (!activeProjectId) {
@@ -1097,7 +1185,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       })
       setProcurementRequests(result.items)
     } catch (requestError) {
-      setProcurementError(requestError?.message ?? "Nao foi possivel carregar as requisicoes.")
+      setProcurementError(requestError?.message ?? "Não foi possível carregar as requisições.")
     } finally {
       setLoadingProcurement(false)
     }
@@ -1116,7 +1204,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         })
         setPersonSummaries(result.items)
       } catch (requestError) {
-        setPersonLookupError(requestError?.message ?? "Nao foi possivel carregar o cadastro de pessoas.")
+        setPersonLookupError(requestError?.message ?? "Não foi possível carregar o cadastro de pessoas.")
       } finally {
         setLoadingPersonSummaries(false)
       }
@@ -1187,11 +1275,13 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       loadUnits(),
       loadMeasurements(),
       loadProcurementRequests(),
+      loadProjectSummary(activeProjectId),
     ])
   }, [
     activeProjectId,
     loadBlocks,
     loadMeasurements,
+    loadProjectSummary,
     loadProcurementRequests,
     loadSchedulePhases,
     loadUnits,
@@ -1325,7 +1415,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     } catch (requestError) {
       setProjectZipLookup({
         loading: false,
-        error: requestError?.message ?? "Nao foi possivel buscar o CEP.",
+        error: requestError?.message ?? "Não foi possível buscar o CEP.",
       })
     }
   }
@@ -1364,7 +1454,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       closeProjectModal()
       await loadProjects()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel salvar a obra.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível salvar a obra.")
     } finally {
       setSubmittingProject(false)
     }
@@ -1386,7 +1476,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       }
       await loadProjects()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover a obra.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover a obra.")
     }
   }
 
@@ -1458,7 +1548,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       closeBlockModal()
       await loadBlocks()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel salvar o bloco.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível salvar o bloco.")
     } finally {
       setSubmittingBlock(false)
     }
@@ -1475,7 +1565,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       bridge?.feedback?.success?.("Bloco removido com sucesso.")
       await loadBlocks()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover o bloco.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover o bloco.")
     }
   }
 
@@ -1554,7 +1644,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       closeScheduleModal()
       await loadSchedulePhases()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel salvar a fase.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível salvar a fase.")
     } finally {
       setSubmittingSchedule(false)
     }
@@ -1571,7 +1661,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       bridge?.feedback?.success?.("Fase removida com sucesso.")
       await loadSchedulePhases()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover a fase.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover a fase.")
     }
   }
 
@@ -1628,7 +1718,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         const unitCreateForms = buildUnitCreateForms(unitForm, units)
         const oversizedUnit = unitCreateForms.find((unitCreateForm) => unitCreateForm.code.length > 50)
         if (oversizedUnit) {
-          bridge?.feedback?.warning?.("A descricao gerada deve ter ate 50 caracteres.")
+          bridge?.feedback?.warning?.("A descrição gerada deve ter até 50 caracteres.")
           return
         }
 
@@ -1657,7 +1747,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       closeUnitModal()
       await loadUnits()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel salvar a unidade.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível salvar a unidade.")
     } finally {
       setSubmittingUnit(false)
     }
@@ -1677,7 +1767,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       bridge?.feedback?.success?.("Unidade removida com sucesso.")
       await loadUnits()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover a unidade.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover a unidade.")
     }
   }
 
@@ -1733,7 +1823,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       closeReserveUnitModal()
       await loadUnits()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel reservar a unidade.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível reservar a unidade.")
     } finally {
       setSubmittingReserve(false)
     }
@@ -1753,11 +1843,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       bridge?.feedback?.success?.("Reserva liberada com sucesso.")
       await loadUnits()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel liberar a reserva da unidade.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível liberar a reserva da unidade.")
     }
   }
 
-  const openSaleUnitModal = (unit) => {
+  const openSaleUnitModal = async (unit) => {
     if (!personSummaries.length) {
       void loadPersonSummaries()
     }
@@ -1772,9 +1862,95 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       discountAmount: formatCurrencyFromNumber(unit.discountAmount),
       contractSignatureDate: unit.contractSignatureDate ?? "",
       saleNotes: unit.saleNotes ?? "",
-      directBuilderAmount: formatCurrencyFromNumber(unit.netSalePrice ?? unit.salePrice),
     })
     setIsSaleModalOpen(true)
+
+    if (unit.status !== "sold") {
+      return
+    }
+
+    // Venda já confirmada: o formulário tem de abrir com a composição que está
+    // valendo, senão editar o comprador zeraria os valores sem avisar.
+    try {
+      const plan = await getConstructionUnitPaymentPlan({ bridge, unitId: unit.id })
+      setSaleUnitForm((current) => ({ ...current, ...saleFormFieldsFromSources(plan.sources) }))
+    } catch (requestError) {
+      bridge?.feedback?.warning?.(
+        requestError?.message ?? "Não foi possível carregar a composição atual da venda.",
+      )
+    }
+  }
+
+  const handleOpenEditInstallment = (installment) => {
+    setEditingInstallment(installment)
+    setEditInstallmentForm({
+      paymentMethod: installment.paymentMethod ?? "",
+      documentNumber: installment.documentNumber ?? "",
+      observation: installment.observation ?? "",
+    })
+  }
+
+  const closeEditInstallmentModal = () => {
+    if (savingInstallment) {
+      return
+    }
+
+    setEditingInstallment(null)
+    setEditInstallmentForm(defaultEditInstallmentForm)
+  }
+
+  const handleEditInstallmentChange = (field, value) => {
+    setEditInstallmentForm((current) => ({ ...current, [field]: value }))
+  }
+
+  const handleSubmitEditInstallment = async (event) => {
+    event.preventDefault()
+
+    if (!editingInstallment || !selectedUnit) {
+      return
+    }
+
+    // Só viaja o que o usuário mexeu: o PATCH do ERP trata ausente como
+    // "mantém", e mandar o valor atual de volta marcaria a parcela como
+    // alterada na auditoria sem nada ter mudado.
+    const changes = {}
+    if (
+      editInstallmentForm.paymentMethod &&
+      editInstallmentForm.paymentMethod !== (editingInstallment.paymentMethod ?? "")
+    ) {
+      changes.payment_method = editInstallmentForm.paymentMethod
+    }
+
+    if (editInstallmentForm.documentNumber !== (editingInstallment.documentNumber ?? "")) {
+      changes.document_number = editInstallmentForm.documentNumber
+    }
+
+    if (editInstallmentForm.observation !== (editingInstallment.observation ?? "")) {
+      changes.observation = editInstallmentForm.observation
+    }
+
+    if (!Object.keys(changes).length) {
+      bridge?.feedback?.warning?.("Nenhuma alteração para salvar nesta parcela.")
+      return
+    }
+
+    setSavingInstallment(true)
+    try {
+      await updateConstructionUnitInstallment({
+        bridge,
+        unitId: selectedUnit.id,
+        installmentNumber: editingInstallment.installmentNumber,
+        changes,
+      })
+      bridge?.feedback?.success?.("Parcela atualizada.")
+      setEditingInstallment(null)
+      setEditInstallmentForm(defaultEditInstallmentForm)
+      await loadUnitPaymentPlan(selectedUnit.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível editar a parcela.")
+    } finally {
+      setSavingInstallment(false)
+    }
   }
 
   const closeSaleUnitModal = () => {
@@ -1815,11 +1991,25 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           paymentSources,
         },
       })
-      bridge?.feedback?.success?.("Venda confirmada com sucesso.")
+      const wasEditing = saleTargetUnit.status === "sold"
+      bridge?.feedback?.success?.(
+        wasEditing ? "Venda atualizada: contrato e parcelas em aberto refeitos." : "Venda confirmada com sucesso.",
+      )
       closeSaleUnitModal()
       await loadUnits()
+
+      // A aba de parcelas e a de contrato leem o plano do ERP: sem recarregar,
+      // a tela continuaria mostrando a cobrança antiga.
+      if (selectedUnit?.id === saleTargetUnit.id) {
+        await loadUnitPaymentPlan(saleTargetUnit.id)
+      }
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel confirmar a venda da unidade.")
+      bridge?.feedback?.error?.(
+        requestError?.message ??
+          (saleTargetUnit.status === "sold"
+            ? "Não foi possível atualizar a venda da unidade."
+            : "Não foi possível confirmar a venda da unidade."),
+      )
     } finally {
       setSubmittingSale(false)
     }
@@ -1838,7 +2028,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         setMeasurementItems(result.items)
       } catch (requestError) {
         setMeasurementItems([])
-        setMeasurementItemsError(requestError?.message ?? "Nao foi possivel carregar os itens da medicao.")
+        setMeasurementItemsError(requestError?.message ?? "Não foi possível carregar os itens da medição.")
       } finally {
         setLoadingMeasurementItems(false)
       }
@@ -1859,7 +2049,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         setUnitPaymentPlan(plan)
       } catch (requestError) {
         setUnitPaymentPlan(null)
-        setUnitPaymentPlanError(requestError?.message ?? "Nao foi possivel carregar as parcelas da unidade.")
+        setUnitPaymentPlanError(requestError?.message ?? "Não foi possível carregar as parcelas da unidade.")
       } finally {
         setLoadingUnitPaymentPlan(false)
       }
@@ -1874,7 +2064,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       setServiceTemplates(result.items)
     } catch (requestError) {
       setServiceTemplates([])
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel carregar o catalogo de servicos.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível carregar o catálogo de serviços.")
     } finally {
       setLoadingServiceTemplates(false)
     }
@@ -1890,9 +2080,9 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     try {
       const result = await importConstructionServiceTemplates({ bridge, files })
       const summary = [
-        result.created ? `${result.created} servico(s) criado(s)` : "",
+        result.created ? `${result.created} serviço(s) criado(s)` : "",
         result.updated ? `${result.updated} atualizado(s)` : "",
-        result.skipped ? `${result.skipped} ja cadastrado(s)` : "",
+        result.skipped ? `${result.skipped} já cadastrado(s)` : "",
         result.failed ? `${result.failed} com erro` : "",
       ]
         .filter(Boolean)
@@ -1905,12 +2095,12 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           .join(" | ")
         bridge?.feedback?.warning?.(`${summary}. ${failures}`)
       } else {
-        bridge?.feedback?.success?.(`Importacao concluida: ${summary}.`)
+        bridge?.feedback?.success?.(`Importação concluída: ${summary}.`)
       }
 
       await loadServiceTemplates()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel importar a planilha de servicos.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível importar a planilha de serviços.")
     } finally {
       setImportingServiceTemplates(false)
     }
@@ -1945,12 +2135,12 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
 
     if (!String(itemForm.serviceTemplateId ?? "").trim() && !String(itemForm.description ?? "").trim()) {
-      bridge?.feedback?.warning?.("Escolha o servico do catalogo ou informe a descricao.")
+      bridge?.feedback?.warning?.("Escolha o serviço do catálogo ou informe a descrição.")
       return false
     }
 
     if (parseCurrencyFormValue(itemForm.amount) <= 0) {
-      bridge?.feedback?.warning?.("Informe o valor do servico medido.")
+      bridge?.feedback?.warning?.("Informe o valor do serviço medido.")
       return false
     }
 
@@ -1961,12 +2151,12 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         measurementId: itemsTargetMeasurement.id,
         itemData: itemForm,
       })
-      bridge?.feedback?.success?.("Item de servico adicionado.")
+      bridge?.feedback?.success?.("Item de serviço adicionado.")
       await loadMeasurementItems(itemsTargetMeasurement.id)
       await loadMeasurements()
       return true
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel adicionar o item de servico.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível adicionar o item de serviço.")
       return false
     } finally {
       setSavingMeasurementItem(false)
@@ -1981,11 +2171,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     setSavingMeasurementItem(true)
     try {
       await deleteConstructionMeasurementItem({ bridge, itemId: item.id })
-      bridge?.feedback?.success?.("Item de servico removido.")
+      bridge?.feedback?.success?.("Item de serviço removido.")
       await loadMeasurementItems(itemsTargetMeasurement.id)
       await loadMeasurements()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover o item de servico.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover o item de serviço.")
     } finally {
       setSavingMeasurementItem(false)
     }
@@ -1993,18 +2183,18 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const handleCreateInspection = async (itemId, inspectionForm) => {
     if (!String(inspectionForm.description ?? "").trim()) {
-      bridge?.feedback?.warning?.("Informe o que sera verificado.")
+      bridge?.feedback?.warning?.("Informe o que será verificado.")
       return false
     }
 
     setSavingMeasurementItem(true)
     try {
       await createConstructionMeasurementInspection({ bridge, itemId, inspectionData: inspectionForm })
-      bridge?.feedback?.success?.("Item de inspecao adicionado.")
+      bridge?.feedback?.success?.("Item de inspeção adicionado.")
       await loadMeasurementItems(itemsTargetMeasurement.id)
       return true
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel adicionar o item de inspecao.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível adicionar o item de inspeção.")
       return false
     } finally {
       setSavingMeasurementItem(false)
@@ -2021,11 +2211,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         status,
       })
       bridge?.feedback?.success?.(
-        checkNumber === 1 ? "Primeira verificacao registrada." : "Segunda verificacao registrada."
+        checkNumber === 1 ? "Primeira verificação registrada." : "Segunda verificação registrada."
       )
       await loadMeasurementItems(itemsTargetMeasurement.id)
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel registrar a verificacao.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível registrar a verificação.")
     } finally {
       setSavingMeasurementItem(false)
     }
@@ -2037,7 +2227,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       await deleteConstructionMeasurementInspection({ bridge, inspectionId: inspection.id })
       await loadMeasurementItems(itemsTargetMeasurement.id)
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover o item de inspecao.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover o item de inspeção.")
     } finally {
       setSavingMeasurementItem(false)
     }
@@ -2052,11 +2242,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     setSavingMeasurementItem(true)
     try {
       await createConstructionMeasurementOccurrence({ bridge, itemId, occurrenceData: occurrenceForm })
-      bridge?.feedback?.success?.("Ocorrencia registrada.")
+      bridge?.feedback?.success?.("Ocorrência registrada.")
       await loadMeasurementItems(itemsTargetMeasurement.id)
       return true
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel registrar a ocorrencia.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível registrar a ocorrência.")
       return false
     } finally {
       setSavingMeasurementItem(false)
@@ -2065,7 +2255,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const handleResolveOccurrence = async (occurrence, solution) => {
     if (!String(solution ?? "").trim()) {
-      bridge?.feedback?.warning?.("Descreva a solucao antes de resolver a ocorrencia.")
+      bridge?.feedback?.warning?.("Descreva a solução antes de resolver a ocorrência.")
       return false
     }
 
@@ -2076,11 +2266,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         occurrenceId: occurrence.id,
         occurrenceData: { status: "resolved", solution },
       })
-      bridge?.feedback?.success?.("Ocorrencia resolvida.")
+      bridge?.feedback?.success?.("Ocorrência resolvida.")
       await loadMeasurementItems(itemsTargetMeasurement.id)
       return true
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel resolver a ocorrencia.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível resolver a ocorrência.")
       return false
     } finally {
       setSavingMeasurementItem(false)
@@ -2093,7 +2283,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       await deleteConstructionMeasurementOccurrence({ bridge, occurrenceId: occurrence.id })
       await loadMeasurementItems(itemsTargetMeasurement.id)
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover a ocorrencia.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover a ocorrência.")
     } finally {
       setSavingMeasurementItem(false)
     }
@@ -2102,16 +2292,16 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const handleSubmitMeasurement = async (measurement) => {
     try {
       await submitConstructionMeasurement({ bridge, measurementId: measurement.id })
-      bridge?.feedback?.success?.("Medicao enviada para aprovacao.")
+      bridge?.feedback?.success?.("Medição enviada para aprovação.")
       await loadMeasurements()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel enviar a medicao para aprovacao.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível enviar a medição para aprovação.")
     }
   }
 
   const openCreateMeasurement = (unit = null) => {
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Abra uma obra antes de criar medicoes.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de criar medições.")
       return
     }
 
@@ -2196,7 +2386,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
 
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Abra uma obra antes de salvar medicoes.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de salvar medições.")
       return
     }
 
@@ -2208,52 +2398,52 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           projectId: activeProjectId,
           measurementData: measurementForm,
         })
-        bridge?.feedback?.success?.("Medicao criada com sucesso.")
+        bridge?.feedback?.success?.("Medição criada com sucesso.")
       } else if (editingMeasurementId) {
         await updateConstructionMeasurement({
           bridge,
           measurementId: editingMeasurementId,
           measurementData: measurementForm,
         })
-        bridge?.feedback?.success?.("Medicao atualizada com sucesso.")
+        bridge?.feedback?.success?.("Medição atualizada com sucesso.")
       }
 
       closeMeasurementModal()
       await loadMeasurements()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel salvar a medicao.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível salvar a medição.")
     } finally {
       setSubmittingMeasurement(false)
     }
   }
 
   const handleDeleteMeasurement = async (measurement) => {
-    const confirmed = window.confirm(`Deseja remover a medicao ${measurement.code}?`)
+    const confirmed = window.confirm(`Deseja remover a medição ${measurement.code}?`)
     if (!confirmed) {
       return
     }
 
     try {
       await deleteConstructionMeasurement({ bridge, measurementId: measurement.id })
-      bridge?.feedback?.success?.("Medicao removida com sucesso.")
+      bridge?.feedback?.success?.("Medição removida com sucesso.")
       await loadMeasurements()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover a medicao.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover a medição.")
     }
   }
 
   const handleApproveMeasurement = async (measurement) => {
-    const confirmed = window.confirm(`Deseja aprovar a medicao ${measurement.code}?`)
+    const confirmed = window.confirm(`Deseja aprovar a medição ${measurement.code}?`)
     if (!confirmed) {
       return
     }
 
     try {
       await approveConstructionMeasurement({ bridge, measurementId: measurement.id })
-      bridge?.feedback?.success?.("Medicao aprovada com sucesso.")
+      bridge?.feedback?.success?.("Medição aprovada com sucesso.")
       await loadMeasurements()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel aprovar a medicao.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível aprovar a medição.")
     }
   }
 
@@ -2291,11 +2481,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         measurementId: rejectMeasurementTarget.id,
         reason: rejectMeasurementForm.reason,
       })
-      bridge?.feedback?.success?.("Medicao rejeitada com sucesso.")
+      bridge?.feedback?.success?.("Medição rejeitada com sucesso.")
       closeRejectMeasurementModal()
       await loadMeasurements()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel rejeitar a medicao.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível rejeitar a medição.")
     } finally {
       setSubmittingMeasurementReject(false)
     }
@@ -2303,7 +2493,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const openCreateProcurement = () => {
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Abra uma obra antes de criar requisicoes.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de criar requisições.")
       return
     }
 
@@ -2352,7 +2542,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
 
     if (!activeProjectId) {
-      bridge?.feedback?.warning?.("Abra uma obra antes de salvar requisicoes.")
+      bridge?.feedback?.warning?.("Abra uma obra antes de salvar requisições.")
       return
     }
 
@@ -2364,27 +2554,27 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           projectId: activeProjectId,
           procurementData: procurementForm,
         })
-        bridge?.feedback?.success?.("Requisicao criada com sucesso.")
+        bridge?.feedback?.success?.("Requisição criada com sucesso.")
       } else if (editingProcurementId) {
         await updateConstructionProcurementRequest({
           bridge,
           procurementRequestId: editingProcurementId,
           procurementData: procurementForm,
         })
-        bridge?.feedback?.success?.("Requisicao atualizada com sucesso.")
+        bridge?.feedback?.success?.("Requisição atualizada com sucesso.")
       }
 
       closeProcurementModal()
       await loadProcurementRequests()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel salvar a requisicao.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível salvar a requisição.")
     } finally {
       setSubmittingProcurement(false)
     }
   }
 
   const handleDeleteProcurement = async (procurementRequest) => {
-    const confirmed = window.confirm(`Deseja remover a requisicao ${procurementRequest.code}?`)
+    const confirmed = window.confirm(`Deseja remover a requisição ${procurementRequest.code}?`)
     if (!confirmed) {
       return
     }
@@ -2394,15 +2584,15 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         bridge,
         procurementRequestId: procurementRequest.id,
       })
-      bridge?.feedback?.success?.("Requisicao removida com sucesso.")
+      bridge?.feedback?.success?.("Requisição removida com sucesso.")
       await loadProcurementRequests()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel remover a requisicao.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover a requisição.")
     }
   }
 
   const handleSubmitProcurement = async (procurementRequest) => {
-    const confirmed = window.confirm(`Deseja enviar a requisicao ${procurementRequest.code} para aprovacao?`)
+    const confirmed = window.confirm(`Deseja enviar a requisição ${procurementRequest.code} para aprovação?`)
     if (!confirmed) {
       return
     }
@@ -2412,15 +2602,15 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         bridge,
         procurementRequestId: procurementRequest.id,
       })
-      bridge?.feedback?.success?.("Requisicao enviada para aprovacao.")
+      bridge?.feedback?.success?.("Requisição enviada para aprovação.")
       await loadProcurementRequests()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel enviar a requisicao.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível enviar a requisição.")
     }
   }
 
   const handleApproveProcurement = async (procurementRequest) => {
-    const confirmed = window.confirm(`Deseja aprovar a requisicao ${procurementRequest.code}?`)
+    const confirmed = window.confirm(`Deseja aprovar a requisição ${procurementRequest.code}?`)
     if (!confirmed) {
       return
     }
@@ -2430,10 +2620,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         bridge,
         procurementRequestId: procurementRequest.id,
       })
-      bridge?.feedback?.success?.("Requisicao aprovada com sucesso.")
+      bridge?.feedback?.success?.("Requisição aprovada com sucesso.")
       await loadProcurementRequests()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel aprovar a requisicao.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível aprovar a requisição.")
     }
   }
 
@@ -2471,11 +2661,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         procurementRequestId: rejectProcurementTarget.id,
         reason: rejectProcurementForm.reason,
       })
-      bridge?.feedback?.success?.("Requisicao rejeitada com sucesso.")
+      bridge?.feedback?.success?.("Requisição rejeitada com sucesso.")
       closeRejectProcurementModal()
       await loadProcurementRequests()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Nao foi possivel rejeitar a requisicao.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível rejeitar a requisição.")
     } finally {
       setSubmittingProcurementReject(false)
     }
@@ -2486,7 +2676,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       <section className={styles.pageHeader}>
         <div className={styles.header}>
           <div className={styles.left}>
-            <nav className={styles.breadcrumb} aria-label="Navegacao">
+            <nav className={styles.breadcrumb} aria-label="Navegação">
               <span className={styles.breadcrumbLink}>Inicio</span>
               <span className={styles.breadcrumbItem}>
                 <span className={styles.separator}>/</span>
@@ -2538,7 +2728,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                   type="text"
                   value={filters.search}
                   onChange={(event) => handleFilterChange("search", event.target.value)}
-                  placeholder="Codigo, nome ou CNPJ"
+                  placeholder="Código, nome ou CNPJ"
                 />
               </label>
               <label className={styles.filterControl}>
@@ -2580,7 +2770,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
           <DomainCard
             title="Cadastro de obras"
-            subtitle="Abra uma obra para gerenciar blocos, unidades, cronograma, medicoes e requisicoes."
+            subtitle="Abra uma obra para gerenciar blocos, unidades, cronograma, medições e requisições."
             content={
               <ProjectList
                 projects={visibleProjects}
@@ -2605,6 +2795,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         <>
           <ProjectDetailHeader
             project={selectedProject}
+            units={units}
+            schedulePhases={schedulePhases}
             onBack={closeProjectDetail}
             onEdit={openEditProject}
             onRefresh={reloadProjectDetail}
@@ -2633,7 +2825,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           {projectDetailTab === "overview" ? (
             <DomainCard
               title="Resumo operacional"
-              subtitle="Indicadores da obra aberta com comercial, medicoes e suprimentos."
+              subtitle="Indicadores da obra aberta com comercial, medições e suprimentos."
               content={
                 <OverviewPanel
                   selectedProject={selectedProject}
@@ -2641,6 +2833,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                   schedulePhases={schedulePhases}
                   measurements={measurements}
                   procurementRequests={procurementRequests}
+                  summary={projectSummary}
+                  loadingSummary={loadingProjectSummary}
+                  summaryError={projectSummaryError}
+                  onRetrySummary={() => loadProjectSummary(selectedProject.id)}
                 />
               }
             />
@@ -2649,7 +2845,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           {projectDetailTab === "blocks" ? (
             <DomainCard
               title="Blocos/Torres"
-              subtitle="CRUD da obra aberta com codigo, status e total de pavimentos."
+              subtitle="CRUD da obra aberta com código, status e total de pavimentos."
               action={
                 <button type="button" className={styles.primaryButton} onClick={openCreateBlock}>
                   <Plus size={16} />
@@ -2675,7 +2871,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
               subtitle={
                 selectedUnit
                   ? "Detalhe operacional e financeiro da unidade selecionada."
-                  : "Inventario comercial com reserva, liberacao, medicoes e venda por unidade."
+                  : "Inventário comercial com reserva, liberação, medições e venda por unidade."
               }
               action={
                 selectedUnit ? (
@@ -2717,6 +2913,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                     loadingPaymentPlan={loadingUnitPaymentPlan}
                     paymentPlanError={unitPaymentPlanError}
                     onRetryPaymentPlan={loadUnitPaymentPlan}
+                    onEditInstallment={handleOpenEditInstallment}
                   />
                 ) : (
                   <UnitsList
@@ -2740,7 +2937,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           {projectDetailTab === "schedule" ? (
             <DomainCard
               title="Cronograma"
-              subtitle={`CRUD de fases com sequencia e progresso medio de ${scheduleProgress}%`}
+              subtitle={`CRUD de fases com sequência e progresso médio de ${scheduleProgress}%`}
               action={
                 <button type="button" className={styles.primaryButton} onClick={openCreateSchedulePhase}>
                   <Plus size={16} />
@@ -2762,12 +2959,12 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
           {projectDetailTab === "procurement" ? (
             <DomainCard
-              title="Requisicoes"
-              subtitle="Solicitacoes de compra com fluxo de envio, aprovacao e integracao ERP."
+              title="Requisições"
+              subtitle="Solicitações de compra com fluxo de envio, aprovação e integração ERP."
               action={
                 <button type="button" className={styles.primaryButton} onClick={openCreateProcurement}>
                   <Plus size={16} />
-                  Nova requisicao
+                  Nova requisição
                 </button>
               }
               content={
@@ -2788,7 +2985,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
           {projectDetailTab === "reports" ? (
             <DomainCard
-              title="Relatorios"
+              title="Relatórios"
               subtitle="Carteira, custos medidos, margem estimada e rastreabilidade por unidade."
               content={
                 <ReportsPanel
@@ -2802,8 +2999,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
           {projectDetailTab === "integrations" ? (
             <DomainCard
-              title="Integracoes"
-              subtitle="Referencias ERP para pessoas, financeiro e compras sincronizadas no modulo."
+              title="Integrações"
+              subtitle="Referências ERP para pessoas, financeiro e compras sincronizadas no módulo."
               content={
                 <IntegrationPanel
                   personLookupQuery={personLookupQuery}
@@ -2824,7 +3021,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
       {viewMode === "projectDetail" && !selectedProject ? (
         <DomainCard
-          title="Obra nao encontrada"
+          title="Obra não encontrada"
           subtitle="Volte para a lista e abra uma obra cadastrada."
           action={
             <button type="button" className={styles.secondaryButton} onClick={closeProjectDetail}>
@@ -2832,7 +3029,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
               Voltar para obras
             </button>
           }
-          content={<div className={styles.empty}>Nao foi possivel carregar o detalhe da obra.</div>}
+          content={<div className={styles.empty}>Não foi possível carregar o detalhe da obra.</div>}
         />
       ) : null}
 
@@ -2896,6 +3093,17 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           onChange={handleSaleUnitChange}
           onSubmit={handleSaleUnitSubmit}
           loading={submittingSale}
+        />
+      ) : null}
+
+      {editingInstallment ? (
+        <EditInstallmentModal
+          installment={editingInstallment}
+          form={editInstallmentForm}
+          onClose={closeEditInstallmentModal}
+          onChange={handleEditInstallmentChange}
+          onSubmit={handleSubmitEditInstallment}
+          loading={savingInstallment}
         />
       ) : null}
 
@@ -3003,7 +3211,30 @@ function DomainCard({ title, subtitle, content, footer = null, action = null }) 
   )
 }
 
-function OverviewPanel({ selectedProject, units, schedulePhases, measurements, procurementRequests }) {
+function SummaryMetric({ label, value, hint, tone = null }) {
+  const toneClass =
+    tone === "positive" ? styles.summaryValuePositive : tone === "negative" ? styles.summaryValueNegative : ""
+
+  return (
+    <article className={styles.integrationCard}>
+      <h3>{label}</h3>
+      <p className={`${styles.metricValue} ${toneClass}`}>{value}</p>
+      <p className={styles.metricHint}>{hint}</p>
+    </article>
+  )
+}
+
+function OverviewPanel({
+  selectedProject,
+  units,
+  schedulePhases,
+  measurements,
+  procurementRequests,
+  summary,
+  loadingSummary,
+  summaryError,
+  onRetrySummary,
+}) {
   if (!selectedProject) {
     return <div className={styles.empty}>Abra uma obra para visualizar os indicadores.</div>
   }
@@ -3020,52 +3251,147 @@ function OverviewPanel({ selectedProject, units, schedulePhases, measurements, p
       )
     : 0
 
-  const approvedMeasurements = measurements.filter((measurement) => measurement.status === "approved").length
-  const paidMeasurements = measurements.filter((measurement) => measurement.status === "paid").length
-  const sentProcurementRequests = procurementRequests.filter(
-    (procurementRequest) => procurementRequest.status === "sent_to_erp"
-  ).length
   const pendingProcurementApprovals = procurementRequests.filter(
     (procurementRequest) => procurementRequest.status === "pending_approval"
   ).length
 
-  const highlights = [
-    { label: "Unidades disponiveis", value: availableUnits, hint: `${reservedUnits} reservadas` },
-    { label: "Unidades vendidas", value: soldUnits, hint: `${units.length} no total` },
-    { label: "Progresso medio", value: `${scheduleAverage}%`, hint: `${schedulePhases.length} fase(s)` },
-    { label: "Medicoes aprovadas", value: approvedMeasurements, hint: `${paidMeasurements} pagas` },
-    {
-      label: "Requisicoes no ERP",
-      value: sentProcurementRequests,
-      hint: `${pendingProcurementApprovals} aguardando aprovacao`,
-    },
-  ]
-
   const alerts = []
   if (!selectedProject.analyticCostCenterId) {
-    alerts.push("Projeto sem centro de custo analitico vinculado.")
+    alerts.push("Obra sem centro de custo analítico vinculado.")
   }
   if (!schedulePhases.length) {
-    alerts.push("Cronograma ainda nao foi cadastrado para a obra selecionada.")
+    alerts.push("Cronograma ainda não foi cadastrado para a obra.")
   }
   if (pendingProcurementApprovals > 0) {
-    alerts.push("Existem requisicoes aguardando aprovacao.")
+    alerts.push(`${pendingProcurementApprovals} requisição(ões) aguardando aprovação.`)
   }
   if (measurements.some((measurement) => measurement.status === "rejected")) {
-    alerts.push("Existem medicoes rejeitadas aguardando ajuste.")
+    alerts.push("Existem medições rejeitadas aguardando ajuste.")
   }
+  if (summary?.overdueCount > 0) {
+    alerts.push(
+      `${summary.overdueCount} parcela(s) vencida(s), somando ${formatCurrencyFromNumber(summary.overdueAmount)}.`,
+    )
+  }
+  if (summary?.erpUnavailableReason) {
+    alerts.push(`Financeiro do ERP indisponível agora: ${summary.erpUnavailableReason}`)
+  }
+
+  if (loadingSummary && !summary) {
+    return (
+      <div className={styles.empty} aria-busy="true">
+        <RefreshCw className={styles.spinIcon} size={16} />
+        Carregando o resumo da obra...
+      </div>
+    )
+  }
+
+  if (summaryError && !summary) {
+    return (
+      <div className={styles.empty}>
+        <span>{summaryError}</span>
+        <button type="button" className={styles.secondaryButton} onClick={onRetrySummary}>
+          <RefreshCw size={16} />
+          Tentar novamente
+        </button>
+      </div>
+    )
+  }
+
+  const costDifference = Number(summary?.costDifferenceAmount ?? 0)
+  const receivableTotal = Number(summary?.receivableTotalAmount ?? 0)
+  const receivedAmount = Number(summary?.receivedAmount ?? 0)
+  const receivedShare = receivableTotal > 0 ? Math.round((receivedAmount / receivableTotal) * 100) : 0
 
   return (
     <div className={styles.integrationPanel}>
-      <div className={styles.integrationGrid}>
-        {highlights.map((item) => (
-          <article key={item.label} className={styles.integrationCard}>
-            <h3>{item.label}</h3>
-            <p className={styles.metricValue}>{item.value}</p>
-            <p className={styles.metricHint}>{item.hint}</p>
-          </article>
-        ))}
+      <div className={styles.summaryGroup}>
+        <span className={styles.summaryGroupTitle}>Unidades</span>
+        <div className={styles.integrationGrid}>
+          <SummaryMetric
+            label="Unidades"
+            value={units.length}
+            hint="total cadastrado na obra"
+          />
+          <SummaryMetric
+            label="Vendidas"
+            value={soldUnits}
+            hint={units.length ? `${Math.round((soldUnits / units.length) * 100)}% da obra` : "-"}
+          />
+          <SummaryMetric label="Reservadas" value={reservedUnits} hint={`${availableUnits} disponível(is)`} />
+        </div>
       </div>
+
+      <div className={styles.summaryGroup}>
+        <span className={styles.summaryGroupTitle}>Custo</span>
+        <div className={styles.integrationGrid}>
+          <SummaryMetric
+            label="Previsto"
+            value={formatCurrencyFromNumber(summary?.plannedCostAmount ?? 0)}
+            hint={`${summary?.procurementRequestsCount ?? 0} requisição(ões) de compra`}
+          />
+          <SummaryMetric
+            label="Medido"
+            value={formatCurrencyFromNumber(summary?.measuredCostAmount ?? 0)}
+            hint={`${summary?.measurementsApprovedCount ?? 0} de ${summary?.measurementsCount ?? 0} medição(ões) aprovada(s)`}
+          />
+          <SummaryMetric
+            label="Diferença"
+            value={formatCurrencyFromNumber(costDifference)}
+            hint={costDifference >= 0 ? "dentro do previsto" : "acima do previsto"}
+            tone={costDifference >= 0 ? "positive" : "negative"}
+          />
+        </div>
+      </div>
+
+      <div className={styles.summaryGroup}>
+        <span className={styles.summaryGroupTitle}>Recebimento das unidades</span>
+        <div className={styles.integrationGrid}>
+          <SummaryMetric
+            label="Vendido"
+            value={formatCurrencyFromNumber(summary?.unitsSoldAmount ?? 0)}
+            hint={`carteira de ${formatCurrencyFromNumber(summary?.unitsTotalAmount ?? 0)}`}
+          />
+          <SummaryMetric
+            label="Recebido"
+            value={formatCurrencyFromNumber(receivedAmount)}
+            hint={receivableTotal > 0 ? `${receivedShare}% do que foi cobrado` : "nada cobrado ainda"}
+            tone={receivedAmount > 0 ? "positive" : null}
+          />
+          <SummaryMetric
+            label="A receber"
+            value={formatCurrencyFromNumber(summary?.openAmount ?? 0)}
+            hint={
+              summary?.overdueCount
+                ? `${formatCurrencyFromNumber(summary.overdueAmount)} vencido(s)`
+                : "nenhuma parcela vencida"
+            }
+            tone={summary?.overdueCount ? "negative" : null}
+          />
+          <SummaryMetric
+            label="Descontos"
+            value={formatCurrencyFromNumber(summary?.discountAmount ?? 0)}
+            hint="concedidos nas vendas"
+          />
+        </div>
+      </div>
+
+      <div className={styles.summaryGroup}>
+        <span className={styles.summaryGroupTitle}>Execução</span>
+        <div className={styles.integrationGrid}>
+          <SummaryMetric
+            label="Cronograma"
+            value={`${scheduleAverage}%`}
+            hint={`${schedulePhases.length} fase(s) cadastrada(s)`}
+          />
+          <SummaryMetric
+            label="Medições pagas"
+            value={formatCurrencyFromNumber(summary?.paidCostAmount ?? 0)}
+            hint="já liquidadas no contas a pagar"
+          />
+        </div>
+      </div>
+
       <article className={styles.integrationCard}>
         <h3>Alertas operacionais</h3>
         {alerts.length ? (
@@ -3075,7 +3401,7 @@ function OverviewPanel({ selectedProject, units, schedulePhases, measurements, p
             ))}
           </ul>
         ) : (
-          <p className={styles.textMuted}>Sem alertas criticos para a obra aberta.</p>
+          <p className={styles.textMuted}>Sem alertas críticos para a obra aberta.</p>
         )}
       </article>
     </div>
@@ -3159,7 +3485,7 @@ function ReportsPanel({ units, schedulePhases, measurements }) {
               <th>Receita</th>
               <th>Custo medido</th>
               <th>Margem estimada</th>
-              <th>Ultima etapa medida</th>
+              <th>Última etapa medida</th>
               <th>ERP</th>
             </tr>
           </thead>
@@ -3168,9 +3494,9 @@ function ReportsPanel({ units, schedulePhases, measurements }) {
               <tr key={unit.id}>
                 <td>
                   <strong>{unit.code}</strong>
-                  <p className={styles.rowSecondaryText}>{unit.description || unit.typology || "Sem descricao"}</p>
+                  <p className={styles.rowSecondaryText}>{unit.description || unit.typology || "Sem descrição"}</p>
                 </td>
-                <td>{statusLabel[unit.status] ?? unit.status}</td>
+                <td>{unitStatusLabel[unit.status] ?? unit.status}</td>
                 <td>{formatCurrencyFromNumber(unit.salePrice ?? 0)}</td>
                 <td>{formatCurrencyFromNumber(unitMeasuredCost)}</td>
                 <td>{formatCurrencyFromNumber(unitEstimatedMargin)}</td>
@@ -3198,7 +3524,7 @@ function ReportsPanel({ units, schedulePhases, measurements }) {
             <tr>
               <th>Etapa</th>
               <th>Progresso</th>
-              <th>Medicoes</th>
+              <th>Medições</th>
               <th>Custo aprovado</th>
               <th>AP vinculadas</th>
             </tr>
@@ -3208,7 +3534,7 @@ function ReportsPanel({ units, schedulePhases, measurements }) {
               <tr key={phase.id}>
                 <td>
                   <strong>{phase.name}</strong>
-                  <p className={styles.rowSecondaryText}>Sequencia {phase.sequenceOrder}</p>
+                  <p className={styles.rowSecondaryText}>Sequência {phase.sequenceOrder}</p>
                 </td>
                 <td>{phase.progressPercent}%</td>
                 <td>{measurementsCount}</td>
@@ -3223,7 +3549,31 @@ function ReportsPanel({ units, schedulePhases, measurements }) {
   )
 }
 
-function ProjectDetailHeader({ project, onBack, onEdit, onRefresh, loading }) {
+function ProjectDetailHeader({ project, units, schedulePhases, onBack, onEdit, onRefresh, loading }) {
+  const unitList = units ?? []
+  const soldUnits = unitList.filter((unit) => ["sold", "delivered"].includes(unit.status)).length
+  const availableUnits = unitList.filter((unit) => unit.status === "available").length
+  const portfolioTotal = unitList.reduce((total, unit) => total + Number(unit.salePrice ?? 0), 0)
+  const soldTotal = unitList
+    .filter((unit) => ["sold", "delivered"].includes(unit.status))
+    .reduce((total, unit) => total + Number(unit.salePrice ?? 0), 0)
+
+  const phases = schedulePhases ?? []
+  const scheduleProgress = phases.length
+    ? Math.round(
+        phases.reduce((total, phase) => total + Number(phase.progressPercent ?? 0), 0) / phases.length,
+      )
+    : null
+  const finishedPhases = phases.filter((phase) => phase.status === "completed").length
+
+  const startLabel = formatDate(project.startDate)
+  const endLabel = formatDate(project.expectedEndDate)
+  const periodLabel =
+    startLabel && endLabel
+      ? `${startLabel} a ${endLabel}`
+      : startLabel || endLabel || "Prazo não informado"
+  const periodHint = startLabel && endLabel ? null : startLabel ? "sem fim previsto" : "sem data de início"
+
   return (
     <section className={styles.detailHeader}>
       <div className={styles.detailHeaderMain}>
@@ -3237,15 +3587,39 @@ function ProjectDetailHeader({ project, onBack, onEdit, onRefresh, loading }) {
             <span className={`${styles.statusPill} ${styles[`status${project.status}`] || ""}`}>
               {statusLabel[project.status] ?? project.status}
             </span>
+            {project.analyticCostCenterId ? null : (
+              <span className={styles.badgeMuted} title="A obra ainda não tem centro de custo no ERP">
+                Centro de custo pendente
+              </span>
+            )}
           </div>
           <p className={styles.textMuted}>{project.code}</p>
         </div>
       </div>
       <div className={styles.detailMetaGrid}>
-        <DetailMetaItem label="Tipo" value={projectTypeLabel[project.projectType] ?? project.projectType} />
-        <DetailMetaItem label="Inicio" value={formatDate(project.startDate)} />
-        <DetailMetaItem label="Fim previsto" value={formatDate(project.expectedEndDate)} />
-        <DetailMetaItem label="Centro analitico" value={project.analyticCostCenterId ?? "Nao vinculado"} />
+        <DetailMetaItem
+          label="Tipo"
+          value={projectTypeLabel[project.projectType] ?? project.projectType}
+          hint={project.cnpjSpe ? `SPE ${project.cnpjSpe}` : null}
+        />
+        <DetailMetaItem label="Prazo" value={periodLabel} hint={periodHint} />
+        <DetailMetaItem
+          label="Unidades"
+          value={unitList.length ? `${unitList.length}` : "Nenhuma cadastrada"}
+          hint={unitList.length ? `${soldUnits} vendida(s) - ${availableUnits} disponível(is)` : null}
+        />
+        <DetailMetaItem
+          label="Carteira"
+          value={formatCurrencyFromNumber(portfolioTotal)}
+          hint={soldTotal > 0 ? `${formatCurrencyFromNumber(soldTotal)} já vendido` : "nada vendido ainda"}
+        />
+        {scheduleProgress !== null ? (
+          <DetailMetaItem
+            label="Cronograma"
+            value={`${scheduleProgress}% concluído`}
+            hint={`${finishedPhases} de ${phases.length} etapa(s) finalizada(s)`}
+          />
+        ) : null}
       </div>
       <div className={styles.detailActions}>
         <button type="button" className={styles.secondaryButton} onClick={() => onEdit(project)}>
@@ -3261,11 +3635,12 @@ function ProjectDetailHeader({ project, onBack, onEdit, onRefresh, loading }) {
   )
 }
 
-function DetailMetaItem({ label, value }) {
+function DetailMetaItem({ label, value, hint = null }) {
   return (
     <div className={styles.detailMetaItem}>
       <span>{label}</span>
       <strong>{value || "-"}</strong>
+      {hint ? <span className={styles.detailMetaHint}>{hint}</span> : null}
     </div>
   )
 }
@@ -3309,13 +3684,13 @@ function ProjectList({ projects, loading, error, onRetry, onOpenDetails, onEdit,
       <table className={styles.table}>
         <thead>
           <tr>
-            <th>Codigo</th>
+            <th>Código</th>
             <th>Obra</th>
             <th>Tipo</th>
             <th>Status</th>
             <th>Inicio</th>
-            <th>Centro analitico</th>
-            <th>Acoes</th>
+            <th>Centro analítico</th>
+            <th>Ações</th>
           </tr>
         </thead>
         <tbody>
@@ -3411,11 +3786,11 @@ function BlocksList({ blocks, loading, error, onRetry, onEdit, onDelete }) {
       <table className={styles.table}>
         <thead>
           <tr>
-            <th>Codigo</th>
+            <th>Código</th>
             <th>Nome</th>
             <th>Pavimentos</th>
             <th>Status</th>
-            <th>Acoes</th>
+            <th>Ações</th>
           </tr>
         </thead>
         <tbody>
@@ -3482,6 +3857,7 @@ function UnitDetailPanel({
   loadingPaymentPlan,
   paymentPlanError,
   onRetryPaymentPlan,
+  onEditInstallment,
 }) {
   const blockNameById = useMemo(() => {
     return Object.fromEntries(blocks.map((block) => [block.id, `${block.code} - ${block.name}`]))
@@ -3497,6 +3873,7 @@ function UnitDetailPanel({
   const canReserve = unit.status === "available"
   const canRelease = unit.status === "reserved"
   const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
+  const canEditSale = unit.status === "sold" && Boolean(unit.analyticCostCenterId)
 
   return (
     <div className={styles.integrationPanel}>
@@ -3539,8 +3916,15 @@ function UnitDetailPanel({
       <div className={styles.detailMetaGrid}>
         <DetailMetaItem label="Bloco" value={unit.blockId ? blockNameById[unit.blockId] ?? unit.blockId : "-"} />
         <DetailMetaItem label="Centro unidade" value={unit.analyticCostCenterId ? "Vinculado" : "Pendente"} />
-        <DetailMetaItem label="Preco" value={formatMoney(unit.salePrice)} />
-        <DetailMetaItem label="Contrato ERP" value={unit.externalContractId ? unit.externalContractStatus || "Vinculado" : "Pendente"} />
+        <DetailMetaItem label="Preço" value={formatMoney(unit.salePrice)} />
+        <DetailMetaItem
+          label="Contrato ERP"
+          value={
+            unit.externalContractId
+              ? translateErpStatus(erpContractStatusLabel, unit.externalContractStatus, "Vinculado")
+              : "Pendente"
+          }
+        />
       </div>
 
       <section className={styles.tabCard}>
@@ -3570,14 +3954,14 @@ function UnitDetailPanel({
             <p className={styles.metricHint}>{linkedPayables} AP vinculada(s)</p>
           </article>
           <article className={styles.integrationCard}>
-            <h3>Medicoes abertas</h3>
+            <h3>Medições abertas</h3>
             <p className={styles.metricValue}>{openMeasurements}</p>
-            <p className={styles.metricHint}>{measurements.length} medicao(oes) no total</p>
+            <p className={styles.metricHint}>{measurements.length} medição(oes) no total</p>
           </article>
           <article className={styles.integrationCard}>
             <h3>Margem estimada</h3>
             <p className={styles.metricValue}>{formatCurrencyFromNumber(estimatedMargin)}</p>
-            <p className={styles.metricHint}>preco menos custo aprovado</p>
+            <p className={styles.metricHint}>preço menos custo aprovado</p>
           </article>
         </div>
       ) : null}
@@ -3586,12 +3970,12 @@ function UnitDetailPanel({
         <>
           <div className={styles.tableHeaderRow}>
             <div>
-              <h2>Medicoes da unidade</h2>
-              <p className={styles.textMuted}>AP e custos ficam amarrados ao centro analitico desta unidade.</p>
+              <h2>Medições da unidade</h2>
+              <p className={styles.textMuted}>AP e custos ficam amarrados ao centro analítico desta unidade.</p>
             </div>
             <button type="button" className={styles.primaryButton} onClick={() => onCreateMeasurement(unit)}>
               <Plus size={16} />
-              Nova medicao
+              Nova medição
             </button>
           </div>
           <MeasurementsList
@@ -3600,7 +3984,7 @@ function UnitDetailPanel({
             schedulePhases={schedulePhases}
             loading={loadingMeasurements}
             error={measurementError}
-            emptyMessage="Nenhuma medicao cadastrada para esta unidade."
+            emptyMessage="Nenhuma medição cadastrada para esta unidade."
             onRetry={onRetryMeasurements}
             onEdit={onEditMeasurement}
             onDelete={onDeleteMeasurement}
@@ -3620,6 +4004,7 @@ function UnitDetailPanel({
           error={paymentPlanError}
           onRetry={() => onRetryPaymentPlan(unit.id)}
           onSale={onSale}
+          onEditInstallment={onEditInstallment}
         />
       ) : null}
 
@@ -3636,14 +4021,15 @@ function UnitDetailPanel({
   )
 }
 
-function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale }) {
+function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale, onEditInstallment }) {
   const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
+  const canEditSale = unit.status === "sold" && Boolean(unit.analyticCostCenterId)
 
   if (loading) {
     return (
       <div className={styles.empty} aria-busy="true">
         <RefreshCw className={styles.spinIcon} size={16} />
-        Carregando composicao e parcelas...
+        Carregando composição e parcelas...
       </div>
     )
   }
@@ -3671,7 +4057,7 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale }) 
     <div className={styles.integrationPanel}>
       <div className={styles.integrationGrid}>
         <article className={styles.integrationCard}>
-          <h3>Preco de venda</h3>
+          <h3>Preço de venda</h3>
           <p className={styles.metricValue}>{formatMoney(composition.salePrice ?? unit.salePrice)}</p>
           <p className={styles.metricHint}>
             {composition.discountAmount > 0 ? `desconto de ${formatMoney(composition.discountAmount)}` : "sem desconto"}
@@ -3680,7 +4066,7 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale }) 
         <article className={styles.integrationCard}>
           <h3>Liberado pelo banco</h3>
           <p className={styles.metricValue}>{formatMoney(composition.settlementTotal)}</p>
-          <p className={styles.metricHint}>subsidio, FGTS e financiamento - nao geram parcela</p>
+          <p className={styles.metricHint}>subsídio, FGTS e financiamento - não geram parcela</p>
         </article>
         <article className={styles.integrationCard}>
           <h3>Cobrado em parcelas</h3>
@@ -3700,9 +4086,10 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale }) 
       <div className={styles.card}>
         <strong>Como a venda foi composta</strong>
         <p className={styles.metricHint}>
-          O que o banco libera (subsidio, FGTS e financiamento) entra no preco da venda mas nao vira parcela: a
-          data de pagamento depende da liberacao. Somente entrada e parcelas da construtora sao cobradas do
-          comprador e aparecem no contas a receber.
+          O que o banco libera (subsídio, FGTS e financiamento) entra no preço da venda mas não vira parcela: a
+          data de pagamento depende da liberação. O que sobra do preço depois do desconto, da entrada e dessas
+          liberações é o <strong>saldo</strong>, e são a entrada e o saldo que o comprador paga em parcelas no
+          contas a receber.
         </p>
         {sources.length ? (
           <div className={styles.tableWrapper}>
@@ -3711,7 +4098,7 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale }) 
                 <tr>
                   <th>Fonte</th>
                   <th>Valor</th>
-                  <th>Composicao</th>
+                  <th>Composição</th>
                   <th>Data</th>
                 </tr>
               </thead>
@@ -3739,15 +4126,15 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale }) 
         ) : (
           <p className={styles.metricHint}>
             {canSale
-              ? "Unidade ainda nao vendida - confirme a venda para compor o valor."
-              : "Sem composicao registrada para esta unidade."}
+              ? "Unidade ainda não vendida - confirme a venda para compor o valor."
+              : "Sem composição registrada para esta unidade."}
           </p>
         )}
-        {canSale ? (
+        {canSale || canEditSale ? (
           <div className={styles.filtersFooter}>
             <button type="button" className={styles.primaryButton} onClick={() => onSale(unit)}>
               <ShoppingCart size={16} />
-              Confirmar venda
+              {canEditSale ? "Editar venda" : "Confirmar venda"}
             </button>
           </div>
         ) : null}
@@ -3757,7 +4144,7 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale }) 
         <strong>Parcelas no contas a receber</strong>
         {paymentPlan.erpUnavailableReason ? (
           <p className={styles.metricHint}>
-            Nao foi possivel consultar o ERP agora: {paymentPlan.erpUnavailableReason}
+            Não foi possível consultar o ERP agora: {paymentPlan.erpUnavailableReason}
           </p>
         ) : null}
         {installments.length ? (
@@ -3771,6 +4158,7 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale }) 
                   <th>Valor</th>
                   <th>Pago</th>
                   <th>Status</th>
+                  <th aria-label="Ações" />
                 </tr>
               </thead>
               <tbody>
@@ -3795,6 +4183,18 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale }) 
                         {receivableInstallmentStatusLabel[installment.status] ?? installment.status}
                       </span>
                     </td>
+                    <td className={styles.actionsCell}>
+                      <RowActionsMenu
+                        actions={[
+                          {
+                            key: "edit",
+                            label: "Editar parcela",
+                            icon: Pencil,
+                            onSelect: () => onEditInstallment(installment),
+                          },
+                        ]}
+                      />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -3803,8 +4203,8 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale }) 
         ) : (
           <p className={styles.metricHint}>
             {unit.externalReceivableId
-              ? "O recebivel existe no ERP mas nao retornou parcelas."
-              : "Nenhuma parcela gerada - a venda ainda nao foi confirmada ou o ERP nao respondeu."}
+              ? "O recebível existe no ERP mas não retornou parcelas."
+              : "Nenhuma parcela gerada - a venda ainda não foi confirmada ou o ERP não respondeu."}
           </p>
         )}
       </div>
@@ -3842,31 +4242,35 @@ function UnitContractPanel({ unit, plan, loading, error, onRetry }) {
         <article className={styles.integrationCard}>
           <h3>Contrato</h3>
           <p className={styles.metricValue}>{paymentPlan.contractCode || "Pendente"}</p>
-          <p className={styles.metricHint}>{paymentPlan.contractStatus || "sem status no ERP"}</p>
+          <p className={styles.metricHint}>
+            {translateErpStatus(erpContractStatusLabel, paymentPlan.contractStatus, "sem status no ERP")}
+          </p>
         </article>
         <article className={styles.integrationCard}>
           <h3>Assinatura</h3>
           <p className={styles.metricValue}>
             {unit.contractSignatureDate ? formatDate(unit.contractSignatureDate) : "-"}
           </p>
-          <p className={styles.metricHint}>data informada na confirmacao da venda</p>
+          <p className={styles.metricHint}>data informada na confirmação da venda</p>
         </article>
         <article className={styles.integrationCard}>
-          <h3>Recebivel vinculado</h3>
+          <h3>Recebível vinculado</h3>
           <p className={styles.metricValue}>{paymentPlan.receivableId ? "Sim" : "Pendente"}</p>
-          <p className={styles.metricHint}>{paymentPlan.receivableStatus || "sem recebivel"}</p>
+          <p className={styles.metricHint}>
+            {translateErpStatus(erpReceivableStatusLabel, paymentPlan.receivableStatus, "sem recebível")}
+          </p>
         </article>
       </div>
 
       {unit.saleNotes ? (
         <div className={styles.card}>
-          <strong>Observacao da venda</strong>
+          <strong>Observação da venda</strong>
           <p className={styles.metricHint}>{unit.saleNotes}</p>
         </div>
       ) : null}
 
       <div className={styles.card}>
-        <strong>Conteudo do contrato</strong>
+        <strong>Conteúdo do contrato</strong>
         {paymentPlan.contractContentHtml ? (
           <div
             className={styles.contractContent}
@@ -3876,7 +4280,7 @@ function UnitContractPanel({ unit, plan, loading, error, onRetry }) {
         ) : (
           <p className={styles.metricHint}>
             {paymentPlan.contractId
-              ? "O contrato existe no ERP mas nao trouxe conteudo."
+              ? "O contrato existe no ERP mas não trouxe conteúdo."
               : "Nenhum contrato gerado - confirme a venda da unidade."}
           </p>
         )}
@@ -3885,7 +4289,88 @@ function UnitContractPanel({ unit, plan, loading, error, onRetry }) {
   )
 }
 
-function RowActionsMenu({ label = "Acoes", actions }) {
+const installmentPaymentMethodOptions = [
+  { value: "PIX", label: "PIX" },
+  { value: "BOLETO", label: "Boleto" },
+  { value: "TRANSFER", label: "Transferência" },
+  { value: "CASH", label: "Dinheiro" },
+  { value: "CREDIT_CARD", label: "Cartão de crédito" },
+  { value: "DEBIT_CARD", label: "Cartão de débito" },
+]
+
+function EditInstallmentModal({ installment, form, onClose, onChange, onSubmit, loading }) {
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Editar parcela"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>
+            Editar parcela {installment?.installmentNumber}/{installment?.totalInstallments}
+          </h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <p className={styles.metricHint}>
+            Vencimento e valor são definidos na confirmação da venda e não mudam por aqui.
+          </p>
+
+          <label className={styles.filterControl}>
+            <span>Forma de pagamento</span>
+            <select
+              className={styles.select}
+              value={form.paymentMethod}
+              onChange={(event) => onChange("paymentMethod", event.target.value)}
+            >
+              <option value="">Selecione</option>
+              {installmentPaymentMethodOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className={styles.filterControl}>
+            <span>Número do documento</span>
+            <input
+              className={styles.input}
+              value={form.documentNumber}
+              maxLength={100}
+              onChange={(event) => onChange("documentNumber", event.target.value)}
+            />
+          </label>
+
+          <label className={styles.filterControl}>
+            <span>Observação</span>
+            <textarea
+              className={styles.textarea}
+              value={form.observation}
+              onChange={(event) => onChange("observation", event.target.value)}
+            />
+          </label>
+
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading}>
+              {loading ? "Salvando..." : "Salvar parcela"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+function RowActionsMenu({ label = "Ações", actions }) {
   const [isOpen, setIsOpen] = useState(false)
   const [menuPosition, setMenuPosition] = useState(null)
   const wrapperRef = useRef(null)
@@ -4037,14 +4522,14 @@ function UnitsList({ units, blocks, loading, error, onRetry, onOpenDetails, onEd
       <table className={styles.table}>
         <thead>
           <tr>
-            <th>Descricao</th>
+            <th>Descrição</th>
             <th>Tipo</th>
             <th>Bloco</th>
             <th>Status</th>
             <th>Centro unidade</th>
-            <th>Preco</th>
+            <th>Preço</th>
             <th>Contrato ERP</th>
-            <th>Acoes</th>
+            <th>Ações</th>
           </tr>
         </thead>
         <tbody>
@@ -4052,6 +4537,7 @@ function UnitsList({ units, blocks, loading, error, onRetry, onOpenDetails, onEd
             const canReserve = unit.status === "available"
             const canRelease = unit.status === "reserved"
             const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
+  const canEditSale = unit.status === "sold" && Boolean(unit.analyticCostCenterId)
 
             return (
               <tr key={unit.id}>
@@ -4078,7 +4564,9 @@ function UnitsList({ units, blocks, loading, error, onRetry, onOpenDetails, onEd
                 <td>
                   {unit.externalContractId ? (
                     <div>
-                      <div className={styles.rowSecondaryText}>{unit.externalContractStatus || "ativo"}</div>
+                      <div className={styles.rowSecondaryText}>
+                        {translateErpStatus(erpContractStatusLabel, unit.externalContractStatus, "Ativo")}
+                      </div>
                       <span className={styles.badgeSuccess}>Vinculado</span>
                     </div>
                   ) : (
@@ -4118,9 +4606,9 @@ function UnitsList({ units, blocks, loading, error, onRetry, onOpenDetails, onEd
                       },
                       {
                         key: "sale",
-                        label: "Confirmar venda",
+                        label: canEditSale ? "Editar venda" : "Confirmar venda",
                         icon: ShoppingCart,
-                        visible: canSale,
+                        visible: canSale || canEditSale,
                         dividerBefore: !canReserve && !canRelease,
                         onSelect: () => onSale(unit),
                       },
@@ -4189,7 +4677,7 @@ function ScheduleList({ phases, loading, error, onRetry, onEdit, onDelete }) {
             <th>Inicio previsto</th>
             <th>Fim previsto</th>
             <th>Progresso</th>
-            <th>Acoes</th>
+            <th>Ações</th>
           </tr>
         </thead>
         <tbody>
@@ -4239,7 +4727,7 @@ function MeasurementsList({
   schedulePhases,
   loading,
   error,
-  emptyMessage = "Nenhuma medicao cadastrada para a obra selecionada.",
+  emptyMessage = "Nenhuma medição cadastrada para a obra selecionada.",
   onRetry,
   onEdit,
   onDelete,
@@ -4260,7 +4748,7 @@ function MeasurementsList({
       <div className={styles.tableWrapper} aria-busy="true">
         <div className={styles.empty}>
           <RefreshCw className={styles.spinIcon} size={16} />
-          Carregando medicoes...
+          Carregando medições...
         </div>
       </div>
     )
@@ -4293,15 +4781,15 @@ function MeasurementsList({
       <table className={styles.table}>
         <thead>
           <tr>
-            <th>Codigo</th>
+            <th>Código</th>
             <th>Unidade</th>
             <th>Tipo</th>
             <th>Status</th>
-            <th>Itens / inspecao</th>
-            <th>Valor liquido</th>
+            <th>Itens / inspeção</th>
+            <th>Valor líquido</th>
             <th>Vencimento</th>
             <th>Financeiro ERP</th>
-            <th>Acoes</th>
+            <th>Ações</th>
           </tr>
         </thead>
         <tbody>
@@ -4333,19 +4821,19 @@ function MeasurementsList({
                     {measurementStatusLabel[measurement.status] ?? measurement.status}
                   </span>
                   {measurement.approvedByUserId ? (
-                    <div className={styles.rowSecondaryText}>aprovada por usuario registrado</div>
+                    <div className={styles.rowSecondaryText}>aprovada por usuário registrado</div>
                   ) : measurement.submittedByUserId ? (
                     <div className={styles.rowSecondaryText}>aguardando aprovador diferente</div>
                   ) : null}
                 </td>
                 <td>
-                  {measurement.itemsCount ? `${measurement.itemsCount} item(ns)` : "valor unico"}
+                  {measurement.itemsCount ? `${measurement.itemsCount} item(ns)` : "valor único"}
                   <div className={styles.rowSecondaryText}>
                     {measurement.pendingInspectionsCount
-                      ? `${measurement.pendingInspectionsCount} verificacao(oes) pendente(s)`
-                      : "sem verificacao pendente"}
+                      ? `${measurement.pendingInspectionsCount} verificação(oes) pendente(s)`
+                      : "sem verificação pendente"}
                     {measurement.openOccurrencesCount
-                      ? ` - ${measurement.openOccurrencesCount} ocorrencia(s)`
+                      ? ` - ${measurement.openOccurrencesCount} ocorrência(s)`
                       : ""}
                   </div>
                 </td>
@@ -4366,7 +4854,7 @@ function MeasurementsList({
                     actions={[
                       {
                         key: "items",
-                        label: "Itens e inspecao",
+                        label: "Itens e inspeção",
                         icon: ListChecks,
                         onSelect: () => onOpenItems(measurement),
                       },
@@ -4379,7 +4867,7 @@ function MeasurementsList({
                       },
                       {
                         key: "submit",
-                        label: "Enviar para aprovacao",
+                        label: "Enviar para aprovação",
                         icon: Send,
                         visible: canSubmit,
                         dividerBefore: true,
@@ -4437,7 +4925,7 @@ function ProcurementList({
       <div className={styles.tableWrapper} aria-busy="true">
         <div className={styles.empty}>
           <RefreshCw className={styles.spinIcon} size={16} />
-          Carregando requisicoes...
+          Carregando requisições...
         </div>
       </div>
     )
@@ -4460,7 +4948,7 @@ function ProcurementList({
   if (!procurementRequests.length) {
     return (
       <div className={styles.tableWrapper}>
-        <div className={styles.empty}>Nenhuma requisicao cadastrada para a obra selecionada.</div>
+        <div className={styles.empty}>Nenhuma requisição cadastrada para a obra selecionada.</div>
       </div>
     )
   }
@@ -4470,13 +4958,13 @@ function ProcurementList({
       <table className={styles.table}>
         <thead>
           <tr>
-            <th>Codigo</th>
-            <th>Requisicao</th>
+            <th>Código</th>
+            <th>Requisição</th>
             <th>Status</th>
             <th>Valor estimado</th>
             <th>Necessidade</th>
-            <th>Integracao ERP</th>
-            <th>Acoes</th>
+            <th>Integração ERP</th>
+            <th>Ações</th>
           </tr>
         </thead>
         <tbody>
@@ -4572,11 +5060,11 @@ function ProcurementModal({ mode, procurementForm, people, onClose, onChange, on
         className={styles.modalCard}
         role="dialog"
         aria-modal="true"
-        aria-label={mode === "create" ? "Nova requisicao" : "Editar requisicao"}
+        aria-label={mode === "create" ? "Nova requisição" : "Editar requisição"}
         onClick={(event) => event.stopPropagation()}
       >
         <header className={styles.modalHeader}>
-          <h3>{mode === "create" ? "Nova requisicao" : "Editar requisicao"}</h3>
+          <h3>{mode === "create" ? "Nova requisição" : "Editar requisição"}</h3>
           <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
             Fechar
           </button>
@@ -4584,7 +5072,7 @@ function ProcurementModal({ mode, procurementForm, people, onClose, onChange, on
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <div className={styles.formGrid}>
             <label className={styles.filterControl}>
-              <span>Codigo</span>
+              <span>Código</span>
               <input
                 type="text"
                 value={procurementForm.code}
@@ -4593,7 +5081,7 @@ function ProcurementModal({ mode, procurementForm, people, onClose, onChange, on
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Titulo*</span>
+              <span>Título*</span>
               <input
                 type="text"
                 value={procurementForm.title}
@@ -4613,7 +5101,7 @@ function ProcurementModal({ mode, procurementForm, people, onClose, onChange, on
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Necessario ate</span>
+              <span>Necessário até</span>
               <input
                 type="date"
                 value={procurementForm.neededByDate}
@@ -4627,7 +5115,7 @@ function ProcurementModal({ mode, procurementForm, people, onClose, onChange, on
               people={people}
             />
             <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
-              <span>Descricao</span>
+              <span>Descrição</span>
               <textarea
                 className={styles.textarea}
                 value={procurementForm.description}
@@ -4640,7 +5128,7 @@ function ProcurementModal({ mode, procurementForm, people, onClose, onChange, on
               Cancelar
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Salvando..." : mode === "create" ? "Criar requisicao" : "Salvar alteracoes"}
+              {loading ? "Salvando..." : mode === "create" ? "Criar requisição" : "Salvar alterações"}
             </button>
           </footer>
         </form>
@@ -4656,18 +5144,18 @@ function RejectProcurementModal({ procurementRequest, rejectForm, onClose, onCha
         className={styles.modalCard}
         role="dialog"
         aria-modal="true"
-        aria-label="Rejeitar requisicao"
+        aria-label="Rejeitar requisição"
         onClick={(event) => event.stopPropagation()}
       >
         <header className={styles.modalHeader}>
-          <h3>Rejeitar requisicao {procurementRequest?.code}</h3>
+          <h3>Rejeitar requisição {procurementRequest?.code}</h3>
           <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
             Fechar
           </button>
         </header>
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <label className={styles.filterControl}>
-            <span>Motivo da rejeicao</span>
+            <span>Motivo da rejeição</span>
             <textarea
               className={styles.textarea}
               value={rejectForm.reason}
@@ -4679,7 +5167,7 @@ function RejectProcurementModal({ procurementRequest, rejectForm, onClose, onCha
               Cancelar
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Rejeitando..." : "Rejeitar requisicao"}
+              {loading ? "Rejeitando..." : "Rejeitar requisição"}
             </button>
           </footer>
         </form>
@@ -4706,11 +5194,11 @@ function MeasurementModal({
         className={styles.modalCard}
         role="dialog"
         aria-modal="true"
-        aria-label={mode === "create" ? "Nova medicao" : "Editar medicao"}
+        aria-label={mode === "create" ? "Nova medição" : "Editar medição"}
         onClick={(event) => event.stopPropagation()}
       >
         <header className={styles.modalHeader}>
-          <h3>{mode === "create" ? "Nova medicao" : "Editar medicao"}</h3>
+          <h3>{mode === "create" ? "Nova medição" : "Editar medição"}</h3>
           <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
             Fechar
           </button>
@@ -4718,7 +5206,7 @@ function MeasurementModal({
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <div className={styles.formGrid}>
             <label className={styles.filterControl}>
-              <span>Codigo*</span>
+              <span>Código*</span>
               <input
                 type="text"
                 value={measurementForm.code}
@@ -4727,7 +5215,7 @@ function MeasurementModal({
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Sequencia</span>
+              <span>Sequência</span>
               <input
                 type="number"
                 min="1"
@@ -4780,7 +5268,7 @@ function MeasurementModal({
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Competencia</span>
+              <span>Competência</span>
               <input
                 type="date"
                 value={measurementForm.competenceDate}
@@ -4814,7 +5302,7 @@ function MeasurementModal({
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Retencoes</span>
+              <span>Retenções</span>
               <input
                 type="number"
                 min="0"
@@ -4824,7 +5312,7 @@ function MeasurementModal({
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Valor liquido</span>
+              <span>Valor líquido</span>
               <input
                 type="number"
                 min="0"
@@ -4842,7 +5330,7 @@ function MeasurementModal({
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Numero documento</span>
+              <span>Número documento</span>
               <input
                 type="text"
                 value={measurementForm.documentNumber}
@@ -4850,7 +5338,7 @@ function MeasurementModal({
               />
             </label>
             <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
-              <span>Descricao</span>
+              <span>Descrição</span>
               <textarea
                 className={styles.textarea}
                 value={measurementForm.description}
@@ -4863,7 +5351,7 @@ function MeasurementModal({
               Cancelar
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Salvando..." : mode === "create" ? "Criar medicao" : "Salvar alteracoes"}
+              {loading ? "Salvando..." : mode === "create" ? "Criar medição" : "Salvar alterações"}
             </button>
           </footer>
         </form>
@@ -4879,18 +5367,18 @@ function RejectMeasurementModal({ measurement, rejectForm, onClose, onChange, on
         className={styles.modalCard}
         role="dialog"
         aria-modal="true"
-        aria-label="Rejeitar medicao"
+        aria-label="Rejeitar medição"
         onClick={(event) => event.stopPropagation()}
       >
         <header className={styles.modalHeader}>
-          <h3>Rejeitar medicao {measurement?.code}</h3>
+          <h3>Rejeitar medição {measurement?.code}</h3>
           <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
             Fechar
           </button>
         </header>
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <label className={styles.filterControl}>
-            <span>Motivo da rejeicao</span>
+            <span>Motivo da rejeição</span>
             <textarea
               className={styles.textarea}
               value={rejectForm.reason}
@@ -4902,7 +5390,7 @@ function RejectMeasurementModal({ measurement, rejectForm, onClose, onChange, on
               Cancelar
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Rejeitando..." : "Rejeitar medicao"}
+              {loading ? "Rejeitando..." : "Rejeitar medição"}
             </button>
           </footer>
         </form>
@@ -4985,21 +5473,21 @@ function IntegrationPanel({
 
         <article className={styles.integrationCard}>
           <h3>Financeiro ERP</h3>
-          <p className={styles.textMuted}>Sincronizacao de medicoes aprovadas com contas a pagar.</p>
+          <p className={styles.textMuted}>Sincronização de medições aprovadas com contas a pagar.</p>
           <p className={styles.metricValue}>{linkedMeasurements}</p>
-          <p className={styles.metricHint}>medicoes com documento financeiro vinculado</p>
+          <p className={styles.metricHint}>medições com documento financeiro vinculado</p>
         </article>
 
         <article className={styles.integrationCard}>
           <h3>Compras ERP</h3>
-          <p className={styles.textMuted}>Requisicoes enviadas para a fila de compras.</p>
+          <p className={styles.textMuted}>Requisições enviadas para a fila de compras.</p>
           <p className={styles.metricValue}>{linkedProcurementRequests}</p>
-          <p className={styles.metricHint}>requisicoes vinculadas externamente</p>
+          <p className={styles.metricHint}>requisições vinculadas externamente</p>
         </article>
 
         <article className={styles.integrationCard}>
           <h3>Contratos ERP</h3>
-          <p className={styles.textMuted}>Unidades vendidas com contrato e recebiveis vinculados.</p>
+          <p className={styles.textMuted}>Unidades vendidas com contrato e recebíveis vinculados.</p>
           <p className={styles.metricValue}>{linkedUnitContracts}</p>
           <p className={styles.metricHint}>unidades com contrato sincronizado</p>
         </article>
@@ -5039,7 +5527,7 @@ function ProjectModal({
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <div className={styles.formGrid}>
             <label className={styles.filterControl}>
-              <span>Codigo*</span>
+              <span>Código*</span>
               <input
                 type="text"
                 value={projectForm.code}
@@ -5123,7 +5611,7 @@ function ProjectModal({
               />
             </label>
             <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
-              <span>Descricao</span>
+              <span>Descrição</span>
               <textarea
                 className={styles.textarea}
                 value={projectForm.description}
@@ -5132,7 +5620,7 @@ function ProjectModal({
             </label>
           </div>
 
-          <h4 className={styles.sectionTitle}>Endereco</h4>
+          <h4 className={styles.sectionTitle}>Endereço</h4>
           <div className={styles.formGrid}>
             <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
               <span>Logradouro</span>
@@ -5143,7 +5631,7 @@ function ProjectModal({
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Numero</span>
+              <span>Número</span>
               <input
                 type="text"
                 value={projectForm.addressNumber}
@@ -5194,7 +5682,7 @@ function ProjectModal({
               Cancelar
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Salvando..." : mode === "create" ? "Criar obra" : "Salvar alteracoes"}
+              {loading ? "Salvando..." : mode === "create" ? "Criar obra" : "Salvar alterações"}
             </button>
           </footer>
         </form>
@@ -5222,7 +5710,7 @@ function BlockModal({ mode, blockForm, onClose, onChange, onSubmit, loading }) {
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <div className={styles.formGrid}>
             <label className={styles.filterControl}>
-              <span>Codigo*</span>
+              <span>Código*</span>
               <input
                 type="text"
                 value={blockForm.code}
@@ -5264,7 +5752,7 @@ function BlockModal({ mode, blockForm, onClose, onChange, onSubmit, loading }) {
               Cancelar
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Salvando..." : mode === "create" ? "Criar bloco" : "Salvar alteracoes"}
+              {loading ? "Salvando..." : mode === "create" ? "Criar bloco" : "Salvar alterações"}
             </button>
           </footer>
         </form>
@@ -5309,7 +5797,7 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
                   />
                 </label>
                 <label className={styles.filterControl}>
-                  <span>Descricao base*</span>
+                  <span>Descrição base*</span>
                   <input
                     type="text"
                     value={unitForm.description}
@@ -5322,7 +5810,7 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
             ) : (
               <>
                 <label className={styles.filterControl}>
-                  <span>Codigo*</span>
+                  <span>Código*</span>
                   <input
                     type="text"
                     value={unitForm.code}
@@ -5331,7 +5819,7 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
                   />
                 </label>
                 <label className={styles.filterControl}>
-                  <span>Descricao</span>
+                  <span>Descrição</span>
                   <input
                     type="text"
                     value={unitForm.description}
@@ -5373,7 +5861,7 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
               <input type="text" value={unitForm.floor} onChange={(event) => onChange("floor", event.target.value)} />
             </label>
             <label className={styles.filterControl}>
-              <span>Area privativa</span>
+              <span>Área privativa</span>
               <input
                 type="number"
                 min="0"
@@ -5383,7 +5871,7 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Area total</span>
+              <span>Área total</span>
               <input
                 type="number"
                 min="0"
@@ -5393,7 +5881,7 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Preco de venda</span>
+              <span>Preço de venda</span>
               <input
                 type="text"
                 inputMode="decimal"
@@ -5418,7 +5906,7 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
               Cancelar
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Salvando..." : mode === "create" ? submitLabel : "Salvar alteracoes"}
+              {loading ? "Salvando..." : mode === "create" ? submitLabel : "Salvar alterações"}
             </button>
           </footer>
         </form>
@@ -5476,6 +5964,7 @@ function ReserveUnitModal({ reserveForm, unit, people, onClose, onChange, onSubm
 }
 
 function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, loading }) {
+  const isEditing = unit?.status === "sold"
   const grossSalePrice = parseCurrencyFormValue(saleForm.salePrice)
   const discountAmount = parseCurrencyFormValue(saleForm.discountAmount)
   const netSalePrice = Math.max(grossSalePrice - discountAmount, 0)
@@ -5495,14 +5984,22 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
 
   const installmentSources = sources.filter((source) => source.generatesInstallments)
   const settlementSources = sources.filter((source) => !source.generatesInstallments)
-  const receivableTotal = installmentSources.reduce((total, source) => total + source.amountValue, 0)
+  const downPaymentTotal = installmentSources.reduce((total, source) => total + source.amountValue, 0)
   const settlementTotal = settlementSources.reduce((total, source) => total + source.amountValue, 0)
-  const installmentCount = installmentSources
-    .filter((source) => source.amountValue > 0)
-    .reduce((total, source) => total + source.installments, 0)
-  const composedTotal = receivableTotal + settlementTotal + discountAmount
-  const remaining = grossSalePrice - composedTotal
-  const isBalanced = grossSalePrice > 0 && Math.abs(remaining) <= 0.01
+
+  // SALDO = preço - desconto - entrada - financiamento - FGTS - subsídio.
+  // É a conta do legado (Dwelling/Resume.cshtml), e é o saldo que vira parcela.
+  const balance = grossSalePrice - discountAmount - downPaymentTotal - settlementTotal
+  const balanceInstallments = Math.max(Number(saleForm.installments || 1), 1)
+  const balanceInstallmentAmount = balance > 0 ? balance / balanceInstallments : 0
+
+  const receivableTotal = downPaymentTotal + Math.max(balance, 0)
+  const installmentCount =
+    installmentSources
+      .filter((source) => source.amountValue > 0)
+      .reduce((total, source) => total + source.installments, 0) +
+    (balance > 0 ? balanceInstallments : 0)
+  const exceedsPrice = grossSalePrice > 0 && balance < -0.01
 
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
@@ -5510,16 +6007,24 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
         className={styles.modalCard}
         role="dialog"
         aria-modal="true"
-        aria-label="Confirmar venda da unidade"
+        aria-label={isEditing ? "Editar venda da unidade" : "Confirmar venda da unidade"}
         onClick={(event) => event.stopPropagation()}
       >
         <header className={styles.modalHeader}>
-          <h3>Confirmar venda da unidade {unit?.code}</h3>
+          <h3>
+            {isEditing ? "Editar venda da unidade" : "Confirmar venda da unidade"} {unit?.code}
+          </h3>
           <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
             Fechar
           </button>
         </header>
         <form className={styles.modalBody} onSubmit={onSubmit}>
+          {isEditing ? (
+            <p className={styles.metricHint}>
+              Salvar reescreve o contrato e refaz as parcelas <strong>em aberto</strong> desta unidade. As
+              parcelas já pagas são preservadas e o que restar é redistribuído.
+            </p>
+          ) : null}
           <div className={styles.formGrid}>
             <PersonIdInput
               label="Comprador*"
@@ -5529,11 +6034,11 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
               required
             />
             <PersonIdInput
-              label="Comprador secundario"
+              label="Comprador secundário"
               value={saleForm.secondaryBuyerPersonId}
               onChange={(value) => onChange("secondaryBuyerPersonId", value)}
               people={people}
-              emptyLabel="Sem comprador secundario"
+              emptyLabel="Sem comprador secundário"
             />
             <PersonIdInput
               label="Corretor"
@@ -5543,7 +6048,7 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
               emptyLabel="Sem corretor"
             />
             <label className={styles.filterControl}>
-              <span>Preco da venda*</span>
+              <span>Preço da venda*</span>
               <input
                 type="text"
                 inputMode="decimal"
@@ -5622,14 +6127,50 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
                 </div>
               </div>
             ))}
+
+            <div className={styles.formGrid}>
+              <div className={styles.filterControl}>
+                <span>Saldo a parcelar</span>
+                <strong className={styles.installmentPreview}>
+                  {grossSalePrice > 0 ? formatMoney(Math.max(balance, 0)) : "-"}
+                </strong>
+                <span className={styles.rowSecondaryText}>
+                  preço - desconto - entrada - liberações do banco
+                </span>
+              </div>
+              <label className={styles.filterControl}>
+                <span>Parcelas</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="120"
+                  value={saleForm.installments}
+                  onChange={(event) => onChange("installments", event.target.value)}
+                />
+              </label>
+              <label className={styles.filterControl}>
+                <span>1o vencimento</span>
+                <input
+                  type="date"
+                  value={saleForm.firstDueDate}
+                  onChange={(event) => onChange("firstDueDate", event.target.value)}
+                />
+              </label>
+              <div className={styles.filterControl}>
+                <span>Fica</span>
+                <strong className={styles.installmentPreview}>
+                  {balance > 0 ? `${balanceInstallments} x ${formatMoney(balanceInstallmentAmount)}` : "-"}
+                </strong>
+              </div>
+            </div>
           </div>
 
           <div className={styles.card}>
             <div className={styles.scopeMeta}>
               <strong>Liberado pelo banco</strong>
               <span className={styles.metricHint}>
-                Compoe o preco da venda e <strong>nao gera parcela</strong>: a data de pagamento depende da
-                liberacao, entao a data informada e apenas a previsao.
+                Compoe o preço da venda e <strong>não gera parcela</strong>: a data de pagamento depende da
+                liberação, então a data informada e apenas a previsão.
               </span>
             </div>
             {settlementSources.map((source) => (
@@ -5647,7 +6188,7 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
                   />
                 </label>
                 <label className={styles.filterControl}>
-                  <span>Previsao de liberacao</span>
+                  <span>Previsão de liberação</span>
                   <input
                     type="date"
                     value={saleForm[source.dueDateField]}
@@ -5665,22 +6206,22 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
           </div>
 
           <label className={styles.filterControl}>
-            <span>Observacao</span>
+            <span>Observação</span>
             <textarea
               rows={3}
               value={saleForm.saleNotes}
               onChange={(event) => onChange("saleNotes", event.target.value)}
-              placeholder="Condicoes acordadas, pendencias, referencias do contrato"
+              placeholder="Condições acordadas, pendências, referências do contrato"
             />
           </label>
 
           <div className={styles.card}>
-            <strong>Composicao da venda</strong>
+            <strong>Composição da venda</strong>
             <div className={styles.tableWrapper}>
               <table className={styles.table}>
                 <tbody>
                   <tr>
-                    <td>Preco da venda</td>
+                    <td>Preço da venda</td>
                     <td className={styles.textRight}>{formatMoney(grossSalePrice)}</td>
                   </tr>
                   <tr>
@@ -5688,12 +6229,25 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
                     <td className={styles.textRight}>- {formatMoney(discountAmount)}</td>
                   </tr>
                   <tr>
-                    <td>Liberado pelo banco (subsidio + FGTS + financiamento)</td>
+                    <td>Liberado pelo banco (subsídio + FGTS + financiamento)</td>
                     <td className={styles.textRight}>- {formatMoney(settlementTotal)}</td>
                   </tr>
                   <tr>
+                    <td>Entrada</td>
+                    <td className={styles.textRight}>- {formatMoney(downPaymentTotal)}</td>
+                  </tr>
+                  <tr>
                     <td>
-                      <strong>Cobrado do comprador em parcelas</strong>
+                      <strong>Saldo a parcelar</strong>
+                      <div className={styles.rowSecondaryText}>o que sobra e vira parcela</div>
+                    </td>
+                    <td className={styles.textRight}>
+                      <strong>{formatMoney(Math.max(balance, 0))}</strong>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <strong>Cobrado do comprador (entrada + saldo)</strong>
                       <div className={styles.rowSecondaryText}>
                         {installmentCount ? `${installmentCount} parcela(s) no total` : "nenhuma parcela"}
                       </div>
@@ -5705,14 +6259,12 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
                 </tbody>
               </table>
             </div>
-            <span className={isBalanced ? styles.badgeSuccess : styles.badgeMuted}>
+            <span className={exceedsPrice ? styles.badgeMuted : styles.badgeSuccess}>
               {grossSalePrice <= 0
-                ? "Informe o preco da venda"
-                : isBalanced
-                  ? "Composicao fecha com o preco da venda"
-                  : remaining > 0
-                    ? `Falta compor ${formatMoney(remaining)}`
-                    : `Composicao excede o preco em ${formatMoney(Math.abs(remaining))}`}
+                ? "Informe o preço da venda"
+                : exceedsPrice
+                  ? `Composição excede o preço em ${formatMoney(Math.abs(balance))}`
+                  : `Cobrança do comprador: ${formatMoney(receivableTotal)}`}
             </span>
           </div>
 
@@ -5721,7 +6273,13 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
               Cancelar
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Confirmando..." : "Confirmar venda"}
+              {loading
+                ? isEditing
+                  ? "Salvando..."
+                  : "Confirmando..."
+                : isEditing
+                  ? "Salvar venda"
+                  : "Confirmar venda"}
             </button>
           </footer>
         </form>
@@ -5788,11 +6346,11 @@ function MeasurementItemsModal({
         className={styles.modalCard}
         role="dialog"
         aria-modal="true"
-        aria-label={`Itens da medicao ${measurement.code}`}
+        aria-label={`Itens da medição ${measurement.code}`}
         onClick={(event) => event.stopPropagation()}
       >
         <header className={styles.modalHeader}>
-          <h3>Itens da medicao {measurement.code}</h3>
+          <h3>Itens da medição {measurement.code}</h3>
           <button type="button" className={styles.closeButton} onClick={onClose} disabled={saving}>
             Fechar
           </button>
@@ -5802,35 +6360,35 @@ function MeasurementItemsModal({
             <article className={styles.integrationCard}>
               <h3>Total dos itens</h3>
               <p className={styles.metricValue}>{formatMoney(itemsTotal)}</p>
-              <p className={styles.metricHint}>{items.length} item(ns) de servico</p>
+              <p className={styles.metricHint}>{items.length} item(ns) de serviço</p>
             </article>
             <article className={styles.integrationCard}>
-              <h3>Verificacoes pendentes</h3>
+              <h3>Verificações pendentes</h3>
               <p className={styles.metricValue}>{pendingChecks}</p>
-              <p className={styles.metricHint}>dupla verificacao incompleta</p>
+              <p className={styles.metricHint}>dupla verificação incompleta</p>
             </article>
             <article className={styles.integrationCard}>
-              <h3>Ocorrencias abertas</h3>
+              <h3>Ocorrências abertas</h3>
               <p className={styles.metricValue}>{openOccurrences}</p>
-              <p className={styles.metricHint}>problema sem solucao registrada</p>
+              <p className={styles.metricHint}>problema sem solução registrada</p>
             </article>
           </div>
 
           {isLocked ? (
             <p className={styles.metricHint}>
-              Medicao {measurementStatusLabel[measurement.status] ?? measurement.status} - itens em somente leitura.
+              Medição {measurementStatusLabel[measurement.status] ?? measurement.status} - itens em somente leitura.
             </p>
           ) : (
             <form className={styles.card} onSubmit={handleItemSubmit}>
               <div className={styles.scopeHeader}>
                 <div className={styles.scopeMeta}>
-                  <strong>Novo servico medido</strong>
+                  <strong>Novo serviço medido</strong>
                   <span className={styles.metricHint}>
                     {loadingServiceTemplates
-                      ? "Carregando catalogo de servicos..."
+                      ? "Carregando catálogo de serviços..."
                       : serviceTemplates.length
-                        ? `${serviceTemplates.length} servico(s) no catalogo, com os itens de inspecao da planilha da Caixa`
-                        : "Catalogo vazio - importe a planilha de verificacao de servico (FVS) da Caixa"}
+                        ? `${serviceTemplates.length} serviço(s) no catálogo, com os itens de inspeção da planilha da Caixa`
+                        : "Catálogo vazio - importe a planilha de verificação de serviço (FVS) da Caixa"}
                   </span>
                 </div>
                 <label className={styles.secondaryButton}>
@@ -5851,32 +6409,32 @@ function MeasurementItemsModal({
               </div>
               <div className={styles.formGrid}>
                 <label className={styles.filterControl}>
-                  <span>Servico do catalogo</span>
+                  <span>Serviço do catálogo</span>
                   <select
                     value={itemForm.serviceTemplateId}
                     onChange={(event) => handleItemChange("serviceTemplateId", event.target.value)}
                     disabled={loadingServiceTemplates}
                   >
                     <option value="">
-                      {serviceTemplates.length ? "Servico fora do catalogo" : "Catalogo vazio"}
+                      {serviceTemplates.length ? "Serviço fora do catálogo" : "Catálogo vazio"}
                     </option>
                     {serviceTemplates.map((template) => (
                       <option key={template.id} value={template.id}>
-                        {template.name} ({template.items.length} item(ns) de inspecao)
+                        {template.name} ({template.items.length} item(ns) de inspeção)
                       </option>
                     ))}
                   </select>
                 </label>
                 <label className={styles.filterControl}>
-                  <span>{itemForm.serviceTemplateId ? "Descricao (opcional)" : "Servico medido*"}</span>
+                  <span>{itemForm.serviceTemplateId ? "Descrição (opcional)" : "Serviço medido*"}</span>
                   <input
                     type="text"
                     value={itemForm.description}
                     onChange={(event) => handleItemChange("description", event.target.value)}
                     placeholder={
                       itemForm.serviceTemplateId
-                        ? selectedTemplateName || "Usa o nome do servico do catalogo"
-                        : "Alvenaria de vedacao do pavimento 3"
+                        ? selectedTemplateName || "Usa o nome do serviço do catálogo"
+                        : "Alvenaria de vedação do pavimento 3"
                     }
                     required={!itemForm.serviceTemplateId}
                   />
@@ -5893,12 +6451,12 @@ function MeasurementItemsModal({
                   />
                 </label>
                 <label className={styles.filterControl}>
-                  <span>Produto / referencia</span>
+                  <span>Produto / referência</span>
                   <input
                     type="text"
                     value={itemForm.productDescription}
                     onChange={(event) => handleItemChange("productDescription", event.target.value)}
-                    placeholder="Codigo ou nome do servico no cadastro"
+                    placeholder="Código ou nome do serviço no cadastro"
                   />
                 </label>
                 <label className={styles.filterControl}>
@@ -5949,7 +6507,7 @@ function MeasurementItemsModal({
             </div>
           ) : !items.length ? (
             <div className={styles.empty}>
-              Nenhum item de servico lancado. Sem itens, a medicao vale o valor unico informado no cadastro.
+              Nenhum item de serviço lancado. Sem itens, a medição vale o valor único informado no cadastro.
             </div>
           ) : (
             <div className={styles.tableWrapper}>
@@ -5957,11 +6515,11 @@ function MeasurementItemsModal({
                 <thead>
                   <tr>
                     <th>Seq.</th>
-                    <th>Servico</th>
-                    <th>Periodo</th>
+                    <th>Serviço</th>
+                    <th>Período</th>
                     <th>Valor</th>
-                    <th>Inspecao</th>
-                    <th>Acoes</th>
+                    <th>Inspeção</th>
+                    <th>Ações</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -6039,7 +6597,7 @@ function MeasurementItemRow({
         <td>{item.sequenceNumber}</td>
         <td>
           <strong>{item.description}</strong>
-          <div className={styles.rowSecondaryText}>{item.productDescription || "sem referencia de produto"}</div>
+          <div className={styles.rowSecondaryText}>{item.productDescription || "sem referência de produto"}</div>
         </td>
         <td>
           {item.startDate ? formatDate(item.startDate) : "-"}
@@ -6051,14 +6609,14 @@ function MeasurementItemRow({
             {inspectionStatusLabel[item.inspectionStatus] ?? item.inspectionStatus}
           </span>
           <div className={styles.rowSecondaryText}>
-            {item.inspections.length} verificacao(oes) - {item.occurrences.filter((o) => o.status === "open").length} ocorrencia(s) aberta(s)
+            {item.inspections.length} verificação(oes) - {item.occurrences.filter((o) => o.status === "open").length} ocorrência(s) aberta(s)
           </div>
         </td>
         <td>
           <div className={styles.rowActions}>
             <button type="button" className={styles.iconButton} onClick={onToggle}>
               <ShieldCheck size={14} />
-              {expanded ? "Recolher" : "Inspecao"}
+              {expanded ? "Recolher" : "Inspeção"}
             </button>
             {isLocked ? null : (
               <button
@@ -6078,18 +6636,18 @@ function MeasurementItemRow({
         <tr>
           <td colSpan={6}>
             <div className={styles.card}>
-              <strong>Itens de inspecao</strong>
+              <strong>Itens de inspeção</strong>
               {item.inspections.length ? (
                 <div className={styles.tableWrapper}>
                   <table className={styles.table}>
                     <thead>
                       <tr>
                         <th>Seq.</th>
-                        <th>Verificacao</th>
+                        <th>Verificação</th>
                         <th>Metodo</th>
-                        <th>1a conferencia</th>
-                        <th>2a conferencia</th>
-                        <th>Acoes</th>
+                        <th>1a conferência</th>
+                        <th>2a conferência</th>
+                        <th>Ações</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -6103,7 +6661,7 @@ function MeasurementItemRow({
                               {inspectionStatusLabel[inspection.firstStatus] ?? inspection.firstStatus}
                             </span>
                             <div className={styles.rowSecondaryText}>
-                              {inspection.firstStatusAt ? formatDate(inspection.firstStatusAt) : "nao conferido"}
+                              {inspection.firstStatusAt ? formatDate(inspection.firstStatusAt) : "não conferido"}
                             </div>
                           </td>
                           <td>
@@ -6111,7 +6669,7 @@ function MeasurementItemRow({
                               {inspectionStatusLabel[inspection.secondStatus] ?? inspection.secondStatus}
                             </span>
                             <div className={styles.rowSecondaryText}>
-                              {inspection.secondStatusAt ? formatDate(inspection.secondStatusAt) : "nao conferido"}
+                              {inspection.secondStatusAt ? formatDate(inspection.secondStatusAt) : "não conferido"}
                             </div>
                           </td>
                           <td>
@@ -6161,7 +6719,7 @@ function MeasurementItemRow({
                                       </button>
                                     </>
                                   ) : (
-                                    <span className={styles.badgeSuccess}>Dupla verificacao concluida</span>
+                                    <span className={styles.badgeSuccess}>Dupla verificação concluída</span>
                                   )}
                                   <button
                                     type="button"
@@ -6181,13 +6739,13 @@ function MeasurementItemRow({
                   </table>
                 </div>
               ) : (
-                <p className={styles.metricHint}>Nenhum item de inspecao cadastrado.</p>
+                <p className={styles.metricHint}>Nenhum item de inspeção cadastrado.</p>
               )}
 
               {isLocked ? null : (
                 <form className={styles.formGrid} onSubmit={handleInspectionSubmit}>
                   <label className={styles.filterControl}>
-                    <span>Nova verificacao*</span>
+                    <span>Nova verificação*</span>
                     <input
                       type="text"
                       value={inspectionForm.description}
@@ -6206,20 +6764,20 @@ function MeasurementItemRow({
                       onChange={(event) =>
                         setInspectionForm((form) => ({ ...form, verificationMethod: event.target.value }))
                       }
-                      placeholder="Regua de 2m em 3 pontos"
+                      placeholder="Régua de 2m em 3 pontos"
                     />
                   </label>
                   <label className={styles.filterControl}>
                     <span>&nbsp;</span>
                     <button type="submit" className={styles.primaryButton} disabled={saving}>
                       <Plus size={16} />
-                      Adicionar verificacao
+                      Adicionar verificação
                     </button>
                   </label>
                 </form>
               )}
 
-              <strong>Ocorrencias</strong>
+              <strong>Ocorrências</strong>
               {item.occurrences.length ? (
                 <div className={styles.tableWrapper}>
                   <table className={styles.table}>
@@ -6227,9 +6785,9 @@ function MeasurementItemRow({
                       <tr>
                         <th>Seq.</th>
                         <th>Problema</th>
-                        <th>Solucao</th>
+                        <th>Solução</th>
                         <th>Status</th>
-                        <th>Acoes</th>
+                        <th>Ações</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -6256,7 +6814,7 @@ function MeasurementItemRow({
                                     [occurrence.id]: event.target.value,
                                   }))
                                 }
-                                placeholder="Descreva a solucao"
+                                placeholder="Descreva a solução"
                               />
                             ) : (
                               occurrence.solution || "-"
@@ -6311,7 +6869,7 @@ function MeasurementItemRow({
                   </table>
                 </div>
               ) : (
-                <p className={styles.metricHint}>Nenhuma ocorrencia registrada.</p>
+                <p className={styles.metricHint}>Nenhuma ocorrência registrada.</p>
               )}
 
               {isLocked ? null : (
@@ -6329,21 +6887,21 @@ function MeasurementItemRow({
                     />
                   </label>
                   <label className={styles.filterControl}>
-                    <span>Solucao (opcional)</span>
+                    <span>Solução (opcional)</span>
                     <input
                       type="text"
                       value={occurrenceForm.solution}
                       onChange={(event) =>
                         setOccurrenceForm((form) => ({ ...form, solution: event.target.value }))
                       }
-                      placeholder="Deixe vazio para registrar so o problema"
+                      placeholder="Deixe vazio para registrar só o problema"
                     />
                   </label>
                   <label className={styles.filterControl}>
                     <span>&nbsp;</span>
                     <button type="submit" className={styles.primaryButton} disabled={saving}>
                       <Plus size={16} />
-                      Registrar ocorrencia
+                      Registrar ocorrência
                     </button>
                   </label>
                 </form>
@@ -6455,7 +7013,7 @@ function SchedulePhaseModal({ mode, schedulePhaseForm, onClose, onChange, onSubm
               Cancelar
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Salvando..." : mode === "create" ? "Criar fase" : "Salvar alteracoes"}
+              {loading ? "Salvando..." : mode === "create" ? "Criar fase" : "Salvar alterações"}
             </button>
           </footer>
         </form>
