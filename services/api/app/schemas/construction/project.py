@@ -195,9 +195,12 @@ class ConstructionUnitReserveRequest(BaseModel):
     reservation_expires_at: date | None = None
 
 
+#: Apenas o que o usuario informa na confirmacao da venda. O saldo a parcelar
+#: nao esta aqui de proposito: ele sai da conta do legado (preco - desconto -
+#: entrada - financiamento - FGTS - subsidio), e deixar digita-lo obrigaria o
+#: usuario a fazer essa subtracao de cabeca.
 ConstructionUnitSalePaymentSourceType = Literal[
     "down_payment",
-    "direct_builder",
     "government_subsidy",
     "fgts",
     "financing",
@@ -222,6 +225,20 @@ class ConstructionUnitSaleConfirmRequest(BaseModel):
     first_due_date: date
     installments: int = Field(default=1, ge=1, le=120)
     payment_sources: list[ConstructionUnitSalePaymentSource] | None = None
+
+
+class ConstructionUnitInstallmentUpdateRequest(BaseModel):
+    """O que a tela da unidade pode alterar numa parcela ja gerada.
+
+    Vencimento e valor nao estao aqui de proposito: quem guarda a parcela e o
+    ERP, e la nenhum caminho altera esses dois campos.
+    """
+
+    payment_method: str | None = Field(default=None, min_length=1, max_length=30)
+    document_number: str | None = Field(default=None, max_length=100)
+    observation: str | None = None
+    chart_account_id: UUID | None = None
+    cost_center_id: UUID | None = None
 
 
 class ConstructionSchedulePhaseCreate(BaseModel):

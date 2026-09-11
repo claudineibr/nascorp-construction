@@ -47,21 +47,32 @@ class ConstructionMeasurementStatus:
 
 class ConstructionUnitPaymentSource:
     DOWN_PAYMENT = "down_payment"
+    BALANCE = "balance"
+    #: Nome antigo do saldo, mantido apenas para ler vendas gravadas antes de o
+    #: saldo passar a ser calculado. Nao aceite mais este valor na entrada.
     DIRECT_BUILDER = "direct_builder"
     GOVERNMENT_SUBSIDY = "government_subsidy"
     FGTS = "fgts"
     FINANCING = "financing"
 
-    ALL_SOURCES = {DOWN_PAYMENT, DIRECT_BUILDER, GOVERNMENT_SUBSIDY, FGTS, FINANCING}
+    ALL_SOURCES = {DOWN_PAYMENT, BALANCE, DIRECT_BUILDER, GOVERNMENT_SUBSIDY, FGTS, FINANCING}
 
-    INSTALLMENT_SOURCES = {DOWN_PAYMENT, DIRECT_BUILDER}
+    #: O saldo nao e informado pelo usuario: sai da conta do legado, do que
+    #: sobra do preco depois das outras fontes e do desconto.
+    COMPUTED_SOURCES = {BALANCE, DIRECT_BUILDER}
+
+    #: Fontes que o usuario informa na confirmacao da venda.
+    INFORMED_SOURCES = {DOWN_PAYMENT, GOVERNMENT_SUBSIDY, FGTS, FINANCING}
+
+    INSTALLMENT_SOURCES = {DOWN_PAYMENT, BALANCE, DIRECT_BUILDER}
 
     SETTLEMENT_SOURCES = {GOVERNMENT_SUBSIDY, FGTS, FINANCING}
 
     LABELS = {
         DOWN_PAYMENT: "Entrada",
-        DIRECT_BUILDER: "Parcelas construtora",
-        GOVERNMENT_SUBSIDY: "Subsidio",
+        BALANCE: "Saldo a parcelar",
+        DIRECT_BUILDER: "Saldo a parcelar",
+        GOVERNMENT_SUBSIDY: "Subsídio",
         FGTS: "FGTS",
         FINANCING: "Financiamento",
     }

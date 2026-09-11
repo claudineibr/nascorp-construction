@@ -21,6 +21,7 @@ from app.schemas.construction import (
     ConstructionBlockResponse,
     ConstructionBlockUpdate,
     ConstructionPersonSummaryListResponse,
+    ConstructionUnitInstallmentUpdateRequest,
     ConstructionProjectCreate,
     ConstructionProjectListResponse,
     ConstructionProjectResponse,
@@ -535,6 +536,22 @@ async def submit_measurement(
         raise _http_error(exc=exc) from exc
 
 
+@router.get("/projects/{project_id}/summary")
+async def get_project_summary(
+    project_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        return await service.build_project_summary(
+            company_id=ctx.company_id,
+            project_id=project_id,
+            user_id=ctx.user_id,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
 @router.get("/units/{unit_id}/payment-plan")
 async def get_unit_payment_plan(
     unit_id: UUID,
@@ -543,6 +560,26 @@ async def get_unit_payment_plan(
 ) -> dict:
     try:
         return await service.build_unit_payment_plan(company_id=ctx.company_id, unit_id=unit_id)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.patch("/units/{unit_id}/installments/{installment_number}")
+async def update_unit_installment(
+    unit_id: UUID,
+    installment_number: int,
+    payload: ConstructionUnitInstallmentUpdateRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        return await service.update_unit_installment(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            installment_number=installment_number,
+            changes=payload.model_dump(exclude_unset=True, exclude_none=True, mode="json"),
+            user_id=ctx.user_id,
+        )
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 

@@ -103,6 +103,67 @@ class ErpConstructionClient:
             response.raise_for_status()
             return response.json()
 
+    async def get_receivables_summary(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        receivable_ids: list[UUID],
+    ) -> dict[str, object]:
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for Construction summary integration.")
+
+        # Sem o usuario o ERP nao consegue avaliar permissao de contas a receber
+        # e recusa a chamada: a chave de servico diz de onde veio, nao quem pediu.
+        headers = {
+            "X-Service-Key": settings.erp_service_key,
+            "X-Company-ID": str(company_id),
+        }
+        if user_id is not None:
+            headers["X-User-ID"] = str(user_id)
+
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.post(
+                "/v1/internal/construction/receivables-summary",
+                headers=headers,
+                json={"receivable_ids": [str(receivable_id) for receivable_id in receivable_ids]},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def update_unit_installment(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        receivable_id: UUID,
+        installment_number: int,
+        changes: dict[str, object],
+    ) -> dict[str, object]:
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for Construction payment plan integration.")
+
+        headers = {
+            "X-Service-Key": settings.erp_service_key,
+            "X-Company-ID": str(company_id),
+        }
+        if user_id is not None:
+            headers["X-User-ID"] = str(user_id)
+        payload: dict[str, object] = {
+            "receivable_id": str(receivable_id),
+            "installment_number": installment_number,
+        }
+        payload.update(changes)
+
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.patch(
+                "/v1/internal/construction/unit-installment",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def create_cost_center_hierarchy(self, *, event: EventEnvelope) -> EventEnvelope:
         return await self.deliver_event(event=event)
 

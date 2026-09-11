@@ -2,7 +2,9 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
+from pydantic import ValidationError as PydanticValidationError
 
 from app.domain.constants import ConstructionMeasurementStatus, ConstructionProcurementStatus, ConstructionProjectStatus
 from app.domain.exceptions import (
@@ -358,6 +360,13 @@ class FakeConstructionRepository:
             measurement
             for (stored_company_id, _), measurement in self.measurements.items()
             if stored_company_id == company_id and measurement.project_id == project_id
+        ]
+
+    async def list_units(self, *, company_id, project_id):
+        return [
+            unit
+            for (stored_company_id, _), unit in self.units.items()
+            if stored_company_id == company_id and unit.project_id == project_id
         ]
 
     async def get_procurement_request(self, *, company_id, procurement_request_id):
@@ -1067,7 +1076,12 @@ async def test_apply_accounts_payable_updated_event_updates_measurement_once() -
 
 
 @pytest.mark.asyncio
-async def test_confirm_unit_sale_creates_contract_snapshot_once() -> None:
+async def test_confirm_unit_sale_keeps_one_contract_and_reemits_on_edit() -> None:
+    """Reconfirmar e como editar a venda: mesmo contrato, evento novo.
+
+    O evento tem de sair de novo para o ERP reescrever contrato e cobranca. O
+    atalho antigo devolvia a unidade intacta e a alteracao morria aqui.
+    """
     company_id = uuid4()
     repository = FakeConstructionRepository()
     event_repository = FakeEventRepository()
@@ -1119,11 +1133,14 @@ async def test_confirm_unit_sale_creates_contract_snapshot_once() -> None:
     assert first_result.external_contract_id is not None
     assert first_result.external_receivable_id is not None
     assert second_result.external_contract_id == first_result.external_contract_id
-    assert len(erp_client.events) == 1
+    assert second_result.external_receivable_id == first_result.external_receivable_id
+    # Dois eventos, um contrato: o ERP reescreve o que ja existe.
+    assert len(erp_client.events) == 2
+    assert {event.event_type for event in erp_client.events} == {ConstructionEventType.UNIT_SOLD}
     assert any(event.event_type == ConstructionEventType.UNIT_SOLD for event in event_repository.outbox_events)
     assert erp_client.events[0].payload["payment_sources"] == [
         {
-            "source_type": "direct_builder",
+            "source_type": "balance",
             "amount": "450000.00",
             "due_date": "2026-06-10",
             "installments": 12,
@@ -1173,12 +1190,6 @@ async def test_confirm_unit_sale_dispatches_composed_payment_sources() -> None:
                 "installments": 1,
             },
             {
-                "source_type": "direct_builder",
-                "amount": Decimal("150000.00"),
-                "due_date": date(2026, 7, 10),
-                "installments": 12,
-            },
-            {
                 "source_type": "fgts",
                 "amount": Decimal("30000.00"),
                 "due_date": date(2026, 8, 10),
@@ -1205,13 +1216,6 @@ async def test_confirm_unit_sale_dispatches_composed_payment_sources() -> None:
             "generates_installments": True,
         },
         {
-            "source_type": "direct_builder",
-            "amount": "150000.00",
-            "due_date": "2026-07-10",
-            "installments": 12,
-            "generates_installments": True,
-        },
-        {
             "source_type": "fgts",
             "amount": "30000.00",
             "due_date": "2026-08-10",
@@ -1224,6 +1228,15 @@ async def test_confirm_unit_sale_dispatches_composed_payment_sources() -> None:
             "due_date": "2026-09-10",
             "installments": 1,
             "generates_installments": False,
+        },
+        {
+            # 500.000 - 50.000 de entrada - 30.000 de FGTS - 270.000 financiados.
+            # Ninguem digitou este valor: e o que sobra do preco da venda.
+            "source_type": "balance",
+            "amount": "150000.00",
+            "due_date": "2026-06-10",
+            "installments": 12,
+            "generates_installments": True,
         },
     ]
     assert erp_client.events[0].payload["receivable_amount"] == "200000.00"
@@ -1660,12 +1673,6 @@ async def test_confirm_unit_sale_composition_matches_price_net_of_discount() -> 
                 "due_date": date(2026, 6, 10),
                 "installments": 1,
             },
-            {
-                "source_type": "direct_builder",
-                "amount": Decimal("300000.00"),
-                "due_date": date(2026, 7, 10),
-                "installments": 60,
-            },
         ],
     )
 
@@ -1677,11 +1684,20 @@ async def test_confirm_unit_sale_composition_matches_price_net_of_discount() -> 
     assert result.net_sale_price == Decimal("360000.00")
     assert erp_client.events[0].payload["discount_amount"] == "40000.00"
     assert erp_client.events[0].payload["net_sale_price"] == "360000.00"
+    # 60.000 de entrada + 300.000 de saldo (400.000 - 40.000 de desconto - 60.000).
     assert erp_client.events[0].payload["receivable_amount"] == "360000.00"
+    assert erp_client.events[0].payload["payment_sources"][-1] == {
+        "source_type": "balance",
+        "amount": "300000.00",
+        "due_date": "2026-06-10",
+        "installments": 12,
+        "generates_installments": True,
+    }
 
 
 @pytest.mark.asyncio
 async def test_confirm_unit_sale_rejects_composition_that_ignores_discount() -> None:
+    """Informar o preco cheio ignorando o desconto estoura o preco da venda."""
     company_id, unit, service, _ = _build_sale_scenario(
         project_code="OBRA-051",
         unit_code="C-302",
@@ -1696,7 +1712,7 @@ async def test_confirm_unit_sale_rejects_composition_that_ignores_discount() -> 
         installments=1,
         payment_sources=[
             {
-                "source_type": "direct_builder",
+                "source_type": "financing",
                 "amount": Decimal("400000.00"),
                 "due_date": date(2026, 6, 10),
                 "installments": 1,
@@ -1709,6 +1725,26 @@ async def test_confirm_unit_sale_rejects_composition_that_ignores_discount() -> 
 
     assert error.value.error_code == "CONSTRUCTION_UNIT_PAYMENT_SOURCES_TOTAL_MISMATCH"
     assert unit.status == "available"
+
+
+def test_unit_sale_request_does_not_accept_a_typed_balance() -> None:
+    """O saldo e calculado: se pudesse ser digitado, a conta do legado sumiria."""
+    for source_type in ("balance", "direct_builder"):
+        with pytest.raises(PydanticValidationError):
+            ConstructionUnitSaleConfirmRequest(
+                buyer_person_id=uuid4(),
+                sale_price=Decimal("400000.00"),
+                first_due_date=date(2026, 6, 10),
+                installments=1,
+                payment_sources=[
+                    {
+                        "source_type": source_type,
+                        "amount": Decimal("400000.00"),
+                        "due_date": date(2026, 6, 10),
+                        "installments": 1,
+                    },
+                ],
+            )
 
 
 @pytest.mark.asyncio
@@ -1860,7 +1896,7 @@ async def test_confirm_unit_sale_without_composition_charges_price_net_of_discou
 
     assert erp_client.events[0].payload["payment_sources"] == [
         {
-            "source_type": "direct_builder",
+            "source_type": "balance",
             "amount": "180000.00",
             "due_date": "2026-06-10",
             "installments": 10,
@@ -2065,3 +2101,164 @@ async def test_approve_procurement_request_sends_demand_once() -> None:
     assert approved.external_procurement_status == "PENDING_REVIEW"
     assert any(event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED for event in event_repository.outbox_events)
     assert len([event for event in erp_client.events if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED]) == 1
+
+
+@pytest.mark.asyncio
+async def test_confirm_unit_sale_edit_changes_buyer_and_composition() -> None:
+    """Editar a venda tem de mudar de verdade o que o usuario alterou."""
+    company_id, unit, service, erp_client = _build_sale_scenario(
+        project_code="OBRA-053",
+        unit_code="C-304",
+        sale_price=Decimal("300000.00"),
+    )
+
+    first_buyer = uuid4()
+    await service.confirm_unit_sale(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitSaleConfirmRequest(
+            buyer_person_id=first_buyer,
+            sale_price=Decimal("300000.00"),
+            first_due_date=date(2026, 6, 10),
+            installments=10,
+        ),
+    )
+
+    second_buyer = uuid4()
+    broker = uuid4()
+    result = await service.confirm_unit_sale(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitSaleConfirmRequest(
+            buyer_person_id=second_buyer,
+            broker_person_id=broker,
+            sale_price=Decimal("320000.00"),
+            discount_amount=Decimal("20000.00"),
+            first_due_date=date(2026, 7, 10),
+            installments=6,
+            payment_sources=[
+                {
+                    "source_type": "financing",
+                    "amount": Decimal("200000.00"),
+                    "due_date": date(2026, 8, 10),
+                    "installments": 1,
+                },
+            ],
+        ),
+    )
+
+    assert result.buyer_person_id == second_buyer
+    assert result.broker_person_id == broker
+    assert result.sale_price == Decimal("320000.00")
+    assert result.discount_amount == Decimal("20000.00")
+
+    ultimo_evento = erp_client.events[-1].payload
+    assert ultimo_evento["buyer_person_id"] == str(second_buyer)
+    # 320.000 - 20.000 de desconto - 200.000 financiados = 100.000 de saldo.
+    assert ultimo_evento["receivable_amount"] == "100000.00"
+    assert ultimo_evento["payment_sources"][-1] == {
+        "source_type": "balance",
+        "amount": "100000.00",
+        "due_date": "2026-07-10",
+        "installments": 6,
+        "generates_installments": True,
+    }
+
+
+def _build_summary_scenario():
+    """Obra com uma unidade vendida e recebivel no ERP."""
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-RESUMO",
+        name="Resumo project",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    unit = ConstructionUnit(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        code="UN-RESUMO",
+        unit_type="apartment",
+        sale_price=Decimal("300000.00"),
+        discount_amount=Decimal("10000.00"),
+        analytic_cost_center_id=uuid4(),
+        status="sold",
+        external_receivable_id=uuid4(),
+    )
+    repository.projects[(company_id, project.id)] = project
+    repository.units[(company_id, unit.id)] = unit
+    return company_id, project, unit, repository
+
+
+class FakeReceivablesSummaryClient:
+    """Registra como o resumo foi pedido ao ERP."""
+
+    def __init__(self, *, failure: Exception | None = None) -> None:
+        self.calls: list[dict] = []
+        self.failure = failure
+
+    async def get_receivables_summary(self, *, company_id, user_id, receivable_ids):
+        self.calls.append({"company_id": company_id, "user_id": user_id, "receivable_ids": receivable_ids})
+        if self.failure is not None:
+            raise self.failure
+
+        return {
+            "receivables_count": 1,
+            "total_amount": "290000.00",
+            "paid_amount": "90000.00",
+            "open_amount": "200000.00",
+            "overdue_amount": "0",
+            "overdue_count": 0,
+        }
+
+
+@pytest.mark.asyncio
+async def test_project_summary_tells_the_erp_who_is_asking() -> None:
+    """Sem o usuario o ERP nao avalia permissao e devolve 403."""
+    company_id, project, _, repository = _build_summary_scenario()
+    erp_client = FakeReceivablesSummaryClient()
+    service = ConstructionProjectService(repository=repository, erp_client=erp_client)
+    user_id = uuid4()
+
+    summary = await service.build_project_summary(
+        company_id=company_id,
+        project_id=project.id,
+        user_id=user_id,
+    )
+
+    assert erp_client.calls[0]["user_id"] == user_id
+    assert summary["received_amount"] == Decimal("90000.00")
+    assert summary["open_amount"] == Decimal("200000.00")
+    assert summary["erp_unavailable_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_project_summary_survives_an_erp_refusal_without_leaking_the_url() -> None:
+    """Recusa do ERP nao derruba o resumo comercial nem vaza endereco interno."""
+    company_id, project, _, repository = _build_summary_scenario()
+    refusal = httpx.HTTPStatusError(
+        "Client error '403 Forbidden' for url 'http://onave-api:8000/v1/internal/construction/receivables-summary'",
+        request=httpx.Request("POST", "http://onave-api:8000/v1/internal/construction/receivables-summary"),
+        response=httpx.Response(403),
+    )
+    service = ConstructionProjectService(
+        repository=repository,
+        erp_client=FakeReceivablesSummaryClient(failure=refusal),
+    )
+
+    summary = await service.build_project_summary(
+        company_id=company_id,
+        project_id=project.id,
+        user_id=uuid4(),
+    )
+
+    assert summary["units_sold_count"] == 1
+    assert summary["units_sold_amount"] == Decimal("300000.00")
+    assert summary["discount_amount"] == Decimal("10000.00")
+    assert summary["received_amount"] == Decimal("0")
+    assert "permiss" in summary["erp_unavailable_reason"]
+    assert "http" not in summary["erp_unavailable_reason"]

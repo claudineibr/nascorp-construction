@@ -3,6 +3,8 @@ from decimal import Decimal
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
+import httpx
+
 from app.domain.constants import (
     BLOCK_STATUSES,
     ConstructionUnitPaymentSource,
@@ -74,6 +76,26 @@ from app.schemas.construction import (
     ConstructionUnitSaleConfirmRequest,
     ConstructionUnitUpdate,
 )
+
+
+def _describe_erp_failure(error: Exception) -> str:
+    """Traduz a falha do ERP para quem esta olhando o resumo da obra.
+
+    A mensagem vai para a tela, entao a URL interna e o status cru do httpx nao
+    ajudam: o que importa e se faltou permissao ou se o ERP esta fora.
+    """
+    if isinstance(error, httpx.HTTPStatusError):
+        status_code = error.response.status_code
+        if status_code in (401, 403):
+            return "Seu usuário não tem permissão para consultar o contas a receber no ERP."
+        if status_code == 404:
+            return "O ERP não encontrou os recebíveis das unidades desta obra."
+        return f"O ERP respondeu {status_code} ao consultar o contas a receber."
+
+    if isinstance(error, httpx.RequestError):
+        return "Não foi possível falar com o ERP agora."
+
+    return "Não foi possível consultar o financeiro no ERP agora."
 
 
 class ErpMeasurementClient(Protocol):
@@ -539,9 +561,11 @@ class ConstructionProjectService:
         actor_user_id: UUID | None = None,
     ) -> ConstructionUnit:
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
-        if unit.status == ConstructionUnitStatus.SOLD and unit.external_contract_id is not None:
-            return unit
 
+        # Unidade ja vendida cai no mesmo caminho de proposito: e assim que a
+        # venda e editada. Antes havia um atalho que devolvia a unidade intacta
+        # quando ja existia contrato, e o efeito era pior que recusar -- quem
+        # trocava o comprador recebia sucesso e nada mudava.
         if unit.status not in {
             ConstructionUnitStatus.AVAILABLE,
             ConstructionUnitStatus.RESERVED,
@@ -587,7 +611,10 @@ class ConstructionProjectService:
         receivable_amount = self._sum_installment_sources(payment_sources=payment_sources)
         if receivable_amount <= Decimal("0"):
             raise ConstructionInvalidValueError(
-                message="The sale needs at least one installment source (down payment or builder installments).",
+                message=(
+                    "The sale has nothing left to charge the buyer: entry plus bank sources and discount "
+                    "already cover the sale price."
+                ),
                 error_code="CONSTRUCTION_UNIT_WITHOUT_INSTALLMENT_SOURCE",
             )
 
@@ -1725,6 +1752,108 @@ class ConstructionProjectService:
                 )
             )
 
+    async def build_project_summary(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        user_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Numeros da obra em uma chamada, no formato do RESUMO do legado.
+
+        Comercial e custo saem do proprio modulo; recebido e a receber vem do
+        ERP, que e quem tem as baixas.
+        """
+        await self.get_project(company_id=company_id, project_id=project_id)
+        units = await self.repository.list_units(company_id=company_id, project_id=project_id)
+        measurements = await self.repository.list_measurements(company_id=company_id, project_id=project_id)
+        procurement_requests = await self.repository.list_procurement_requests(
+            company_id=company_id,
+            project_id=project_id,
+        )
+
+        sold_statuses = {ConstructionUnitStatus.SOLD, ConstructionUnitStatus.DELIVERED}
+        sold_units = [unit for unit in units if unit.status in sold_statuses]
+
+        units_total = sum((unit.sale_price or Decimal("0") for unit in units), Decimal("0"))
+        sold_total = sum((unit.sale_price or Decimal("0") for unit in sold_units), Decimal("0"))
+        discount_total = sum((unit.discount_amount or Decimal("0") for unit in sold_units), Decimal("0"))
+
+        # Custo: o que as requisicoes preveem gastar contra o que as medicoes
+        # aprovadas ja reconheceram. O legado compara com o orcamento da obra,
+        # que o ONAVE ainda nao tem.
+        planned_cost = sum(
+            (request.estimated_amount or Decimal("0") for request in procurement_requests),
+            Decimal("0"),
+        )
+        approved_statuses = {ConstructionMeasurementStatus.APPROVED, ConstructionMeasurementStatus.PAID}
+        approved_measurements = [
+            measurement for measurement in measurements if measurement.status in approved_statuses
+        ]
+        measured_cost = sum(
+            (
+                measurement.net_amount or measurement.measured_amount or Decimal("0")
+                for measurement in approved_measurements
+            ),
+            Decimal("0"),
+        )
+        paid_cost = sum(
+            (
+                measurement.net_amount or measurement.measured_amount or Decimal("0")
+                for measurement in measurements
+                if measurement.status == ConstructionMeasurementStatus.PAID
+            ),
+            Decimal("0"),
+        )
+
+        summary: dict[str, Any] = {
+            "units_count": len(units),
+            "units_sold_count": len(sold_units),
+            "units_reserved_count": sum(
+                1 for unit in units if unit.status == ConstructionUnitStatus.RESERVED
+            ),
+            "units_available_count": sum(
+                1 for unit in units if unit.status == ConstructionUnitStatus.AVAILABLE
+            ),
+            "units_total_amount": units_total,
+            "units_sold_amount": sold_total,
+            "discount_amount": discount_total,
+            "planned_cost_amount": planned_cost,
+            "measured_cost_amount": measured_cost,
+            "paid_cost_amount": paid_cost,
+            "cost_difference_amount": planned_cost - measured_cost,
+            "measurements_count": len(measurements),
+            "measurements_approved_count": len(approved_measurements),
+            "procurement_requests_count": len(procurement_requests),
+            "receivables_count": 0,
+            "receivable_total_amount": Decimal("0"),
+            "received_amount": Decimal("0"),
+            "open_amount": Decimal("0"),
+            "overdue_amount": Decimal("0"),
+            "overdue_count": 0,
+            "erp_unavailable_reason": None,
+        }
+
+        receivable_ids = [unit.external_receivable_id for unit in units if unit.external_receivable_id]
+        if receivable_ids and self.erp_client is not None:
+            try:
+                erp_summary = await self.erp_client.get_receivables_summary(
+                    company_id=company_id,
+                    user_id=user_id,
+                    receivable_ids=receivable_ids,
+                )
+                summary["receivables_count"] = erp_summary.get("receivables_count", 0)
+                summary["receivable_total_amount"] = Decimal(str(erp_summary.get("total_amount", "0")))
+                summary["received_amount"] = Decimal(str(erp_summary.get("paid_amount", "0")))
+                summary["open_amount"] = Decimal(str(erp_summary.get("open_amount", "0")))
+                summary["overdue_amount"] = Decimal(str(erp_summary.get("overdue_amount", "0")))
+                summary["overdue_count"] = erp_summary.get("overdue_count", 0)
+            except Exception as request_error:
+                # O resumo comercial e de custo continua util mesmo sem o ERP.
+                summary["erp_unavailable_reason"] = _describe_erp_failure(request_error)
+
+        return summary
+
     async def build_unit_payment_plan(self, *, company_id: UUID, unit_id: UUID) -> dict[str, Any]:
         composition = await self.build_unit_sale_composition(company_id=company_id, unit_id=unit_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
@@ -1757,6 +1886,66 @@ class ConstructionProjectService:
 
         composition["payment_plan"] = plan
         return composition
+
+    async def update_unit_installment(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        installment_number: int,
+        changes: dict[str, Any],
+        user_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Edita uma parcela do recebivel da unidade, no ERP.
+
+        A parcela vive no ERP -- aqui so validamos que a unidade realmente tem
+        recebivel e repassamos. Vencimento e valor nao entram: o ERP nao os
+        altera em caminho nenhum.
+        """
+        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+
+        if unit.external_receivable_id is None:
+            raise ConstructionDomainError(
+                message="A unidade ainda não tem recebível no ERP: confirme a venda antes de editar parcelas.",
+                status_code=409,
+            )
+
+        if self.erp_client is None:
+            raise ConstructionDomainError(
+                message="Integração com o ERP não está configurada.",
+                status_code=503,
+            )
+
+        if not changes:
+            raise ConstructionDomainError(
+                message="Nenhum campo para alterar na parcela.",
+                status_code=422,
+            )
+
+        try:
+            return await self.erp_client.update_unit_installment(
+                company_id=company_id,
+                user_id=user_id,
+                receivable_id=unit.external_receivable_id,
+                installment_number=installment_number,
+                changes=changes,
+            )
+        except httpx.HTTPStatusError as request_error:
+            # O ERP e quem conhece a regra do recibo emitido: a mensagem dele e
+            # mais util para o usuario do que um 502 generico.
+            detail = None
+            try:
+                body = request_error.response.json()
+                detail = body.get("message") or body.get("detail")
+            except Exception:
+                detail = None
+
+            raise ConstructionDomainError(
+                message=detail or "Não foi possível editar a parcela no ERP.",
+                status_code=request_error.response.status_code
+                if request_error.response.status_code < 500
+                else 502,
+            ) from request_error
 
     async def build_unit_sale_composition(self, *, company_id: UUID, unit_id: UUID) -> dict[str, Any]:
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
@@ -2239,24 +2428,30 @@ class ConstructionProjectService:
         sale_price: Decimal,
         discount_amount: Decimal,
     ) -> list[dict[str, Any]]:
-        if not request.payment_sources:
-            return [
-                {
-                    "source_type": ConstructionUnitPaymentSource.DIRECT_BUILDER,
-                    "amount": ConstructionProjectService._format_event_decimal(
-                        value=sale_price - discount_amount
-                    ),
-                    "due_date": ConstructionProjectService._format_event_date(value=request.first_due_date),
-                    "installments": request.installments,
-                    "generates_installments": True,
-                }
-            ]
+        """Monta a composicao da venda no modelo do legado.
 
-        total_amount = Decimal("0")
+        O usuario informa entrada, financiamento, FGTS e subsidio; o SALDO e o
+        que sobra do preco depois de abater essas fontes e o desconto, e e ele
+        que vira as parcelas do contas a receber:
+
+            SALDO = preco - desconto - entrada - financiamento - FGTS - subsidio
+
+        E a mesma conta do tooltip de Dwelling/Resume.cshtml:170. Nao existe uma
+        fonte "parcela construtora" para digitar: se ela pudesse ser informada,
+        o usuario teria de fazer essa subtracao de cabeca.
+        """
+        informed_total = Decimal("0")
         payment_sources: list[dict[str, Any]] = []
-        for payment_source in request.payment_sources:
+
+        for payment_source in request.payment_sources or []:
+            if payment_source.source_type in ConstructionUnitPaymentSource.COMPUTED_SOURCES:
+                raise ConstructionInvalidValueError(
+                    message="The sale balance is calculated from the other sources and cannot be informed.",
+                    error_code="CONSTRUCTION_UNIT_BALANCE_IS_COMPUTED",
+                )
+
             source_amount = payment_source.amount.quantize(Decimal("0.01"))
-            total_amount += source_amount
+            informed_total += source_amount
             generates_installments = (
                 payment_source.source_type in ConstructionUnitPaymentSource.INSTALLMENT_SOURCES
             )
@@ -2279,11 +2474,23 @@ class ConstructionProjectService:
                 }
             )
 
-        composed_total = (total_amount + discount_amount).quantize(Decimal("0.01"))
-        if composed_total != sale_price.quantize(Decimal("0.01")):
+        balance = (sale_price - discount_amount - informed_total).quantize(Decimal("0.01"))
+
+        if balance < Decimal("0"):
             raise ConstructionInvalidValueError(
-                message="Payment sources plus discount must match the unit sale price.",
+                message="Payment sources plus discount exceed the unit sale price.",
                 error_code="CONSTRUCTION_UNIT_PAYMENT_SOURCES_TOTAL_MISMATCH",
+            )
+
+        if balance > Decimal("0"):
+            payment_sources.append(
+                {
+                    "source_type": ConstructionUnitPaymentSource.BALANCE,
+                    "amount": ConstructionProjectService._format_event_decimal(value=balance),
+                    "due_date": ConstructionProjectService._format_event_date(value=request.first_due_date),
+                    "installments": request.installments,
+                    "generates_installments": True,
+                }
             )
 
         return payment_sources

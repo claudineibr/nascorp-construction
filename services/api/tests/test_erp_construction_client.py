@@ -118,3 +118,50 @@ async def test_erp_construction_client_delivers_unit_created_event(monkeypatch) 
     assert response_event.event_type == ErpEventType.COST_CENTER_CREATED
     assert response_event.aggregate_id == event.aggregate_id
     assert response_event.aggregate_type == ConstructionAggregateType.UNIT
+
+
+class FakeSummaryClient:
+    """Cliente HTTP que so guarda o que foi enviado no resumo."""
+
+    instances = []
+
+    def __init__(self, *, base_url: str, timeout: int) -> None:
+        self.base_url = base_url
+        self.timeout = timeout
+        self.posts = []
+        FakeSummaryClient.instances.append(self)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    async def post(self, endpoint: str, *, headers: dict[str, str], json: dict[str, object]) -> FakeResponse:
+        self.posts.append({"endpoint": endpoint, "headers": headers, "json": json})
+        return FakeResponse(payload={"receivables_count": 0})
+
+
+@pytest.mark.asyncio
+async def test_receivables_summary_identifies_the_user_to_the_erp(monkeypatch) -> None:
+    """O ERP avalia permissao de contas a receber pelo usuario, nao pela chave."""
+    monkeypatch.setattr(erp_construction.httpx, "AsyncClient", FakeSummaryClient)
+    monkeypatch.setattr(erp_construction.settings, "erp_api_url", "http://erp.local")
+    monkeypatch.setattr(erp_construction.settings, "erp_service_key", "service-key")
+    FakeSummaryClient.instances = []
+    company_id = uuid4()
+    user_id = uuid4()
+    receivable_id = uuid4()
+
+    await ErpConstructionClient().get_receivables_summary(
+        company_id=company_id,
+        user_id=user_id,
+        receivable_ids=[receivable_id],
+    )
+
+    sent_request = FakeSummaryClient.instances[0].posts[0]
+    assert sent_request["endpoint"] == "/v1/internal/construction/receivables-summary"
+    assert sent_request["headers"]["X-Service-Key"] == "service-key"
+    assert sent_request["headers"]["X-Company-ID"] == str(company_id)
+    assert sent_request["headers"]["X-User-ID"] == str(user_id)
+    assert sent_request["json"]["receivable_ids"] == [str(receivable_id)]

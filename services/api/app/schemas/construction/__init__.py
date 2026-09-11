@@ -44,6 +44,7 @@ from app.schemas.construction.project import (
     ConstructionUnitListResponse,
     ConstructionUnitReserveRequest,
     ConstructionUnitResponse,
+    ConstructionUnitInstallmentUpdateRequest,
     ConstructionUnitSaleConfirmRequest,
     ConstructionUnitUpdate,
 )
@@ -95,6 +96,7 @@ __all__ = [
     "ConstructionUnitListResponse",
     "ConstructionUnitReserveRequest",
     "ConstructionUnitResponse",
+    "ConstructionUnitInstallmentUpdateRequest",
     "ConstructionUnitSaleConfirmRequest",
     "ConstructionUnitUpdate",
 ]
