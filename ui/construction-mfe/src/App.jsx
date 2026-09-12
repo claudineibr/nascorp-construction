@@ -208,6 +208,24 @@ const formatCurrencyInput = (value = "") => {
   })
 }
 
+const parseCurrencyToNumber = (value) => {
+  const digits = stripNonDigits(value)
+  return digits ? Number.parseInt(digits, 10) / 100 : 0
+}
+
+// O saldo da parcela: com N recebimentos por parcela, `amount` deixou de ser o
+// que se baixa -- o que se baixa e o que ainda falta. Quem decide e o ERP, que
+// devolve o saldo pronto; a subtracao aqui so cobre a resposta antiga.
+const installmentOutstanding = (installment) => {
+  if (installment?.outstandingAmount != null) {
+    return Number(installment.outstandingAmount)
+  }
+
+  const amount = Number(installment?.amount) || 0
+  const received = Number(installment?.paidAmount) || 0
+  return Math.max(0, amount - received)
+}
+
 const formatCurrencyFromNumber = (value) => {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
     return ""
@@ -2114,7 +2132,9 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     setPayInstallmentForm({
       ...defaultPayInstallmentForm,
       paymentMethod: installment.paymentMethod || "PIX",
-      paidAmount: formatCurrencyFromNumber(installment.amount),
+      // A parcela aceita N recebimentos, entao o valor sugerido e o SALDO. Com o
+      // valor cheio numa parcela ja recebida em parte o ERP recusa a baixa.
+      paidAmount: formatCurrencyFromNumber(installmentOutstanding(installment)),
       paidAt: new Date().toISOString().slice(0, 10),
     })
   }
@@ -2148,7 +2168,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         receivableId: payingInstallment.receivableId ?? null,
         paymentData: payInstallmentForm,
       })
-      bridge?.feedback?.success?.("Parcela baixada.")
+      bridge?.feedback?.success?.(
+        installmentOutstanding(payingInstallment) > parseCurrencyToNumber(payInstallmentForm.paidAmount)
+          ? "Recebimento registrado. A parcela segue em aberto pelo saldo."
+          : "Parcela baixada.",
+      )
       setPayingInstallment(null)
       setPayInstallmentForm(defaultPayInstallmentForm)
       await loadUnitPaymentPlan(selectedUnit.id)
@@ -5074,7 +5098,14 @@ function PayInstallmentModal({ installment, form, onClose, onChange, onSubmit, l
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <p className={styles.metricHint}>
             Vencimento {formatDate(installment?.dueDate)} - valor da parcela{" "}
-            {formatMoney(installment?.amount)}. A baixa gera o recibo e o lançamento contábil no ERP.
+            {formatMoney(installment?.amount)}
+            {Number(installment?.paidAmount) > 0
+              ? `, ja recebido ${formatMoney(installment.paidAmount)}, saldo ${formatMoney(
+                  installmentOutstanding(installment),
+                )}`
+              : ""}
+            . Cada recebimento gera o seu lançamento contábil, e o recibo sai provisório enquanto
+            sobrar saldo.
           </p>
           <div className={styles.formGrid}>
             <label className={styles.filterControl}>
@@ -5100,7 +5131,7 @@ function PayInstallmentModal({ installment, form, onClose, onChange, onSubmit, l
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Valor pago</span>
+              <span>Valor a receber</span>
               <input
                 type="text"
                 inputMode="decimal"

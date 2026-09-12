@@ -832,6 +832,7 @@ const toReceivableInstallmentView = (installment) => ({
   dueDate: installment.due_date,
   amount: installment.amount ?? null,
   paidAmount: installment.paid_amount ?? null,
+  outstandingAmount: installment.outstanding_amount ?? null,
   paymentDate: installment.payment_date ?? null,
   status: installment.status,
   documentNumber: installment.document_number ?? "",
