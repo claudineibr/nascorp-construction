@@ -41,6 +41,11 @@ import {
   createConstructionProject,
   createConstructionSchedulePhase,
   createConstructionUnit,
+  createConstructionUnitAdjustment,
+  createConstructionUnitCommissions,
+  createConstructionUnitInstallments,
+  deleteConstructionUnitAdjustment,
+  deleteConstructionUnitInstallment,
   deleteConstructionBlock,
   deleteConstructionMeasurement,
   deleteConstructionMeasurementInspection,
@@ -50,6 +55,7 @@ import {
   deleteConstructionProject,
   deleteConstructionSchedulePhase,
   deleteConstructionUnit,
+  deleteConstructionUnitCommission,
   fetchConstructionAddressByZip,
   listConstructionBlocks,
   listConstructionDocumentationTypes,
@@ -65,10 +71,13 @@ import {
   listConstructionSchedulePhases,
   listConstructionServiceTemplates,
   listConstructionUnits,
+  listErpReceiptTemplates,
+  payConstructionUnitInstallment,
   rejectConstructionProcurementRequest,
   rejectConstructionMeasurement,
   releaseConstructionUnitReservation,
   reserveConstructionUnit,
+  settleConstructionUnitCommission,
   submitConstructionMeasurement,
   submitConstructionProcurementRequest,
   updateConstructionBlock,
@@ -169,6 +178,7 @@ const unitDetailTabs = [
   { id: "summary", label: "Resumo", icon: Home },
   { id: "measurements", label: "Medições", icon: HandCoins },
   { id: "installments", label: "Parcelas", icon: ShoppingCart },
+  { id: "commissions", label: "Sinal", icon: HandCoins },
   { id: "contract", label: "Contrato", icon: FileText },
 ]
 
@@ -237,6 +247,8 @@ const defaultProjectForm = {
   addressCity: "",
   addressState: "",
   addressZipCode: "",
+  receiptTemplateId: "",
+  commissionReceiptTemplateId: "",
 }
 
 const defaultBlockForm = {
@@ -282,6 +294,41 @@ const defaultReserveUnitForm = {
 const defaultEditInstallmentForm = {
   paymentMethod: "",
   documentNumber: "",
+  observation: "",
+}
+
+const defaultCommissionForm = {
+  beneficiaryPersonId: "",
+  amount: "",
+  dueDate: "",
+  installments: "1",
+  composesSalePrice: false,
+  documentNumber: "",
+  notes: "",
+}
+
+const defaultAdjustmentForm = {
+  amount: "",
+  installments: "1",
+  firstDueDate: "",
+  reason: "",
+}
+
+const defaultCreateInstallmentForm = {
+  receivableId: "",
+  startingNumber: "1",
+  count: "1",
+  firstDueDate: "",
+  amount: "",
+}
+
+const defaultPayInstallmentForm = {
+  paymentMethod: "PIX",
+  paidAmount: "",
+  paidAt: "",
+  interest: "",
+  fine: "",
+  discount: "",
   observation: "",
 }
 
@@ -497,6 +544,8 @@ function toFormProject(project) {
     addressCity: project.address?.city ?? "",
     addressState: project.address?.state ?? "",
     addressZipCode: maskZip(project.address?.zip_code ?? ""),
+    receiptTemplateId: project.receiptTemplateId ?? "",
+    commissionReceiptTemplateId: project.commissionReceiptTemplateId ?? "",
   }
 }
 
@@ -596,6 +645,8 @@ function toApiProject(formProject) {
       state: formProject.addressState,
       zip_code: normalizeZip(formProject.addressZipCode),
     },
+    receiptTemplateId: formProject.receiptTemplateId,
+    commissionReceiptTemplateId: formProject.commissionReceiptTemplateId,
   }
 }
 
@@ -982,6 +1033,23 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [editingInstallment, setEditingInstallment] = useState(null)
   const [editInstallmentForm, setEditInstallmentForm] = useState(defaultEditInstallmentForm)
   const [savingInstallment, setSavingInstallment] = useState(false)
+  const [isCommissionModalOpen, setIsCommissionModalOpen] = useState(false)
+  const [commissionForm, setCommissionForm] = useState(defaultCommissionForm)
+  const [submittingCommission, setSubmittingCommission] = useState(false)
+  const [isAdjustmentModalOpen, setIsAdjustmentModalOpen] = useState(false)
+  const [adjustmentForm, setAdjustmentForm] = useState(defaultAdjustmentForm)
+  const [submittingAdjustment, setSubmittingAdjustment] = useState(false)
+  const [receiptTemplates, setReceiptTemplates] = useState([])
+  const [receiptTemplatesError, setReceiptTemplatesError] = useState(null)
+  const [payingInstallment, setPayingInstallment] = useState(null)
+  const [payInstallmentForm, setPayInstallmentForm] = useState(defaultPayInstallmentForm)
+  const [submittingInstallmentPayment, setSubmittingInstallmentPayment] = useState(false)
+  const [isCreateInstallmentOpen, setIsCreateInstallmentOpen] = useState(false)
+  const [createInstallmentForm, setCreateInstallmentForm] = useState(defaultCreateInstallmentForm)
+  const [submittingCreateInstallment, setSubmittingCreateInstallment] = useState(false)
+  const [deletingAdjustment, setDeletingAdjustment] = useState(null)
+  const [deleteAdjustmentReason, setDeleteAdjustmentReason] = useState("")
+  const [submittingAdjustmentDelete, setSubmittingAdjustmentDelete] = useState(false)
 
   const [measurements, setMeasurements] = useState([])
   const [loadingMeasurements, setLoadingMeasurements] = useState(false)
@@ -1409,6 +1477,12 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }
 
   const openUnitDetail = (unit) => {
+    // A aba de sinal mostra o corretor pelo nome, e o nome vem daqui: sem as
+    // pessoas carregadas a tabela exibiria o UUID do favorecido.
+    if (!personSummaries.length) {
+      void loadPersonSummaries()
+    }
+
     setActiveUnitId(unit.id)
     setUnitDetailTab("summary")
     setUnitPaymentPlan(null)
@@ -1439,6 +1513,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       void loadPersonSummaries()
     }
 
+    void loadReceiptTemplates()
     setProjectModalMode("create")
     setEditingProjectId(null)
     setProjectForm(defaultProjectForm)
@@ -1451,6 +1526,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       void loadPersonSummaries()
     }
 
+    void loadReceiptTemplates()
     setProjectModalMode("edit")
     setEditingProjectId(project.id)
     setProjectForm(toFormProject(project))
@@ -1981,6 +2057,175 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
+  const handleOpenCreateInstallment = (series) => {
+    // O numero ja sugerido e o proximo livre da serie: o usuario pode trocar,
+    // e o ERP recusa se colidir com uma parcela que ja existe.
+    const rows = series?.installments ?? []
+    const nextNumber = rows.reduce((highest, row) => Math.max(highest, Number(row.installmentNumber || 0)), 0) + 1
+    setCreateInstallmentForm({
+      ...defaultCreateInstallmentForm,
+      receivableId: series?.receivableId ?? "",
+      startingNumber: String(nextNumber),
+      firstDueDate: new Date().toISOString().slice(0, 10),
+    })
+    setIsCreateInstallmentOpen(true)
+  }
+
+  const closeCreateInstallmentModal = () => {
+    if (submittingCreateInstallment) {
+      return
+    }
+
+    setIsCreateInstallmentOpen(false)
+    setCreateInstallmentForm(defaultCreateInstallmentForm)
+  }
+
+  const handleCreateInstallmentChange = (field, value) => {
+    setCreateInstallmentForm((current) => ({ ...current, [field]: value }))
+  }
+
+  const handleSubmitCreateInstallment = async (event) => {
+    event.preventDefault()
+
+    if (!selectedUnit) {
+      return
+    }
+
+    setSubmittingCreateInstallment(true)
+    try {
+      await createConstructionUnitInstallments({
+        bridge,
+        unitId: selectedUnit.id,
+        installmentData: createInstallmentForm,
+      })
+      bridge?.feedback?.success?.("Parcela incluída.")
+      setIsCreateInstallmentOpen(false)
+      setCreateInstallmentForm(defaultCreateInstallmentForm)
+      await loadUnitPaymentPlan(selectedUnit.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível incluir a parcela.")
+    } finally {
+      setSubmittingCreateInstallment(false)
+    }
+  }
+
+  const handleOpenPayInstallment = (installment) => {
+    setPayingInstallment(installment)
+    setPayInstallmentForm({
+      ...defaultPayInstallmentForm,
+      paymentMethod: installment.paymentMethod || "PIX",
+      paidAmount: formatCurrencyFromNumber(installment.amount),
+      paidAt: new Date().toISOString().slice(0, 10),
+    })
+  }
+
+  const closePayInstallmentModal = () => {
+    if (submittingInstallmentPayment) {
+      return
+    }
+
+    setPayingInstallment(null)
+    setPayInstallmentForm(defaultPayInstallmentForm)
+  }
+
+  const handlePayInstallmentChange = (field, value) => {
+    setPayInstallmentForm((current) => ({ ...current, [field]: value }))
+  }
+
+  const handleSubmitPayInstallment = async (event) => {
+    event.preventDefault()
+
+    if (!payingInstallment || !selectedUnit) {
+      return
+    }
+
+    setSubmittingInstallmentPayment(true)
+    try {
+      await payConstructionUnitInstallment({
+        bridge,
+        unitId: selectedUnit.id,
+        installmentNumber: payingInstallment.installmentNumber,
+        receivableId: payingInstallment.receivableId ?? null,
+        paymentData: payInstallmentForm,
+      })
+      bridge?.feedback?.success?.("Parcela baixada.")
+      setPayingInstallment(null)
+      setPayInstallmentForm(defaultPayInstallmentForm)
+      await loadUnitPaymentPlan(selectedUnit.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível baixar a parcela.")
+    } finally {
+      setSubmittingInstallmentPayment(false)
+    }
+  }
+
+  const handleDeleteInstallment = async (installment) => {
+    if (!selectedUnit) {
+      return
+    }
+
+    const label = installment.receivableId ? "do aditivo" : "da venda"
+    const confirmed = window.confirm(
+      `Deseja excluir a parcela ${installment.installmentNumber} ${label}? A parcela é cancelada e os lançamentos contábeis dela são desfeitos.`,
+    )
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      await deleteConstructionUnitInstallment({
+        bridge,
+        unitId: selectedUnit.id,
+        installmentNumber: installment.installmentNumber,
+        receivableId: installment.receivableId ?? null,
+      })
+      bridge?.feedback?.success?.("Parcela excluída.")
+      await loadUnitPaymentPlan(selectedUnit.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível excluir a parcela.")
+    }
+  }
+
+  const handleOpenDeleteAdjustment = (adjustment) => {
+    setDeletingAdjustment(adjustment)
+    setDeleteAdjustmentReason("")
+  }
+
+  const closeDeleteAdjustmentModal = () => {
+    if (submittingAdjustmentDelete) {
+      return
+    }
+
+    setDeletingAdjustment(null)
+    setDeleteAdjustmentReason("")
+  }
+
+  const handleSubmitDeleteAdjustment = async (event) => {
+    event.preventDefault()
+
+    if (!deletingAdjustment || !selectedUnit) {
+      return
+    }
+
+    setSubmittingAdjustmentDelete(true)
+    try {
+      await deleteConstructionUnitAdjustment({
+        bridge,
+        unitId: selectedUnit.id,
+        receivableId: deletingAdjustment.receivableId,
+        reason: deleteAdjustmentReason.trim(),
+      })
+      bridge?.feedback?.success?.("Aditivo excluído.")
+      setDeletingAdjustment(null)
+      setDeleteAdjustmentReason("")
+      await loadUnitPaymentPlan(selectedUnit.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível excluir o aditivo.")
+    } finally {
+      setSubmittingAdjustmentDelete(false)
+    }
+  }
+
   const handleOpenEditInstallment = (installment) => {
     setEditingInstallment(installment)
     setEditInstallmentForm({
@@ -2040,6 +2285,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         bridge,
         unitId: selectedUnit.id,
         installmentNumber: editingInstallment.installmentNumber,
+        receivableId: editingInstallment.receivableId ?? null,
         changes,
       })
       bridge?.feedback?.success?.("Parcela atualizada.")
@@ -2050,6 +2296,136 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível editar a parcela.")
     } finally {
       setSavingInstallment(false)
+    }
+  }
+
+  const openCommissionModal = () => {
+    if (!personSummaries.length) {
+      void loadPersonSummaries()
+    }
+
+    setCommissionForm(defaultCommissionForm)
+    setIsCommissionModalOpen(true)
+  }
+
+  const closeCommissionModal = () => {
+    if (submittingCommission) {
+      return
+    }
+
+    setIsCommissionModalOpen(false)
+    setCommissionForm(defaultCommissionForm)
+  }
+
+  const handleCommissionFormChange = (field, value) => {
+    setCommissionForm((current) => ({ ...current, [field]: value }))
+  }
+
+  const handleSubmitCommission = async (event) => {
+    event.preventDefault()
+
+    if (!selectedUnit) {
+      return
+    }
+
+    if (!commissionForm.beneficiaryPersonId) {
+      bridge?.feedback?.warning?.("Informe o corretor favorecido do sinal.")
+      return
+    }
+
+    setSubmittingCommission(true)
+    try {
+      await createConstructionUnitCommissions({
+        bridge,
+        unitId: selectedUnit.id,
+        commissionData: commissionForm,
+      })
+      bridge?.feedback?.success?.("Sinal lançado.")
+      setIsCommissionModalOpen(false)
+      setCommissionForm(defaultCommissionForm)
+      await loadUnitPaymentPlan(selectedUnit.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível lançar o sinal.")
+    } finally {
+      setSubmittingCommission(false)
+    }
+  }
+
+  const handleSettleCommission = async (commission) => {
+    if (!selectedUnit) {
+      return
+    }
+
+    // Estornar devolve o sinal para em aberto: e o caminho para corrigir um
+    // sinal que compoe a venda e foi baixado por engano.
+    const paymentDate = commission.paymentDate ? null : new Date().toISOString().slice(0, 10)
+    try {
+      await settleConstructionUnitCommission({
+        bridge,
+        commissionId: commission.id,
+        paymentDate,
+      })
+      bridge?.feedback?.success?.(paymentDate ? "Sinal baixado." : "Baixa do sinal estornada.")
+      await loadUnitPaymentPlan(selectedUnit.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível baixar o sinal.")
+    }
+  }
+
+  const handleDeleteCommission = async (commission) => {
+    if (!selectedUnit) {
+      return
+    }
+
+    try {
+      await deleteConstructionUnitCommission({ bridge, commissionId: commission.id })
+      bridge?.feedback?.success?.("Sinal removido.")
+      await loadUnitPaymentPlan(selectedUnit.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover o sinal.")
+    }
+  }
+
+  const openAdjustmentModal = () => {
+    setAdjustmentForm(defaultAdjustmentForm)
+    setIsAdjustmentModalOpen(true)
+  }
+
+  const closeAdjustmentModal = () => {
+    if (submittingAdjustment) {
+      return
+    }
+
+    setIsAdjustmentModalOpen(false)
+    setAdjustmentForm(defaultAdjustmentForm)
+  }
+
+  const handleAdjustmentFormChange = (field, value) => {
+    setAdjustmentForm((current) => ({ ...current, [field]: value }))
+  }
+
+  const handleSubmitAdjustment = async (event) => {
+    event.preventDefault()
+
+    if (!selectedUnit) {
+      return
+    }
+
+    setSubmittingAdjustment(true)
+    try {
+      await createConstructionUnitAdjustment({
+        bridge,
+        unitId: selectedUnit.id,
+        adjustmentData: adjustmentForm,
+      })
+      bridge?.feedback?.success?.("Aditivo lançado no contas a receber.")
+      setIsAdjustmentModalOpen(false)
+      setAdjustmentForm(defaultAdjustmentForm)
+      await loadUnitPaymentPlan(selectedUnit.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível lançar o aditivo.")
+    } finally {
+      setSubmittingAdjustment(false)
     }
   }
 
@@ -2160,6 +2536,19 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     },
     [bridge]
   )
+
+  const loadReceiptTemplates = useCallback(async () => {
+    setReceiptTemplatesError(null)
+    try {
+      const result = await listErpReceiptTemplates({ bridge })
+      setReceiptTemplates(result.items)
+    } catch (requestError) {
+      setReceiptTemplates([])
+      setReceiptTemplatesError(
+        requestError?.message ?? "Não foi possível carregar os modelos de recibo do ERP.",
+      )
+    }
+  }, [bridge])
 
   const loadServiceTemplates = useCallback(async () => {
     setLoadingServiceTemplates(true)
@@ -3018,6 +3407,15 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                     paymentPlanError={unitPaymentPlanError}
                     onRetryPaymentPlan={loadUnitPaymentPlan}
                     onEditInstallment={handleOpenEditInstallment}
+                    onPayInstallment={handleOpenPayInstallment}
+                    onDeleteInstallment={handleDeleteInstallment}
+                    onDeleteAdjustment={handleOpenDeleteAdjustment}
+                    onCreateInstallment={handleOpenCreateInstallment}
+                    people={personSummaries}
+                    onCreateCommission={openCommissionModal}
+                    onSettleCommission={handleSettleCommission}
+                    onDeleteCommission={handleDeleteCommission}
+                    onCreateAdjustment={openAdjustmentModal}
                   />
                 ) : (
                   <UnitsList
@@ -3147,6 +3545,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           zipLookup={projectZipLookup}
           onClose={closeProjectModal}
           onChange={handleProjectFieldChange}
+          receiptTemplates={receiptTemplates}
+          receiptTemplatesError={receiptTemplatesError}
           onZipLookup={handleProjectZipLookup}
           onSubmit={handleProjectSubmit}
           loading={submittingProject}
@@ -3199,6 +3599,64 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           documentationTypes={documentationTypes}
           loadingDocumentationTypes={loadingDocumentationTypes}
           loading={submittingSale}
+        />
+      ) : null}
+
+      {isCreateInstallmentOpen ? (
+        <CreateInstallmentModal
+          unit={selectedUnit}
+          form={createInstallmentForm}
+          onClose={closeCreateInstallmentModal}
+          onChange={handleCreateInstallmentChange}
+          onSubmit={handleSubmitCreateInstallment}
+          loading={submittingCreateInstallment}
+        />
+      ) : null}
+
+      {payingInstallment ? (
+        <PayInstallmentModal
+          installment={payingInstallment}
+          form={payInstallmentForm}
+          onClose={closePayInstallmentModal}
+          onChange={handlePayInstallmentChange}
+          onSubmit={handleSubmitPayInstallment}
+          loading={submittingInstallmentPayment}
+        />
+      ) : null}
+
+      {deletingAdjustment ? (
+        <DeleteAdjustmentModal
+          adjustment={deletingAdjustment}
+          reason={deleteAdjustmentReason}
+          onClose={closeDeleteAdjustmentModal}
+          onChange={setDeleteAdjustmentReason}
+          onSubmit={handleSubmitDeleteAdjustment}
+          loading={submittingAdjustmentDelete}
+        />
+      ) : null}
+
+      {isCommissionModalOpen ? (
+        <CommissionModal
+          unit={selectedUnit}
+          commissionForm={commissionForm}
+          people={personSummaries}
+          loadingPeople={loadingPersonSummaries}
+          personLookupError={personLookupError}
+          onClose={closeCommissionModal}
+          onChange={handleCommissionFormChange}
+          onSubmit={handleSubmitCommission}
+          loading={submittingCommission}
+        />
+      ) : null}
+
+      {isAdjustmentModalOpen ? (
+        <AdjustmentModal
+          unit={selectedUnit}
+          adjustmentForm={adjustmentForm}
+          onClose={closeAdjustmentModal}
+          onChange={handleAdjustmentFormChange}
+          onSubmit={handleSubmitAdjustment}
+          loading={submittingAdjustment}
         />
       ) : null}
 
@@ -3964,6 +4422,15 @@ function UnitDetailPanel({
   paymentPlanError,
   onRetryPaymentPlan,
   onEditInstallment,
+  onPayInstallment,
+  onDeleteInstallment,
+  onDeleteAdjustment,
+  onCreateInstallment,
+  people,
+  onCreateCommission,
+  onSettleCommission,
+  onDeleteCommission,
+  onCreateAdjustment,
 }) {
   const blockNameById = useMemo(() => {
     return Object.fromEntries(blocks.map((block) => [block.id, `${block.code} - ${block.name}`]))
@@ -4111,6 +4578,25 @@ function UnitDetailPanel({
           onRetry={() => onRetryPaymentPlan(unit.id)}
           onSale={onSale}
           onEditInstallment={onEditInstallment}
+          onPayInstallment={onPayInstallment}
+          onDeleteInstallment={onDeleteInstallment}
+          onCreateAdjustment={onCreateAdjustment}
+          onDeleteAdjustment={onDeleteAdjustment}
+          onCreateInstallment={onCreateInstallment}
+        />
+      ) : null}
+
+      {activeTab === "commissions" ? (
+        <UnitCommissionsPanel
+          unit={unit}
+          plan={paymentPlan}
+          people={people}
+          loading={loadingPaymentPlan}
+          error={paymentPlanError}
+          onRetry={() => onRetryPaymentPlan(unit.id)}
+          onCreate={onCreateCommission}
+          onSettle={onSettleCommission}
+          onDelete={onDeleteCommission}
         />
       ) : null}
 
@@ -4127,7 +4613,20 @@ function UnitDetailPanel({
   )
 }
 
-function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale, onEditInstallment }) {
+function UnitInstallmentsPanel({
+  unit,
+  plan,
+  loading,
+  error,
+  onRetry,
+  onSale,
+  onEditInstallment,
+  onPayInstallment,
+  onDeleteInstallment,
+  onCreateAdjustment,
+  onDeleteAdjustment,
+  onCreateInstallment,
+}) {
   const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
   const canEditSale = unit.status === "sold" && Boolean(unit.analyticCostCenterId)
 
@@ -4159,6 +4658,26 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale, on
   const settlementSources = sources.filter((source) => !source.generatesInstallments)
   const documentations = composition.documentations ?? []
   const installments = paymentPlan.installments ?? []
+  const adjustments = paymentPlan.adjustments ?? []
+  const canCreateAdjustment = Boolean(paymentPlan.contractId)
+  const rows = [
+    ...installments.map((installment) => ({
+      ...installment,
+      typeLabel: "Parcela",
+      typeHint: "",
+      receivableId: null,
+      adjustment: null,
+    })),
+    ...adjustments.flatMap((adjustment, adjustmentIndex) =>
+      adjustment.installments.map((installment) => ({
+        ...installment,
+        typeLabel: adjustments.length > 1 ? `Aditivo ${adjustmentIndex + 1}` : "Aditivo",
+        typeHint: adjustment.reason || "",
+        receivableId: adjustment.receivableId,
+        adjustment,
+      })),
+    ),
+  ].sort((first, second) => String(first.dueDate).localeCompare(String(second.dueDate)))
 
   return (
     <div className={styles.integrationPanel}>
@@ -4188,6 +4707,15 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale, on
           <h3>Cobrado em parcelas</h3>
           <p className={styles.metricValue}>{formatMoney(composition.installmentTotal)}</p>
           <p className={styles.metricHint}>{installments.length} parcela(s) no contas a receber</p>
+        </article>
+        <article className={styles.integrationCard}>
+          <h3>Sinal do corretor</h3>
+          <p className={styles.metricValue}>{formatMoney(composition.commissionTotal)}</p>
+          <p className={styles.metricHint}>
+            {Number(composition.commissionOffset ?? 0) > 0
+              ? `${formatMoney(composition.commissionOffset)} já abatido do saldo`
+              : "pago direto ao corretor, fora do contas a receber"}
+          </p>
         </article>
         <article className={styles.integrationCard}>
           <h3>Em aberto</h3>
@@ -4278,17 +4806,46 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale, on
       </div>
 
       <div className={styles.card}>
-        <strong>Parcelas no contas a receber</strong>
+        <div className={styles.tableHeaderRow}>
+          <div>
+            <strong>Contas a receber da unidade</strong>
+            <p className={styles.metricHint}>
+              As duas séries do legado na mesma lista: <strong>Parcela</strong> é o parcelamento da
+              venda e <strong>Aditivo</strong> é a cobrança extra de quando o financiamento sai abaixo
+              do previsto. Cada tipo tem a sua própria numeração, e o aditivo é um documento separado
+              no contas a receber - editar a venda não mexe nele.
+            </p>
+          </div>
+          <div className={styles.tableHeaderActions}>
+            {paymentPlan.receivableId ? (
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                onClick={() => onCreateInstallment({ receivableId: null, installments })}
+              >
+                <Plus size={16} />
+                Incluir parcela
+              </button>
+            ) : null}
+            {canCreateAdjustment ? (
+              <button type="button" className={styles.secondaryButton} onClick={onCreateAdjustment}>
+                <Plus size={16} />
+                Lançar aditivo
+              </button>
+            ) : null}
+          </div>
+        </div>
         {paymentPlan.erpUnavailableReason ? (
           <p className={styles.metricHint}>
             Não foi possível consultar o ERP agora: {paymentPlan.erpUnavailableReason}
           </p>
         ) : null}
-        {installments.length ? (
+        {rows.length ? (
           <div className={styles.tableWrapper}>
             <table className={styles.table}>
               <thead>
                 <tr>
+                  <th>Tipo</th>
                   <th>Parcela</th>
                   <th>Origem</th>
                   <th>Vencimento</th>
@@ -4299,37 +4856,43 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale, on
                 </tr>
               </thead>
               <tbody>
-                {installments.map((installment) => (
-                  <tr key={installment.id}>
+                {rows.map((row) => (
+                  <tr key={row.id}>
+                    <td>
+                      <strong>{row.typeLabel}</strong>
+                      {row.typeHint ? (
+                        <div className={styles.rowSecondaryText}>{row.typeHint}</div>
+                      ) : null}
+                    </td>
                     <td>
                       <strong>
-                        {installment.installmentNumber}/{installment.totalInstallments}
+                        {row.installmentNumber}/{row.totalInstallments}
                       </strong>
                     </td>
-                    <td>{installment.documentNumber || "-"}</td>
-                    <td>{formatDate(installment.dueDate)}</td>
-                    <td>{formatMoney(installment.amount)}</td>
+                    <td>{row.documentNumber || "-"}</td>
+                    <td>{formatDate(row.dueDate)}</td>
+                    <td>{formatMoney(row.amount)}</td>
                     <td>
-                      {installment.paymentDate ? formatDate(installment.paymentDate) : "-"}
+                      {row.paymentDate ? formatDate(row.paymentDate) : "-"}
                       <div className={styles.rowSecondaryText}>
-                        {installment.paidAmount ? formatMoney(installment.paidAmount) : ""}
+                        {row.paidAmount ? formatMoney(row.paidAmount) : ""}
                       </div>
                     </td>
                     <td>
-                      <span className={`${styles.statusPill} ${styles[`status${installment.status}`] || ""}`}>
-                        {receivableInstallmentStatusLabel[installment.status] ?? installment.status}
+                      <span className={`${styles.statusPill} ${styles[`status${row.status}`] || ""}`}>
+                        {receivableInstallmentStatusLabel[row.status] ?? row.status}
                       </span>
                     </td>
                     <td className={styles.actionsCell}>
                       <RowActionsMenu
-                        actions={[
-                          {
-                            key: "edit",
-                            label: "Editar parcela",
-                            icon: Pencil,
-                            onSelect: () => onEditInstallment(installment),
-                          },
-                        ]}
+                        actions={buildInstallmentActions({
+                          installment: row,
+                          adjustment: row.adjustment,
+                          onEditInstallment,
+                          onPayInstallment,
+                          onDeleteInstallment,
+                          onDeleteAdjustment,
+                        })}
                       />
                     </td>
                   </tr>
@@ -4345,6 +4908,637 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale, on
           </p>
         )}
       </div>
+    </div>
+  )
+}
+
+function buildInstallmentActions({
+  installment,
+  adjustment,
+  onEditInstallment,
+  onPayInstallment,
+  onDeleteInstallment,
+  onDeleteAdjustment,
+}) {
+  const isPaid = installment.status === "PAID"
+  const actions = [
+    {
+      key: "edit",
+      label: "Editar parcela",
+      icon: Pencil,
+      onSelect: () => onEditInstallment(installment),
+    },
+  ]
+
+  // Parcela paga não reabre por aqui: o estorno é do Contas a Receber, e a
+  // exclusão de uma parcela já recebida apagaria o recebimento junto.
+  if (!isPaid) {
+    actions.push({
+      key: "pay",
+      label: "Marcar como pago",
+      icon: CheckCircle,
+      onSelect: () => onPayInstallment(installment),
+    })
+    actions.push({
+      key: "delete",
+      label: "Excluir parcela",
+      icon: Trash2,
+      danger: true,
+      onSelect: () => onDeleteInstallment(installment),
+    })
+  }
+
+  // O aditivo é um documento inteiro: excluí-lo cancela todas as parcelas dele
+  // de uma vez, e é o que se faz quando o aditivo não deveria existir.
+  if (adjustment) {
+    actions.push({
+      key: "delete-adjustment",
+      label: "Excluir aditivo inteiro",
+      icon: Trash2,
+      danger: true,
+      onSelect: () => onDeleteAdjustment(adjustment),
+    })
+  }
+
+  return actions
+}
+
+function CreateInstallmentModal({ unit, form, onClose, onChange, onSubmit, loading }) {
+  const isAdjustment = Boolean(form.receivableId)
+
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Incluir parcela"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>Incluir parcela{unit ? ` - unidade ${unit.code}` : ""}</h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <p className={styles.metricHint}>
+            A numeração segue a partir do número informado, e um número que já existe na série é
+            recusado. O valor sai do saldo do título que ainda não virou parcela: para cobrar a mais do
+            comprador, o caminho é <strong>lançar aditivo</strong>.
+          </p>
+          {!isAdjustment ? (
+            <p className={styles.metricHint}>
+              Esta parcela entra na série da <strong>venda</strong> - editar a venda depois refaz as
+              parcelas em aberto e ela é reescrita junto. O que precisa sobreviver a isso é aditivo.
+            </p>
+          ) : null}
+          <div className={styles.formGrid}>
+            <label className={styles.filterControl}>
+              <span>Número da parcela*</span>
+              <input
+                type="number"
+                min="1"
+                value={form.startingNumber}
+                onChange={(event) => onChange("startingNumber", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Repetir</span>
+              <input
+                type="number"
+                min="1"
+                max="60"
+                value={form.count}
+                onChange={(event) => onChange("count", event.target.value)}
+              />
+              <small className={styles.fieldHint}>
+                gera uma parcela por mês, numerando a partir do número informado
+              </small>
+            </label>
+            <label className={styles.filterControl}>
+              <span>Primeiro vencimento*</span>
+              <input
+                type="date"
+                value={form.firstDueDate}
+                onChange={(event) => onChange("firstDueDate", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Valor de cada parcela</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={form.amount}
+                onChange={(event) => onChange("amount", formatCurrencyInput(event.target.value))}
+                placeholder="0,00"
+              />
+              <small className={styles.fieldHint}>em branco divide o saldo que falta parcelar</small>
+            </label>
+          </div>
+
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading}>
+              {loading ? "Incluindo..." : "Incluir parcela"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+function PayInstallmentModal({ installment, form, onClose, onChange, onSubmit, loading }) {
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Marcar parcela como paga"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>
+            Baixar parcela {installment?.installmentNumber}/{installment?.totalInstallments}
+          </h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <p className={styles.metricHint}>
+            Vencimento {formatDate(installment?.dueDate)} - valor da parcela{" "}
+            {formatMoney(installment?.amount)}. A baixa gera o recibo e o lançamento contábil no ERP.
+          </p>
+          <div className={styles.formGrid}>
+            <label className={styles.filterControl}>
+              <span>Forma de pagamento*</span>
+              <select
+                value={form.paymentMethod}
+                onChange={(event) => onChange("paymentMethod", event.target.value)}
+                required
+              >
+                {installmentPaymentMethodOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={styles.filterControl}>
+              <span>Data do pagamento</span>
+              <input
+                type="date"
+                value={form.paidAt}
+                onChange={(event) => onChange("paidAt", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Valor pago</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={form.paidAmount}
+                onChange={(event) => onChange("paidAmount", formatCurrencyInput(event.target.value))}
+                placeholder="0,00"
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Juros</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={form.interest}
+                onChange={(event) => onChange("interest", formatCurrencyInput(event.target.value))}
+                placeholder="0,00"
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Multa</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={form.fine}
+                onChange={(event) => onChange("fine", formatCurrencyInput(event.target.value))}
+                placeholder="0,00"
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Desconto</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={form.discount}
+                onChange={(event) => onChange("discount", formatCurrencyInput(event.target.value))}
+                placeholder="0,00"
+              />
+            </label>
+            <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
+              <span>Observação</span>
+              <textarea
+                className={styles.textarea}
+                value={form.observation}
+                onChange={(event) => onChange("observation", event.target.value)}
+              />
+            </label>
+          </div>
+
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading}>
+              {loading ? "Baixando..." : "Marcar como pago"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+function DeleteAdjustmentModal({ adjustment, reason, onClose, onChange, onSubmit, loading }) {
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Excluir aditivo"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>Excluir aditivo</h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <p className={styles.metricHint}>
+            {adjustment?.description || "Aditivo da venda"} - {formatMoney(adjustment?.totalAmount)} em{" "}
+            {adjustment?.installments?.length ?? 0} parcela(s). Todas as parcelas são canceladas e os
+            lançamentos contábeis desfeitos. A justificativa fica na trilha de auditoria do ERP.
+          </p>
+          <label className={styles.filterControl}>
+            <span>Justificativa*</span>
+            <textarea
+              className={styles.textarea}
+              value={reason}
+              onChange={(event) => onChange(event.target.value)}
+              required
+            />
+          </label>
+
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading || !reason.trim()}>
+              {loading ? "Excluindo..." : "Excluir aditivo"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+function UnitCommissionsPanel({
+  unit,
+  plan,
+  people,
+  loading,
+  error,
+  onRetry,
+  onCreate,
+  onSettle,
+  onDelete,
+}) {
+  if (loading) {
+    return (
+      <div className={styles.empty} aria-busy="true">
+        <RefreshCw className={styles.spinIcon} size={16} />
+        Carregando sinal da unidade...
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className={styles.empty}>
+        <span>{error}</span>
+        <button type="button" className={styles.secondaryButton} onClick={onRetry}>
+          <RefreshCw size={16} />
+          Tentar novamente
+        </button>
+      </div>
+    )
+  }
+
+  const composition = plan ?? {}
+  const commissions = composition.commissions ?? []
+  const personNameById = Object.fromEntries((people ?? []).map((person) => [person.id, person.name]))
+
+  return (
+    <div className={styles.integrationPanel}>
+      <div className={styles.integrationGrid}>
+        <article className={styles.integrationCard}>
+          <h3>Sinal lançado</h3>
+          <p className={styles.metricValue}>{formatMoney(composition.commissionTotal)}</p>
+          <p className={styles.metricHint}>{commissions.length} lançamento(s)</p>
+        </article>
+        <article className={styles.integrationCard}>
+          <h3>Sinal pago ao corretor</h3>
+          <p className={styles.metricValue}>{formatMoney(composition.commissionPaidTotal)}</p>
+          <p className={styles.metricHint}>o dinheiro não passa pelo caixa da construtora</p>
+        </article>
+        <article className={styles.integrationCard}>
+          <h3>Abatido do saldo</h3>
+          <p className={styles.metricValue}>{formatMoney(composition.commissionOffset)}</p>
+          <p className={styles.metricHint}>só o sinal pago que compõe a venda</p>
+        </article>
+      </div>
+
+      <div className={styles.card}>
+        <div className={styles.tableHeaderRow}>
+          <div>
+            <strong>Sinal (comissão do corretor)</strong>
+            <p className={styles.metricHint}>
+              O sinal é pago pelo comprador direto ao corretor, então não vira conta a receber da
+              construtora. Marcado como <strong>&quot;compõe o valor da venda&quot;</strong>, ele faz parte do
+              preço: quando pago, reduz o saldo que o comprador ainda deve. Desmarcado, é cobrança por
+              fora e o saldo não muda.
+            </p>
+          </div>
+          <button type="button" className={styles.primaryButton} onClick={onCreate}>
+            <Plus size={16} />
+            Incluir sinal
+          </button>
+        </div>
+        {commissions.length ? (
+          <div className={styles.tableWrapper}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>Parcela</th>
+                  <th>Favorecido</th>
+                  <th>Vencimento</th>
+                  <th>Valor</th>
+                  <th>Composição</th>
+                  <th>Pagamento</th>
+                  <th aria-label="Ações" />
+                </tr>
+              </thead>
+              <tbody>
+                {commissions.map((commission) => (
+                  <tr key={commission.id}>
+                    <td>
+                      <strong>{commission.sequenceNumber}</strong>
+                    </td>
+                    <td>
+                      {personNameById[commission.beneficiaryPersonId] ?? commission.beneficiaryPersonId}
+                      {commission.documentNumber ? (
+                        <div className={styles.rowSecondaryText}>{commission.documentNumber}</div>
+                      ) : null}
+                    </td>
+                    <td>{formatDate(commission.dueDate)}</td>
+                    <td>{formatMoney(commission.amount)}</td>
+                    <td>{commission.composesSalePrice ? "Compõe a venda" : "Cobrado por fora"}</td>
+                    <td>
+                      {commission.paymentDate ? formatDate(commission.paymentDate) : "Em aberto"}
+                    </td>
+                    <td className={styles.actionsCell}>
+                      <RowActionsMenu
+                        actions={[
+                          {
+                            key: "settle",
+                            label: commission.paymentDate ? "Estornar baixa" : "Baixar sinal",
+                            icon: CheckCircle,
+                            onSelect: () => onSettle(commission),
+                          },
+                          {
+                            key: "delete",
+                            label: "Excluir",
+                            icon: Trash2,
+                            danger: true,
+                            onSelect: () => onDelete(commission),
+                          },
+                        ]}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className={styles.metricHint}>
+            {unit.status === "sold"
+              ? "Nenhum sinal lançado para esta unidade."
+              : "Nenhum sinal lançado - o sinal pode ser lançado antes mesmo da venda."}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function CommissionModal({
+  unit,
+  commissionForm,
+  people,
+  loadingPeople,
+  personLookupError,
+  onClose,
+  onChange,
+  onSubmit,
+  loading,
+}) {
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Incluir sinal"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>Incluir sinal{unit ? ` - unidade ${unit.code}` : ""}</h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <div className={styles.formGrid}>
+            <PersonIdInput
+              label="Corretor favorecido*"
+              value={commissionForm.beneficiaryPersonId}
+              onChange={(value) => onChange("beneficiaryPersonId", value)}
+              people={people}
+              required
+              loading={loadingPeople}
+              error={personLookupError}
+              emptyLabel="Selecione o corretor"
+            />
+            <label className={styles.filterControl}>
+              <span>Valor da parcela*</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={commissionForm.amount}
+                onChange={(event) => onChange("amount", formatCurrencyInput(event.target.value))}
+                placeholder="0,00"
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Primeiro vencimento*</span>
+              <input
+                type="date"
+                value={commissionForm.dueDate}
+                onChange={(event) => onChange("dueDate", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Repetir</span>
+              <input
+                type="number"
+                min="1"
+                max="120"
+                value={commissionForm.installments}
+                onChange={(event) => onChange("installments", event.target.value)}
+              />
+              <small className={styles.fieldHint}>gera uma parcela por mês a partir do vencimento</small>
+            </label>
+            <label className={styles.filterControl}>
+              <span>Documento</span>
+              <input
+                type="text"
+                value={commissionForm.documentNumber}
+                onChange={(event) => onChange("documentNumber", event.target.value)}
+              />
+            </label>
+            <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
+              <span>Observação</span>
+              <textarea
+                className={styles.textarea}
+                value={commissionForm.notes}
+                onChange={(event) => onChange("notes", event.target.value)}
+              />
+            </label>
+            <label className={`${styles.checkboxControl} ${styles.spanTwoColumns}`}>
+              <input
+                type="checkbox"
+                checked={commissionForm.composesSalePrice}
+                onChange={(event) => onChange("composesSalePrice", event.target.checked)}
+              />
+              <span>
+                Compõe o valor da venda
+                <small className={styles.fieldHint}>
+                  Marcado, o sinal faz parte do preço: quando pago, reduz o saldo que o comprador deve à
+                  construtora. Desmarcado, é cobrança por fora e o saldo não muda.
+                </small>
+              </span>
+            </label>
+          </div>
+
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading}>
+              {loading ? "Lançando..." : "Lançar sinal"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+function AdjustmentModal({ unit, adjustmentForm, onClose, onChange, onSubmit, loading }) {
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Lançar aditivo"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>Lançar aditivo{unit ? ` - unidade ${unit.code}` : ""}</h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <p className={styles.metricHint}>
+            O aditivo é a cobrança extra de quando o financiamento sai abaixo do previsto. Ele vira um
+            documento próprio no contas a receber, com numeração separada - editar a venda depois não
+            mexe nele.
+          </p>
+          <div className={styles.formGrid}>
+            <label className={styles.filterControl}>
+              <span>Valor total*</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={adjustmentForm.amount}
+                onChange={(event) => onChange("amount", formatCurrencyInput(event.target.value))}
+                placeholder="0,00"
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Parcelas*</span>
+              <input
+                type="number"
+                min="1"
+                max="120"
+                value={adjustmentForm.installments}
+                onChange={(event) => onChange("installments", event.target.value)}
+                required
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>Primeiro vencimento*</span>
+              <input
+                type="date"
+                value={adjustmentForm.firstDueDate}
+                onChange={(event) => onChange("firstDueDate", event.target.value)}
+                required
+              />
+            </label>
+            <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
+              <span>Motivo</span>
+              <input
+                type="text"
+                value={adjustmentForm.reason}
+                onChange={(event) => onChange("reason", event.target.value)}
+                placeholder="Financiamento aprovado abaixo do previsto"
+              />
+            </label>
+          </div>
+
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading}>
+              {loading ? "Lançando..." : "Lançar aditivo"}
+            </button>
+          </footer>
+        </form>
+      </section>
     </div>
   )
 }
@@ -5640,6 +6834,8 @@ function ProjectModal({
   loadingPeople,
   personLookupError,
   zipLookup,
+  receiptTemplates,
+  receiptTemplatesError,
   onClose,
   onChange,
   onZipLookup,
@@ -5756,6 +6952,46 @@ function ProjectModal({
               />
             </label>
           </div>
+
+          <h4 className={styles.sectionTitle}>Modelos de recibo</h4>
+          <p className={styles.metricHint}>
+            Escolhidos na obra e herdados pelas unidades. O modelo da venda vale para as parcelas e para
+            os aditivos, que dividem o mesmo contrato; o do sinal é copiado no lançamento, então trocar o
+            modelo aqui depois não reescreve o que já foi lançado.
+          </p>
+          <div className={styles.formGrid}>
+            <label className={styles.filterControl}>
+              <span>Recibo de parcela e aditivo</span>
+              <select
+                value={projectForm.receiptTemplateId}
+                onChange={(event) => onChange("receiptTemplateId", event.target.value)}
+              >
+                <option value="">Layout padrão do ERP</option>
+                {(receiptTemplates ?? []).map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={styles.filterControl}>
+              <span>Recibo do sinal</span>
+              <select
+                value={projectForm.commissionReceiptTemplateId}
+                onChange={(event) => onChange("commissionReceiptTemplateId", event.target.value)}
+              >
+                <option value="">Layout padrão do ERP</option>
+                {(receiptTemplates ?? []).map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {receiptTemplatesError ? (
+            <small className={styles.formError}>{receiptTemplatesError}</small>
+          ) : null}
 
           <h4 className={styles.sectionTitle}>Endereço</h4>
           <div className={styles.formGrid}>

@@ -141,6 +141,113 @@ class FakeProjectService:
             updated_at=now,
         )
 
+    def __init__(self) -> None:
+        self.paid_installments: list[dict] = []
+        self.deleted_installments: list[dict] = []
+        self.deleted_adjustments: list[dict] = []
+
+    async def pay_unit_installment(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        installment_number: int,
+        request,
+        receivable_id=None,
+        user_id=None,
+    ) -> dict:
+        self.paid_installments.append(
+            {
+                "unit_id": unit_id,
+                "installment_number": installment_number,
+                "receivable_id": receivable_id,
+                "payment_method": request.payment_method,
+            }
+        )
+        return {"id": str(uuid4()), "installment_number": installment_number, "status": "PAID"}
+
+    async def delete_unit_installment(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        installment_number: int,
+        receivable_id=None,
+        user_id=None,
+    ) -> None:
+        self.deleted_installments.append(
+            {
+                "unit_id": unit_id,
+                "installment_number": installment_number,
+                "receivable_id": receivable_id,
+            }
+        )
+
+    async def delete_unit_adjustment(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        receivable_id: UUID,
+        reason: str,
+        user_id=None,
+    ) -> None:
+        self.deleted_adjustments.append(
+            {"unit_id": unit_id, "receivable_id": receivable_id, "reason": reason}
+        )
+
+    def _fake_commission(self, *, company_id: UUID, commission_id: UUID, unit_id: UUID, payment_date=None):
+        now = datetime.now(tz=UTC)
+        return SimpleNamespace(
+            id=commission_id,
+            company_id=company_id,
+            unit_id=unit_id,
+            beneficiary_person_id=uuid4(),
+            sequence_number=1,
+            amount="5000.00",
+            due_date="2026-06-10",
+            payment_date=payment_date,
+            composes_sale_price=False,
+            receipt_template_id=None,
+            document_number=None,
+            notes=None,
+            created_at=now,
+            updated_at=now,
+        )
+
+    async def list_unit_commissions(self, *, company_id: UUID, unit_id: UUID):
+        return [self._fake_commission(company_id=company_id, commission_id=uuid4(), unit_id=unit_id)]
+
+    async def create_unit_commissions(self, *, company_id: UUID, unit_id: UUID, request):
+        return [
+            self._fake_commission(company_id=company_id, commission_id=uuid4(), unit_id=unit_id)
+            for _ in range(request.installments)
+        ]
+
+    async def update_unit_commission(self, *, company_id: UUID, commission_id: UUID, request):
+        return self._fake_commission(company_id=company_id, commission_id=commission_id, unit_id=uuid4())
+
+    async def settle_unit_commission(self, *, company_id: UUID, commission_id: UUID, payment_date):
+        return self._fake_commission(
+            company_id=company_id,
+            commission_id=commission_id,
+            unit_id=uuid4(),
+            payment_date=payment_date,
+        )
+
+    async def delete_unit_commission(self, *, company_id: UUID, commission_id: UUID) -> None:
+        return None
+
+    async def create_unit_adjustment(self, *, company_id: UUID, unit_id: UUID, request, user_id=None):
+        return {
+            "construction_unit_id": str(unit_id),
+            "contract_id": str(uuid4()),
+            "receivable_id": str(uuid4()),
+            "receivable_status": "OPEN",
+            "total_amount": str(request.amount),
+            "installments": request.installments,
+        }
+
     async def list_documentation_types(self, *, company_id: UUID, only_active=True, search=None):
         now = datetime.now(tz=UTC)
         return [
@@ -224,11 +331,12 @@ class FakeProjectService:
         )
 
 
-def create_test_client(*, permissions: dict[str, int]) -> TestClient:
+def create_test_client(*, permissions: dict[str, int], service: "FakeProjectService | None" = None) -> TestClient:
     security_module.settings.jwt_secret_key = TEST_SECRET
     app = create_app()
+    project_service = service or FakeProjectService()
     app.dependency_overrides[get_permission_client] = lambda: FakePermissionClient(permissions=permissions)
-    app.dependency_overrides[get_project_service] = lambda: FakeProjectService()
+    app.dependency_overrides[get_project_service] = lambda: project_service
     return TestClient(app)
 
 
@@ -564,3 +672,226 @@ def test_update_documentation_type_accepts_units_update_permission() -> None:
     payload = response.json()
     assert payload["id"] == str(documentation_type_id)
     assert payload["is_active"] is False
+
+
+def test_list_unit_commissions_requires_units_read_permission() -> None:
+    client = create_test_client(permissions={ConstructionFeature.PROJECTS: PermissionAction.FULL})
+
+    response = client.get(
+        f"/v1/construction/units/{uuid4()}/commissions",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_list_unit_commissions_accepts_units_read_permission() -> None:
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.READ})
+
+    response = client.get(
+        f"/v1/construction/units/{uuid4()}/commissions",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+
+
+def test_create_unit_commissions_requires_units_create_permission() -> None:
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.READ})
+
+    response = client.post(
+        f"/v1/construction/units/{uuid4()}/commissions",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={
+            "beneficiary_person_id": str(uuid4()),
+            "amount": "5000.00",
+            "due_date": "2026-06-10",
+            "installments": 2,
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_settle_unit_commission_requires_units_update_permission() -> None:
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.READ})
+
+    response = client.post(
+        f"/v1/construction/commissions/{uuid4()}/settle",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={"payment_date": "2026-06-12"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_settle_unit_commission_accepts_units_update_permission() -> None:
+    commission_id = uuid4()
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.UPDATE})
+
+    response = client.post(
+        f"/v1/construction/commissions/{commission_id}/settle",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={"payment_date": "2026-06-12"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == str(commission_id)
+    assert payload["payment_date"] == "2026-06-12"
+
+
+def test_create_unit_adjustment_requires_units_create_permission() -> None:
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.READ})
+
+    response = client.post(
+        f"/v1/construction/units/{uuid4()}/adjustments",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={"amount": "8000.00", "installments": 2, "first_due_date": "2026-06-10"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_create_unit_adjustment_accepts_units_create_permission() -> None:
+    unit_id = uuid4()
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.CREATE})
+
+    response = client.post(
+        f"/v1/construction/units/{unit_id}/adjustments",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={"amount": "8000.00", "installments": 2, "first_due_date": "2026-06-10"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["construction_unit_id"] == str(unit_id)
+
+
+def test_pay_unit_installment_requires_units_update_permission() -> None:
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.READ})
+
+    response = client.post(
+        f"/v1/construction/units/{uuid4()}/installments/1/pay",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={"payment_method": "PIX"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_pay_unit_installment_carries_the_adjustment_receivable() -> None:
+    """Sem o ``receivable_id`` da série, o ERP baixaria a parcela homônima da
+    venda em vez da do aditivo."""
+    unit_id = uuid4()
+    receivable_id = uuid4()
+    service = FakeProjectService()
+    client = create_test_client(
+        permissions={ConstructionFeature.UNITS: PermissionAction.UPDATE},
+        service=service,
+    )
+
+    response = client.post(
+        f"/v1/construction/units/{unit_id}/installments/2/pay",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={"receivable_id": str(receivable_id), "payment_method": "PIX", "paid_amount": "4000.00"},
+    )
+
+    assert response.status_code == 200
+    assert service.paid_installments[0]["receivable_id"] == receivable_id
+    assert service.paid_installments[0]["installment_number"] == 2
+
+
+def test_delete_unit_installment_requires_units_delete_permission() -> None:
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.UPDATE})
+
+    response = client.delete(
+        f"/v1/construction/units/{uuid4()}/installments/1",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_delete_unit_installment_accepts_units_delete_permission() -> None:
+    receivable_id = uuid4()
+    service = FakeProjectService()
+    client = create_test_client(
+        permissions={ConstructionFeature.UNITS: PermissionAction.DELETE},
+        service=service,
+    )
+
+    response = client.delete(
+        f"/v1/construction/units/{uuid4()}/installments/3?receivable_id={receivable_id}",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+    )
+
+    assert response.status_code == 204
+    assert service.deleted_installments[0]["receivable_id"] == receivable_id
+
+
+def test_delete_unit_adjustment_requires_a_reason() -> None:
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.DELETE})
+
+    response = client.delete(
+        f"/v1/construction/units/{uuid4()}/adjustments/{uuid4()}",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_delete_unit_adjustment_accepts_units_delete_permission() -> None:
+    receivable_id = uuid4()
+    service = FakeProjectService()
+    client = create_test_client(
+        permissions={ConstructionFeature.UNITS: PermissionAction.DELETE},
+        service=service,
+    )
+
+    response = client.delete(
+        f"/v1/construction/units/{uuid4()}/adjustments/{receivable_id}?reason=lancado%20por%20engano",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+    )
+
+    assert response.status_code == 204
+    assert service.deleted_adjustments[0]["reason"] == "lancado por engano"

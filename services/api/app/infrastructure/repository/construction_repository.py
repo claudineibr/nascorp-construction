@@ -16,6 +16,7 @@ from app.infrastructure.database.models import (
     ConstructionDocumentationType,
     ConstructionMeasurement,
     ConstructionServiceTemplate,
+    ConstructionUnitCommission,
     ConstructionUnitDocumentation,
     ConstructionUnitPaymentSource,
     ConstructionMeasurementItem,
@@ -435,6 +436,49 @@ class ConstructionRepository:
             .order_by(ConstructionUnitDocumentation.sequence_number)
         )
         return list(result.scalars().all())
+
+    async def list_unit_commissions(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+    ) -> list[ConstructionUnitCommission]:
+        result = await self.session.execute(
+            select(ConstructionUnitCommission)
+            .where(
+                ConstructionUnitCommission.company_id == company_id,
+                ConstructionUnitCommission.unit_id == unit_id,
+            )
+            .order_by(ConstructionUnitCommission.sequence_number)
+        )
+        return list(result.scalars().all())
+
+    async def get_unit_commission(
+        self,
+        *,
+        company_id: UUID,
+        commission_id: UUID,
+    ) -> ConstructionUnitCommission | None:
+        result = await self.session.execute(
+            select(ConstructionUnitCommission).where(
+                ConstructionUnitCommission.company_id == company_id,
+                ConstructionUnitCommission.id == commission_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_next_commission_sequence(self, *, company_id: UUID, unit_id: UUID) -> int:
+        result = await self.session.execute(
+            select(func.max(ConstructionUnitCommission.sequence_number)).where(
+                ConstructionUnitCommission.company_id == company_id,
+                ConstructionUnitCommission.unit_id == unit_id,
+            )
+        )
+        current_sequence = result.scalar_one_or_none()
+        if current_sequence is None:
+            return 1
+
+        return int(current_sequence) + 1
 
     async def get_service_template(
         self,

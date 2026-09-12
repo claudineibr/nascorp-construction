@@ -18,6 +18,8 @@ const toProjectView = (project) => ({
   actualEndDate: project.actual_end_date ?? null,
   syntheticCostCenterId: project.synthetic_cost_center_id ?? null,
   analyticCostCenterId: project.analytic_cost_center_id ?? null,
+  receiptTemplateId: project.receipt_template_id ?? null,
+  commissionReceiptTemplateId: project.commission_receipt_template_id ?? null,
   createdAt: project.created_at ?? null,
   updatedAt: project.updated_at ?? null,
 })
@@ -268,6 +270,8 @@ const toProjectPayload = (projectData = {}) => ({
   start_date: toNullableString(projectData.startDate),
   expected_end_date: toNullableString(projectData.expectedEndDate),
   actual_end_date: toNullableString(projectData.actualEndDate),
+  receipt_template_id: toNullableString(projectData.receiptTemplateId),
+  commission_receipt_template_id: toNullableString(projectData.commissionReceiptTemplateId),
 })
 
 const toBlockPayload = (blockData = {}) => ({
@@ -702,13 +706,92 @@ export async function confirmConstructionUnitSale({ bridge, unitId, saleData }) 
   return toUnitView(payload)
 }
 
-export async function updateConstructionUnitInstallment({ bridge, unitId, installmentNumber, changes }) {
+export async function updateConstructionUnitInstallment({
+  bridge,
+  unitId,
+  installmentNumber,
+  changes,
+  receivableId = null,
+}) {
   return requestJson({
     bridge,
     path: `/v1/construction/units/${unitId}/installments/${installmentNumber}`,
     method: "PATCH",
-    body: changes,
+    body: { ...changes, receivable_id: toNullableString(receivableId) },
   })
+}
+
+export async function createConstructionUnitInstallments({ bridge, unitId, installmentData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/installments`,
+    method: "POST",
+    body: {
+      receivable_id: toNullableString(installmentData.receivableId),
+      starting_number: Number(installmentData.startingNumber || 1),
+      count: Number(installmentData.count || 1),
+      first_due_date: toNullableString(installmentData.firstDueDate),
+      amount: toNullableNumber(installmentData.amount),
+    },
+  })
+
+  return (payload ?? []).map(toReceivableInstallmentView)
+}
+
+export async function payConstructionUnitInstallment({
+  bridge,
+  unitId,
+  installmentNumber,
+  paymentData,
+  receivableId = null,
+}) {
+  return requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/installments/${installmentNumber}/pay`,
+    method: "POST",
+    body: {
+      receivable_id: toNullableString(receivableId),
+      payment_method: paymentData.paymentMethod,
+      paid_amount: toNullableNumber(paymentData.paidAmount),
+      paid_at: paymentData.paidAt ? `${paymentData.paidAt}T12:00:00` : null,
+      interest: toNullableNumber(paymentData.interest),
+      fine: toNullableNumber(paymentData.fine),
+      discount: toNullableNumber(paymentData.discount),
+      observation: toNullableString(paymentData.observation),
+    },
+  })
+}
+
+export async function deleteConstructionUnitInstallment({
+  bridge,
+  unitId,
+  installmentNumber,
+  receivableId = null,
+}) {
+  const params = new URLSearchParams()
+  if (receivableId) {
+    params.set("receivable_id", String(receivableId))
+  }
+
+  const query = params.toString()
+  await requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/installments/${installmentNumber}${query ? `?${query}` : ""}`,
+    method: "DELETE",
+  })
+
+  return true
+}
+
+export async function deleteConstructionUnitAdjustment({ bridge, unitId, receivableId, reason }) {
+  const params = new URLSearchParams({ reason })
+  await requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/adjustments/${receivableId}?${params.toString()}`,
+    method: "DELETE",
+  })
+
+  return true
 }
 
 export async function getConstructionProjectSummary({ bridge, projectId }) {
@@ -742,6 +825,20 @@ export async function getConstructionProjectSummary({ bridge, projectId }) {
   }
 }
 
+const toReceivableInstallmentView = (installment) => ({
+  id: installment.id,
+  installmentNumber: installment.installment_number,
+  totalInstallments: installment.total_installments,
+  dueDate: installment.due_date,
+  amount: installment.amount ?? null,
+  paidAmount: installment.paid_amount ?? null,
+  paymentDate: installment.payment_date ?? null,
+  status: installment.status,
+  documentNumber: installment.document_number ?? "",
+  observation: installment.observation ?? "",
+  paymentMethod: installment.payment_method ?? "",
+})
+
 export async function getConstructionUnitPaymentPlan({ bridge, unitId }) {
   const payload = await requestJson({
     bridge,
@@ -759,6 +856,10 @@ export async function getConstructionUnitPaymentPlan({ bridge, unitId }) {
     totalCharged: payload.total_charged ?? null,
     installmentTotal: payload.installment_total ?? null,
     settlementTotal: payload.settlement_total ?? null,
+    commissionTotal: payload.commission_total ?? null,
+    commissionPaidTotal: payload.commission_paid_total ?? null,
+    commissionOffset: payload.commission_offset ?? null,
+    commissions: (payload.commissions ?? []).map(toUnitCommissionView),
     externalReceivableId: payload.external_receivable_id ?? null,
     externalReceivableStatus: payload.external_receivable_status ?? null,
     documentations: (payload.documentations ?? []).map((documentation) => ({
@@ -790,20 +891,148 @@ export async function getConstructionUnitPaymentPlan({ bridge, unitId }) {
       openTotal: plan.open_total ?? 0,
       overdueCount: plan.overdue_count ?? 0,
       erpUnavailableReason: plan.erp_unavailable_reason ?? "",
-      installments: (plan.installments ?? []).map((installment) => ({
-        id: installment.id,
-        installmentNumber: installment.installment_number,
-        totalInstallments: installment.total_installments,
-        dueDate: installment.due_date,
-        amount: installment.amount ?? null,
-        paidAmount: installment.paid_amount ?? null,
-        paymentDate: installment.payment_date ?? null,
-        status: installment.status,
-        documentNumber: installment.document_number ?? "",
-        observation: installment.observation ?? "",
-        paymentMethod: installment.payment_method ?? "",
+      installments: (plan.installments ?? []).map(toReceivableInstallmentView),
+      adjustments: (plan.adjustments ?? []).map((adjustment) => ({
+        receivableId: adjustment.receivable_id,
+        receivableStatus: adjustment.receivable_status ?? "",
+        description: adjustment.description ?? "",
+        totalAmount: adjustment.total_amount ?? null,
+        reason: adjustment.reason ?? "",
+        installmentsTotal: adjustment.installments_total ?? 0,
+        paidTotal: adjustment.paid_total ?? 0,
+        openTotal: adjustment.open_total ?? 0,
+        overdueCount: adjustment.overdue_count ?? 0,
+        installments: (adjustment.installments ?? []).map(toReceivableInstallmentView),
       })),
     },
+  }
+}
+
+const toUnitCommissionView = (commission) => ({
+  id: commission.id,
+  unitId: commission.unit_id,
+  beneficiaryPersonId: commission.beneficiary_person_id,
+  sequenceNumber: commission.sequence_number,
+  amount: commission.amount ?? null,
+  dueDate: commission.due_date ?? null,
+  paymentDate: commission.payment_date ?? null,
+  composesSalePrice: Boolean(commission.composes_sale_price),
+  receiptTemplateId: commission.receipt_template_id ?? null,
+  documentNumber: commission.document_number ?? "",
+  notes: commission.notes ?? "",
+})
+
+export async function listConstructionUnitCommissions({ bridge, unitId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/commissions`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toUnitCommissionView),
+    total: payload.total ?? 0,
+  }
+}
+
+export async function createConstructionUnitCommissions({ bridge, unitId, commissionData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/commissions`,
+    method: "POST",
+    body: {
+      beneficiary_person_id: commissionData.beneficiaryPersonId,
+      amount: toNullableNumber(commissionData.amount),
+      due_date: toNullableString(commissionData.dueDate),
+      installments: Number(commissionData.installments || 1),
+      composes_sale_price: Boolean(commissionData.composesSalePrice),
+      document_number: toNullableString(commissionData.documentNumber),
+      notes: toNullableString(commissionData.notes),
+    },
+  })
+
+  return {
+    items: (payload.items ?? []).map(toUnitCommissionView),
+    total: payload.total ?? 0,
+  }
+}
+
+export async function updateConstructionUnitCommission({ bridge, commissionId, commissionData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/commissions/${commissionId}`,
+    method: "PATCH",
+    body: {
+      beneficiary_person_id: toNullableString(commissionData.beneficiaryPersonId),
+      amount: toNullableNumber(commissionData.amount),
+      due_date: toNullableString(commissionData.dueDate),
+      composes_sale_price: commissionData.composesSalePrice,
+      document_number: toNullableString(commissionData.documentNumber),
+      notes: toNullableString(commissionData.notes),
+    },
+  })
+
+  return toUnitCommissionView(payload)
+}
+
+export async function settleConstructionUnitCommission({ bridge, commissionId, paymentDate }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/commissions/${commissionId}/settle`,
+    method: "POST",
+    body: { payment_date: toNullableString(paymentDate) },
+  })
+
+  return toUnitCommissionView(payload)
+}
+
+export async function deleteConstructionUnitCommission({ bridge, commissionId }) {
+  await requestJson({
+    bridge,
+    path: `/v1/construction/commissions/${commissionId}`,
+    method: "DELETE",
+  })
+
+  return true
+}
+
+export async function createConstructionUnitAdjustment({ bridge, unitId, adjustmentData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/adjustments`,
+    method: "POST",
+    body: {
+      amount: toNullableNumber(adjustmentData.amount),
+      installments: Number(adjustmentData.installments || 1),
+      first_due_date: toNullableString(adjustmentData.firstDueDate),
+      reason: toNullableString(adjustmentData.reason),
+    },
+  })
+
+  return {
+    constructionUnitId: payload.construction_unit_id ?? null,
+    contractId: payload.contract_id ?? null,
+    receivableId: payload.receivable_id ?? null,
+    receivableStatus: payload.receivable_status ?? "",
+    totalAmount: payload.total_amount ?? null,
+    installments: payload.installments ?? 1,
+  }
+}
+
+export async function listErpReceiptTemplates({ bridge }) {
+  const erpApiBaseUrl = bridge?.erpApiBaseUrl || import.meta.env.VITE_ERP_API_URL || DEFAULT_ERP_API_URL
+  const payload = await requestJson({
+    bridge,
+    path: "/v1/receipt-templates/?page=1&page_size=200",
+    baseUrl: erpApiBaseUrl,
+  })
+
+  return {
+    items: (payload.items ?? []).map((template) => ({
+      id: template.id,
+      name: template.name,
+      isActive: template.is_active ?? true,
+    })),
+    total: payload.total ?? 0,
   }
 }
 

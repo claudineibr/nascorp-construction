@@ -1,3 +1,4 @@
+import calendar
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, ClassVar, Protocol
@@ -45,6 +46,7 @@ from app.infrastructure.database.models import (
     ConstructionMeasurementItem,
     ConstructionServiceTemplate,
     ConstructionServiceTemplateItem,
+    ConstructionUnitCommission as ConstructionUnitCommissionModel,
     ConstructionUnitDocumentation as ConstructionUnitDocumentationModel,
     ConstructionUnitPaymentSource as ConstructionUnitPaymentSourceModel,
     ConstructionMeasurementItemInspection,
@@ -77,7 +79,12 @@ from app.schemas.construction import (
     ConstructionSchedulePhaseCreate,
     ConstructionServiceTemplateUpdate,
     ConstructionSchedulePhaseUpdate,
+    ConstructionUnitAdjustmentCreate,
+    ConstructionUnitCommissionCreate,
+    ConstructionUnitCommissionUpdate,
     ConstructionUnitCreate,
+    ConstructionUnitInstallmentCreateRequest,
+    ConstructionUnitInstallmentPaymentRequest,
     ConstructionUnitReserveRequest,
     ConstructionUnitSaleConfirmRequest,
     ConstructionUnitUpdate,
@@ -123,6 +130,22 @@ class ErpMeasurementClient(Protocol):
         raise NotImplementedError
 
     async def create_procurement_demand_from_request(self, *, event: EventEnvelope) -> EventEnvelope:
+        raise NotImplementedError
+
+    async def create_unit_adjustment(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        construction_unit_id: UUID,
+        contract_id: UUID,
+        amount: Decimal,
+        installments: int,
+        first_due_date: date,
+        reason: str | None,
+        cost_center_id: UUID | None,
+        unit_code: str,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     async def deliver_event(self, *, event: EventEnvelope) -> EventEnvelope:
@@ -617,11 +640,15 @@ class ConstructionProjectService:
         net_sale_price = sale_price - discount_amount
         documentations = await self._resolve_sale_documentations(unit=unit, request=request)
         documentation_total = self._sum_documentations(documentations=documentations)
+        commission_offset = self._sum_composing_paid_commissions(
+            await self.repository.list_unit_commissions(company_id=company_id, unit_id=unit_id)
+        )
         payment_sources = self._build_sale_payment_sources(
             request=request,
             sale_price=sale_price,
             discount_amount=discount_amount,
             documentation_total=documentation_total,
+            commission_offset=commission_offset,
         )
         receivable_amount = self._sum_installment_sources(payment_sources=payment_sources)
         if receivable_amount <= Decimal("0"):
@@ -647,6 +674,7 @@ class ConstructionProjectService:
         unit.sold_at = datetime.now(tz=UTC)
         unit.reservation_expires_at = None
 
+        project = await self.repository.get_project(company_id=company_id, project_id=unit.project_id)
         sale_event = self._build_unit_sold_event(
             unit=unit,
             analytic_cost_center_id=unit.analytic_cost_center_id,
@@ -657,6 +685,8 @@ class ConstructionProjectService:
             documentation_total=documentation_total,
             net_sale_price=net_sale_price,
             receivable_amount=receivable_amount,
+            commission_offset=commission_offset,
+            receipt_template_id=project.receipt_template_id if project is not None else None,
             actor_user_id=actor_user_id,
         )
         dispatch_result = await self._dispatch_integration_event(
@@ -2186,27 +2216,21 @@ class ConstructionProjectService:
         unit_id: UUID,
         installment_number: int,
         changes: dict[str, Any],
+        receivable_id: UUID | None = None,
         user_id: UUID | None = None,
     ) -> dict[str, Any]:
-        """Edita uma parcela do recebivel da unidade, no ERP.
+        """Edita uma parcela da unidade, no ERP.
 
         A parcela vive no ERP -- aqui so validamos que a unidade realmente tem
-        recebivel e repassamos. Vencimento e valor nao entram: o ERP nao os
-        altera em caminho nenhum.
+        recebivel e repassamos. ``receivable_id`` ausente significa a serie da
+        venda; preenchido, aponta a parcela de um aditivo. Vencimento e valor
+        nao entram: o ERP nao os altera em caminho nenhum.
         """
-        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
-
-        if unit.external_receivable_id is None:
-            raise ConstructionDomainError(
-                message="A unidade ainda não tem recebível no ERP: confirme a venda antes de editar parcelas.",
-                status_code=409,
-            )
-
-        if self.erp_client is None:
-            raise ConstructionDomainError(
-                message="Integração com o ERP não está configurada.",
-                status_code=503,
-            )
+        unit, target_receivable_id = await self._resolve_unit_receivable_target(
+            company_id=company_id,
+            unit_id=unit_id,
+            receivable_id=receivable_id,
+        )
 
         if not changes:
             raise ConstructionDomainError(
@@ -2218,7 +2242,8 @@ class ConstructionProjectService:
             return await self.erp_client.update_unit_installment(
                 company_id=company_id,
                 user_id=user_id,
-                receivable_id=unit.external_receivable_id,
+                construction_unit_id=unit.id,
+                receivable_id=target_receivable_id,
                 installment_number=installment_number,
                 changes=changes,
             )
@@ -2228,6 +2253,356 @@ class ConstructionProjectService:
                 fallback_message="Não foi possível editar a parcela no ERP.",
             ) from request_error
 
+    async def create_unit_installments(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        request: ConstructionUnitInstallmentCreateRequest,
+        user_id: UUID | None = None,
+    ) -> list[dict[str, Any]]:
+        """Acrescenta parcelas a uma serie da unidade.
+
+        Vale um aviso que a tela repete: parcela nova na serie da VENDA e
+        refeita na proxima edicao da venda, porque ``replace_open_installments``
+        reescreve o que esta em aberto. Cobranca que precisa sobreviver a isso
+        e aditivo, que tem documento proprio.
+        """
+        unit, target_receivable_id = await self._resolve_unit_receivable_target(
+            company_id=company_id,
+            unit_id=unit_id,
+            receivable_id=request.receivable_id,
+        )
+        try:
+            return await self.erp_client.create_unit_installments(
+                company_id=company_id,
+                user_id=user_id,
+                construction_unit_id=unit.id,
+                receivable_id=target_receivable_id,
+                starting_number=request.starting_number,
+                count=request.count,
+                first_due_date=request.first_due_date,
+                amount=request.amount.quantize(Decimal("0.01")) if request.amount is not None else None,
+            )
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message="Não foi possível incluir a parcela no ERP.",
+            ) from request_error
+
+    async def pay_unit_installment(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        installment_number: int,
+        request: ConstructionUnitInstallmentPaymentRequest,
+        receivable_id: UUID | None = None,
+        user_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Baixa uma parcela da unidade -- a da venda ou a de um aditivo.
+
+        ``receivable_id`` ausente significa a série da venda. O ERP é quem
+        guarda a parcela, gera o recibo e o lançamento contábil; aqui só
+        provamos que a unidade tem recebível e repassamos.
+        """
+        unit, target_receivable_id = await self._resolve_unit_receivable_target(
+            company_id=company_id,
+            unit_id=unit_id,
+            receivable_id=receivable_id,
+        )
+        try:
+            return await self.erp_client.pay_unit_installment(
+                company_id=company_id,
+                user_id=user_id,
+                construction_unit_id=unit.id,
+                receivable_id=target_receivable_id,
+                installment_number=installment_number,
+                payment=request.model_dump(exclude_unset=True, exclude_none=True, mode="json"),
+            )
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message="Não foi possível baixar a parcela no ERP.",
+            ) from request_error
+
+    async def delete_unit_installment(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        installment_number: int,
+        receivable_id: UUID | None = None,
+        user_id: UUID | None = None,
+    ) -> None:
+        unit, target_receivable_id = await self._resolve_unit_receivable_target(
+            company_id=company_id,
+            unit_id=unit_id,
+            receivable_id=receivable_id,
+        )
+        try:
+            await self.erp_client.delete_unit_installment(
+                company_id=company_id,
+                user_id=user_id,
+                construction_unit_id=unit.id,
+                receivable_id=target_receivable_id,
+                installment_number=installment_number,
+            )
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message="Não foi possível excluir a parcela no ERP.",
+            ) from request_error
+
+    async def delete_unit_adjustment(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        receivable_id: UUID,
+        reason: str,
+        user_id: UUID | None = None,
+    ) -> None:
+        unit, target_receivable_id = await self._resolve_unit_receivable_target(
+            company_id=company_id,
+            unit_id=unit_id,
+            receivable_id=receivable_id,
+        )
+        try:
+            await self.erp_client.delete_unit_receivable(
+                company_id=company_id,
+                user_id=user_id,
+                construction_unit_id=unit.id,
+                receivable_id=target_receivable_id,
+                reason=reason,
+            )
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message="Não foi possível excluir o aditivo no ERP.",
+            ) from request_error
+
+    async def _resolve_unit_receivable_target(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        receivable_id: UUID | None,
+    ) -> tuple[ConstructionUnit, UUID]:
+        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+
+        if self.erp_client is None:
+            raise ConstructionDomainError(
+                message="Integração com o ERP não está configurada.",
+                status_code=503,
+            )
+
+        target_receivable_id = receivable_id or unit.external_receivable_id
+        if target_receivable_id is None:
+            raise ConstructionDomainError(
+                message="A unidade ainda não tem recebível no ERP: confirme a venda antes de mexer nas parcelas.",
+                status_code=409,
+            )
+
+        return unit, target_receivable_id
+
+    async def list_unit_commissions(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+    ) -> list[ConstructionUnitCommissionModel]:
+        await self._get_unit(company_id=company_id, unit_id=unit_id)
+        return await self.repository.list_unit_commissions(company_id=company_id, unit_id=unit_id)
+
+    async def create_unit_commissions(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        request: ConstructionUnitCommissionCreate,
+    ) -> list[ConstructionUnitCommissionModel]:
+        """Lanca o sinal, replicando o "Repetir 1+" do legado.
+
+        Um lancamento vira ``installments`` linhas com vencimento mensal, cada
+        uma com sua propria numeracao. O modelo de recibo e copiado da obra
+        agora, e nao lido dela na emissao: trocar o modelo da obra depois nao
+        pode reescrever o que ja foi lancado.
+        """
+        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        project = await self.repository.get_project(company_id=company_id, project_id=unit.project_id)
+        receipt_template_id = project.commission_receipt_template_id if project is not None else None
+
+        sequence_number = await self.repository.get_next_commission_sequence(
+            company_id=company_id,
+            unit_id=unit_id,
+        )
+        amount = request.amount.quantize(Decimal("0.01"))
+        commissions: list[ConstructionUnitCommissionModel] = []
+        for index in range(request.installments):
+            commission = ConstructionUnitCommissionModel(
+                id=uuid4(),
+                company_id=company_id,
+                unit_id=unit_id,
+                beneficiary_person_id=request.beneficiary_person_id,
+                sequence_number=sequence_number + index,
+                amount=amount,
+                due_date=self._add_months(value=request.due_date, months=index),
+                composes_sale_price=request.composes_sale_price,
+                receipt_template_id=receipt_template_id,
+                document_number=(request.document_number or "").strip() or None,
+                notes=(request.notes or "").strip() or None,
+            )
+            await self.repository.add(commission)
+            commissions.append(commission)
+
+        await self.repository.commit()
+        for commission in commissions:
+            await self.repository.refresh(commission)
+
+        return commissions
+
+    async def update_unit_commission(
+        self,
+        *,
+        company_id: UUID,
+        commission_id: UUID,
+        request: ConstructionUnitCommissionUpdate,
+    ) -> ConstructionUnitCommissionModel:
+        commission = await self._get_unit_commission(company_id=company_id, commission_id=commission_id)
+        updates = request.model_dump(exclude_unset=True)
+
+        # Trocar "compoe o valor da venda" depois da baixa mudaria um saldo que
+        # ja foi abatido. Para corrigir, estorna a baixa primeiro.
+        composes_sale_price = updates.get("composes_sale_price")
+        if (
+            composes_sale_price is not None
+            and composes_sale_price != commission.composes_sale_price
+            and commission.payment_date is not None
+        ):
+            raise ConstructionInvalidValueError(
+                message=(
+                    "O sinal já foi baixado: estorne o pagamento antes de mudar se ele compõe o valor da venda."
+                ),
+                error_code="CONSTRUCTION_UNIT_COMMISSION_SETTLED",
+            )
+
+        if updates.get("amount") is not None:
+            updates["amount"] = Decimal(str(updates["amount"])).quantize(Decimal("0.01"))
+
+        for field_name in ("document_number", "notes"):
+            if field_name in updates:
+                updates[field_name] = (updates[field_name] or "").strip() or None
+
+        self._apply_updates(entity=commission, updates=updates)
+        await self.repository.commit()
+        await self.repository.refresh(commission)
+        return commission
+
+    async def settle_unit_commission(
+        self,
+        *,
+        company_id: UUID,
+        commission_id: UUID,
+        payment_date: date | None,
+    ) -> ConstructionUnitCommissionModel:
+        """Registra (ou estorna) a baixa do sinal.
+
+        Nao redispara o evento da venda de proposito: um sinal que compoe muda
+        o saldo exibido, mas reemitir o contrato por causa de uma comissao paga
+        seria pior que o problema. Quem quiser refletir no contrato reabre a
+        venda e salva.
+        """
+        commission = await self._get_unit_commission(company_id=company_id, commission_id=commission_id)
+        commission.payment_date = payment_date
+        await self.repository.commit()
+        await self.repository.refresh(commission)
+        return commission
+
+    async def delete_unit_commission(self, *, company_id: UUID, commission_id: UUID) -> None:
+        commission = await self._get_unit_commission(company_id=company_id, commission_id=commission_id)
+        await self.repository.delete(commission)
+        await self.repository.commit()
+
+    async def create_unit_adjustment(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        request: ConstructionUnitAdjustmentCreate,
+        user_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Lanca o aditivo da venda, que vive no ERP como recebivel proprio.
+
+        Nao e parcela do recebivel da venda: editar a venda chama
+        ``replace_open_installments``, que refaz as parcelas em aberto e
+        destruiria o aditivo.
+        """
+        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+
+        if unit.external_contract_id is None:
+            raise ConstructionDomainError(
+                message="A unidade ainda não tem contrato no ERP: confirme a venda antes de lançar um aditivo.",
+                status_code=409,
+            )
+
+        if self.erp_client is None:
+            raise ConstructionDomainError(
+                message="Integração com o ERP não está configurada.",
+                status_code=503,
+            )
+
+        try:
+            return await self.erp_client.create_unit_adjustment(
+                company_id=company_id,
+                user_id=user_id,
+                construction_unit_id=unit.id,
+                contract_id=unit.external_contract_id,
+                amount=request.amount.quantize(Decimal("0.01")),
+                installments=request.installments,
+                first_due_date=request.first_due_date,
+                reason=(request.reason or "").strip() or None,
+                cost_center_id=unit.analytic_cost_center_id,
+                unit_code=unit.code,
+            )
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message="Não foi possível lançar o aditivo no ERP.",
+            ) from request_error
+
+    async def _get_unit_commission(
+        self,
+        *,
+        company_id: UUID,
+        commission_id: UUID,
+    ) -> ConstructionUnitCommissionModel:
+        commission = await self.repository.get_unit_commission(
+            company_id=company_id,
+            commission_id=commission_id,
+        )
+        if commission is None:
+            raise ConstructionNotFoundError(resource_name="Construction unit commission")
+
+        return commission
+
+    @staticmethod
+    def _sum_composing_paid_commissions(commissions: list[ConstructionUnitCommissionModel]) -> Decimal:
+        """O sinal que abate o saldo devedor: compoe a venda E ja foi pago.
+
+        E a leitura do ``TotalPaidValue`` do legado, onde a comissao paga entra
+        no que o comprador ja quitou. Sinal nao pago nao abate nada, e sinal
+        cobrado por fora nunca abate.
+        """
+        return sum(
+            (
+                commission.amount
+                for commission in commissions
+                if commission.composes_sale_price and commission.payment_date is not None
+            ),
+            Decimal("0"),
+        ).quantize(Decimal("0.01"))
+
     async def build_unit_sale_composition(self, *, company_id: UUID, unit_id: UUID) -> dict[str, Any]:
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
         payment_sources = await self.repository.list_unit_payment_sources(
@@ -2235,6 +2610,10 @@ class ConstructionProjectService:
             unit_id=unit_id,
         )
         documentations = await self.repository.list_unit_documentations(
+            company_id=company_id,
+            unit_id=unit_id,
+        )
+        commissions = await self.repository.list_unit_commissions(
             company_id=company_id,
             unit_id=unit_id,
         )
@@ -2252,6 +2631,12 @@ class ConstructionProjectService:
             (source.amount for source in payment_sources if not source.generates_installments),
             Decimal("0"),
         )
+        commission_total = sum((commission.amount for commission in commissions), Decimal("0"))
+        commission_paid_total = sum(
+            (commission.amount for commission in commissions if commission.payment_date is not None),
+            Decimal("0"),
+        )
+        commission_offset = self._sum_composing_paid_commissions(commissions)
         return {
             "construction_unit_id": unit.id,
             "unit_code": unit.code,
@@ -2264,8 +2649,27 @@ class ConstructionProjectService:
             "total_charged": sale_price - discount_amount + documentation_total,
             "installment_total": installment_total,
             "settlement_total": settlement_total,
+            "commission_total": commission_total,
+            "commission_paid_total": commission_paid_total,
+            # O que o sinal ja abateu do saldo: compoe a venda e esta pago.
+            "commission_offset": commission_offset,
             "external_receivable_id": unit.external_receivable_id,
             "external_receivable_status": unit.external_receivable_status,
+            "commissions": [
+                {
+                    "id": commission.id,
+                    "beneficiary_person_id": commission.beneficiary_person_id,
+                    "sequence_number": commission.sequence_number,
+                    "amount": commission.amount,
+                    "due_date": commission.due_date,
+                    "payment_date": commission.payment_date,
+                    "composes_sale_price": commission.composes_sale_price,
+                    "receipt_template_id": commission.receipt_template_id,
+                    "document_number": commission.document_number,
+                    "notes": commission.notes,
+                }
+                for commission in commissions
+            ],
             "documentations": [
                 {
                     "id": documentation.id,
@@ -2732,6 +3136,7 @@ class ConstructionProjectService:
         sale_price: Decimal,
         discount_amount: Decimal,
         documentation_total: Decimal = Decimal("0"),
+        commission_offset: Decimal = Decimal("0"),
     ) -> list[dict[str, Any]]:
         """Monta a composicao da venda no modelo do legado.
 
@@ -2739,12 +3144,15 @@ class ConstructionProjectService:
         que sobra do preco mais a documentacao depois de abater essas fontes e o
         desconto, e e ele que vira as parcelas do contas a receber:
 
-            SALDO = preco + documentacao - desconto - entrada - financiamento - FGTS - subsidio
+            SALDO = preco + documentacao - desconto - entrada - financiamento
+                    - FGTS - subsidio - sinal pago que compoe
 
         E a mesma conta do tooltip de Dwelling/Resume.cshtml:170. Nao existe uma
         fonte "parcela construtora" para digitar: se ela pudesse ser informada,
         o usuario teria de fazer essa subtracao de cabeca. A documentacao
-        tambem nao e fonte nem parcela propria -- ela dilui no saldo.
+        tambem nao e fonte nem parcela propria -- ela dilui no saldo. O sinal
+        entra pelo mesmo caminho: pago ao corretor, ele ja abateu o que o
+        comprador devia.
         """
         informed_total = Decimal("0")
         payment_sources: list[dict[str, Any]] = []
@@ -2780,7 +3188,9 @@ class ConstructionProjectService:
                 }
             )
 
-        balance = (sale_price + documentation_total - discount_amount - informed_total).quantize(Decimal("0.01"))
+        balance = (
+            sale_price + documentation_total - discount_amount - informed_total - commission_offset
+        ).quantize(Decimal("0.01"))
 
         if balance < Decimal("0"):
             raise ConstructionInvalidValueError(
@@ -2813,6 +3223,8 @@ class ConstructionProjectService:
         documentation_total: Decimal,
         net_sale_price: Decimal,
         receivable_amount: Decimal,
+        commission_offset: Decimal,
+        receipt_template_id: UUID | None,
         actor_user_id: UUID | None,
     ) -> EventEnvelope:
         event_id = uuid4()
@@ -2834,6 +3246,14 @@ class ConstructionProjectService:
             "documentations": documentations,
             "analytic_cost_center_id": str(analytic_cost_center_id),
         }
+        # So vai ao ERP quando ha sinal pago que compoe: venda sem sinal manda
+        # o mesmo payload de antes.
+        if commission_offset > Decimal("0"):
+            payload["commission_offset"] = ConstructionProjectService._format_event_decimal(value=commission_offset)
+
+        if receipt_template_id is not None:
+            payload["receipt_template_id"] = str(receipt_template_id)
+
         if unit.secondary_buyer_person_id is not None:
             payload["secondary_buyer_person_id"] = str(unit.secondary_buyer_person_id)
 
@@ -2997,6 +3417,14 @@ class ConstructionProjectService:
         external_procurement_status = payload.get("external_procurement_status")
         if external_procurement_status is not None:
             procurement_request.external_procurement_status = str(external_procurement_status)
+
+    @staticmethod
+    def _add_months(*, value: date, months: int) -> date:
+        month = value.month - 1 + months
+        year = value.year + month // 12
+        target_month = month % 12 + 1
+        day = min(value.day, calendar.monthrange(year, target_month)[1])
+        return value.replace(year=year, month=target_month, day=day)
 
     @staticmethod
     def _format_event_date(*, value: date | None) -> str | None:

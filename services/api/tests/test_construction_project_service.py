@@ -29,6 +29,7 @@ from app.infrastructure.database.models import (
     ConstructionServiceTemplate,
     ConstructionServiceTemplateItem,
     ConstructionUnit,
+    ConstructionUnitCommission,
     ConstructionUnitDocumentation,
     ConstructionUnitPaymentSource,
 )
@@ -64,6 +65,7 @@ class FakeConstructionRepository:
         self.service_template_items: dict[tuple[object, object], ConstructionServiceTemplateItem] = {}
         self.documentation_types: dict[tuple[object, object], ConstructionDocumentationType] = {}
         self.unit_documentations: dict[tuple[object, object], ConstructionUnitDocumentation] = {}
+        self.unit_commissions: dict[tuple[object, object], ConstructionUnitCommission] = {}
         self.commits = 0
         self.replaced_children = 0
 
@@ -179,6 +181,26 @@ class FakeConstructionRepository:
             ),
             key=lambda documentation: documentation.sequence_number,
         )
+
+    async def list_unit_commissions(self, *, company_id, unit_id):
+        return sorted(
+            (
+                commission
+                for (stored_company_id, _), commission in self.unit_commissions.items()
+                if stored_company_id == company_id and commission.unit_id == unit_id
+            ),
+            key=lambda commission: commission.sequence_number,
+        )
+
+    async def get_unit_commission(self, *, company_id, commission_id):
+        return self.unit_commissions.get((company_id, commission_id))
+
+    async def get_next_commission_sequence(self, *, company_id, unit_id):
+        commissions = await self.list_unit_commissions(company_id=company_id, unit_id=unit_id)
+        if not commissions:
+            return 1
+
+        return max(commission.sequence_number for commission in commissions) + 1
 
     async def get_service_template(self, *, company_id, service_template_id):
         template = self.service_templates.get((company_id, service_template_id))
@@ -338,6 +360,10 @@ class FakeConstructionRepository:
             self.unit_documentations[(entity.company_id, entity.id)] = entity
             return
 
+        if isinstance(entity, ConstructionUnitCommission):
+            self.unit_commissions[(entity.company_id, entity.id)] = entity
+            return
+
         if isinstance(entity, ConstructionServiceTemplate):
             self.service_templates[(entity.company_id, entity.id)] = entity
             return
@@ -409,6 +435,10 @@ class FakeConstructionRepository:
 
         if isinstance(entity, ConstructionUnitDocumentation):
             self.unit_documentations.pop((entity.company_id, entity.id), None)
+            return
+
+        if isinstance(entity, ConstructionUnitCommission):
+            self.unit_commissions.pop((entity.company_id, entity.id), None)
             return
 
         if isinstance(entity, ConstructionDocumentationType):

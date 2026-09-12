@@ -25,6 +25,8 @@ from app.schemas.construction import (
     ConstructionDocumentationTypeResponse,
     ConstructionDocumentationTypeUpdate,
     ConstructionPersonSummaryListResponse,
+    ConstructionUnitInstallmentCreateRequest,
+    ConstructionUnitInstallmentPaymentRequest,
     ConstructionUnitInstallmentUpdateRequest,
     ConstructionProjectCreate,
     ConstructionProjectListResponse,
@@ -60,6 +62,12 @@ from app.schemas.construction import (
     ConstructionServiceTemplateUpdate,
     ConstructionSchedulePhaseResponse,
     ConstructionSchedulePhaseUpdate,
+    ConstructionUnitAdjustmentCreate,
+    ConstructionUnitCommissionCreate,
+    ConstructionUnitCommissionListResponse,
+    ConstructionUnitCommissionResponse,
+    ConstructionUnitCommissionSettleRequest,
+    ConstructionUnitCommissionUpdate,
     ConstructionUnitCreate,
     ConstructionUnitListResponse,
     ConstructionUnitReserveRequest,
@@ -577,11 +585,199 @@ async def update_unit_installment(
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> dict:
     try:
+        changes = payload.model_dump(exclude_unset=True, exclude_none=True, mode="json")
+        changes.pop("receivable_id", None)
         return await service.update_unit_installment(
             company_id=ctx.company_id,
             unit_id=unit_id,
             installment_number=installment_number,
-            changes=payload.model_dump(exclude_unset=True, exclude_none=True, mode="json"),
+            changes=changes,
+            receivable_id=payload.receivable_id,
+            user_id=ctx.user_id,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/installments")
+async def create_unit_installments(
+    unit_id: UUID,
+    payload: ConstructionUnitInstallmentCreateRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.CREATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> list[dict]:
+    try:
+        return await service.create_unit_installments(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            request=payload,
+            user_id=ctx.user_id,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/installments/{installment_number}/pay")
+async def pay_unit_installment(
+    unit_id: UUID,
+    installment_number: int,
+    payload: ConstructionUnitInstallmentPaymentRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        return await service.pay_unit_installment(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            installment_number=installment_number,
+            request=payload,
+            receivable_id=payload.receivable_id,
+            user_id=ctx.user_id,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.delete("/units/{unit_id}/installments/{installment_number}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_unit_installment(
+    unit_id: UUID,
+    installment_number: int,
+    receivable_id: UUID | None = Query(default=None),
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.DELETE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> Response:
+    try:
+        await service.delete_unit_installment(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            installment_number=installment_number,
+            receivable_id=receivable_id,
+            user_id=ctx.user_id,
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.delete("/units/{unit_id}/adjustments/{receivable_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_unit_adjustment(
+    unit_id: UUID,
+    receivable_id: UUID,
+    reason: str = Query(..., min_length=1, max_length=255),
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.DELETE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> Response:
+    try:
+        await service.delete_unit_adjustment(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            receivable_id=receivable_id,
+            reason=reason,
+            user_id=ctx.user_id,
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/units/{unit_id}/commissions", response_model=ConstructionUnitCommissionListResponse)
+async def list_unit_commissions(
+    unit_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionUnitCommissionListResponse:
+    try:
+        commissions = await service.list_unit_commissions(company_id=ctx.company_id, unit_id=unit_id)
+        return ConstructionUnitCommissionListResponse(
+            items=[ConstructionUnitCommissionResponse.model_validate(commission) for commission in commissions],
+            total=len(commissions),
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/commissions", response_model=ConstructionUnitCommissionListResponse)
+async def create_unit_commissions(
+    unit_id: UUID,
+    request_data: ConstructionUnitCommissionCreate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.CREATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionUnitCommissionListResponse:
+    try:
+        commissions = await service.create_unit_commissions(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            request=request_data,
+        )
+        return ConstructionUnitCommissionListResponse(
+            items=[ConstructionUnitCommissionResponse.model_validate(commission) for commission in commissions],
+            total=len(commissions),
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.patch("/commissions/{commission_id}", response_model=ConstructionUnitCommissionResponse)
+async def update_unit_commission(
+    commission_id: UUID,
+    request_data: ConstructionUnitCommissionUpdate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionUnitCommissionResponse:
+    try:
+        commission = await service.update_unit_commission(
+            company_id=ctx.company_id,
+            commission_id=commission_id,
+            request=request_data,
+        )
+        return ConstructionUnitCommissionResponse.model_validate(commission)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/commissions/{commission_id}/settle", response_model=ConstructionUnitCommissionResponse)
+async def settle_unit_commission(
+    commission_id: UUID,
+    request_data: ConstructionUnitCommissionSettleRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionUnitCommissionResponse:
+    try:
+        commission = await service.settle_unit_commission(
+            company_id=ctx.company_id,
+            commission_id=commission_id,
+            payment_date=request_data.payment_date,
+        )
+        return ConstructionUnitCommissionResponse.model_validate(commission)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.delete("/commissions/{commission_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_unit_commission(
+    commission_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.DELETE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> Response:
+    try:
+        await service.delete_unit_commission(company_id=ctx.company_id, commission_id=commission_id)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/adjustments")
+async def create_unit_adjustment(
+    unit_id: UUID,
+    request_data: ConstructionUnitAdjustmentCreate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.CREATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        return await service.create_unit_adjustment(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            request=request_data,
             user_id=ctx.user_id,
         )
     except ConstructionDomainError as exc:

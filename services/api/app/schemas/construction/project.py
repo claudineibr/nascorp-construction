@@ -26,6 +26,8 @@ class ConstructionProjectCreate(BaseModel):
     start_date: date | None = None
     expected_end_date: date | None = None
     actual_end_date: date | None = None
+    receipt_template_id: UUID | None = None
+    commission_receipt_template_id: UUID | None = None
 
 
 class ConstructionProjectUpdate(BaseModel):
@@ -42,6 +44,8 @@ class ConstructionProjectUpdate(BaseModel):
     actual_end_date: date | None = None
     synthetic_cost_center_id: UUID | None = None
     analytic_cost_center_id: UUID | None = None
+    receipt_template_id: UUID | None = None
+    commission_receipt_template_id: UUID | None = None
 
 
 class ConstructionProjectResponse(BaseModel):
@@ -62,6 +66,8 @@ class ConstructionProjectResponse(BaseModel):
     actual_end_date: date | None = None
     synthetic_cost_center_id: UUID | None = None
     analytic_cost_center_id: UUID | None = None
+    receipt_template_id: UUID | None = None
+    commission_receipt_template_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -283,11 +289,114 @@ class ConstructionUnitInstallmentUpdateRequest(BaseModel):
     ERP, e la nenhum caminho altera esses dois campos.
     """
 
+    #: ``None`` e a serie da venda; preenchido, aponta a parcela de um aditivo.
+    receivable_id: UUID | None = None
     payment_method: str | None = Field(default=None, min_length=1, max_length=30)
     document_number: str | None = Field(default=None, max_length=100)
     observation: str | None = None
     chart_account_id: UUID | None = None
     cost_center_id: UUID | None = None
+
+
+class ConstructionUnitInstallmentCreateRequest(BaseModel):
+    """Parcelas novas numa serie da unidade, no formato da tela do legado.
+
+    ``starting_number`` e o "n da parcela" e ``count`` e o "Repetir 1+": a
+    numeracao segue a partir do que foi informado, e o ERP recusa numero que ja
+    existe no titulo. O valor sai do saldo que ainda nao virou parcela --
+    cobrar a mais e aditivo, nao parcela nova.
+    """
+
+    receivable_id: UUID | None = None
+    starting_number: int = Field(..., ge=1)
+    count: int = Field(default=1, ge=1, le=60)
+    first_due_date: date
+    amount: Decimal | None = Field(default=None, gt=0)
+
+
+class ConstructionUnitInstallmentPaymentRequest(BaseModel):
+    """Baixa de uma parcela da unidade, no mesmo contrato do Contas a Receber.
+
+    ``receivable_id`` ausente significa a série da venda; preenchido, aponta o
+    aditivo. Vencimento e valor da parcela continuam fora: a baixa registra o
+    que foi pago, não reescreve a parcela.
+    """
+
+    receivable_id: UUID | None = None
+    payment_method: str = Field(..., min_length=1, max_length=30)
+    paid_amount: Decimal | None = Field(default=None, gt=0)
+    paid_at: datetime | None = None
+    interest: Decimal | None = Field(default=None, ge=0)
+    fine: Decimal | None = Field(default=None, ge=0)
+    discount: Decimal | None = Field(default=None, ge=0)
+    observation: str | None = None
+
+
+class ConstructionUnitCommissionCreate(BaseModel):
+    """Lancamento do sinal, no formato da tela do legado.
+
+    ``installments`` e o "Repetir 1+": um lancamento gera N linhas com
+    vencimento mensal a partir de ``due_date``, cada uma com sua numeracao.
+    """
+
+    beneficiary_person_id: UUID
+    amount: Decimal = Field(..., gt=0)
+    due_date: date
+    installments: int = Field(default=1, ge=1, le=120)
+    composes_sale_price: bool = False
+    document_number: str | None = Field(default=None, max_length=100)
+    notes: str | None = None
+
+
+class ConstructionUnitCommissionUpdate(BaseModel):
+    beneficiary_person_id: UUID | None = None
+    amount: Decimal | None = Field(default=None, gt=0)
+    due_date: date | None = None
+    composes_sale_price: bool | None = None
+    document_number: str | None = Field(default=None, max_length=100)
+    notes: str | None = None
+
+
+class ConstructionUnitCommissionSettleRequest(BaseModel):
+    #: ``None`` estorna a baixa e devolve o sinal para em aberto.
+    payment_date: date | None = None
+
+
+class ConstructionUnitCommissionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    company_id: UUID
+    unit_id: UUID
+    beneficiary_person_id: UUID
+    sequence_number: int
+    amount: Decimal
+    due_date: date
+    payment_date: date | None = None
+    composes_sale_price: bool
+    receipt_template_id: UUID | None = None
+    document_number: str | None = None
+    notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConstructionUnitCommissionListResponse(BaseModel):
+    items: list[ConstructionUnitCommissionResponse]
+    total: int
+
+
+class ConstructionUnitAdjustmentCreate(BaseModel):
+    """Aditivo da venda: cobranca extra quando o financiamento sai abaixo.
+
+    Vira um recebivel proprio no ERP, nao uma parcela do recebivel da venda --
+    editar a venda refaz as parcelas em aberto e destruiria o aditivo.
+    """
+
+    amount: Decimal = Field(..., gt=0)
+    installments: int = Field(default=1, ge=1, le=120)
+    first_due_date: date
+    reason: str | None = Field(default=None, max_length=255)
 
 
 class ConstructionSchedulePhaseCreate(BaseModel):

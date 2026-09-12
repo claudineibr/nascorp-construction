@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from uuid import UUID
 
 import httpx
@@ -139,9 +140,165 @@ class ErpConstructionClient:
         receivable_id: UUID,
         installment_number: int,
         changes: dict[str, object],
+        construction_unit_id: UUID | None = None,
     ) -> dict[str, object]:
         if not settings.erp_service_key:
             raise RuntimeError("ERP service key is not configured for Construction payment plan integration.")
+
+        payload: dict[str, object] = {
+            "receivable_id": str(receivable_id),
+            "installment_number": installment_number,
+        }
+        if construction_unit_id is not None:
+            payload["construction_unit_id"] = str(construction_unit_id)
+
+        payload.update(changes)
+
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.patch(
+                "/v1/internal/construction/unit-installment",
+                headers=self._service_headers(company_id=company_id, user_id=user_id),
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def create_unit_installments(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        construction_unit_id: UUID,
+        receivable_id: UUID,
+        starting_number: int,
+        count: int,
+        first_due_date: date,
+        amount: Decimal | None,
+    ) -> list[dict[str, object]]:
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for Construction payment plan integration.")
+
+        payload: dict[str, object] = {
+            "construction_unit_id": str(construction_unit_id),
+            "receivable_id": str(receivable_id),
+            "starting_number": starting_number,
+            "count": count,
+            "first_due_date": first_due_date.isoformat(),
+            "amount": format(amount, "f") if amount is not None else None,
+        }
+
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.post(
+                "/v1/internal/construction/unit-installments",
+                headers=self._service_headers(company_id=company_id, user_id=user_id),
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def pay_unit_installment(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        construction_unit_id: UUID,
+        receivable_id: UUID,
+        installment_number: int,
+        payment: dict[str, object],
+    ) -> dict[str, object]:
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for Construction payment plan integration.")
+
+        payload: dict[str, object] = {
+            "construction_unit_id": str(construction_unit_id),
+            "receivable_id": str(receivable_id),
+            "installment_number": installment_number,
+        }
+        payload.update(payment)
+
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.post(
+                "/v1/internal/construction/unit-installment/pay",
+                headers=self._service_headers(company_id=company_id, user_id=user_id),
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def delete_unit_installment(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        construction_unit_id: UUID,
+        receivable_id: UUID,
+        installment_number: int,
+    ) -> None:
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for Construction payment plan integration.")
+
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.delete(
+                "/v1/internal/construction/unit-installment",
+                headers=self._service_headers(company_id=company_id, user_id=user_id),
+                params={
+                    "construction_unit_id": str(construction_unit_id),
+                    "receivable_id": str(receivable_id),
+                    "installment_number": installment_number,
+                },
+            )
+            response.raise_for_status()
+
+    async def delete_unit_receivable(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        construction_unit_id: UUID,
+        receivable_id: UUID,
+        reason: str,
+    ) -> None:
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for Construction payment plan integration.")
+
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.delete(
+                "/v1/internal/construction/unit-receivable",
+                headers=self._service_headers(company_id=company_id, user_id=user_id),
+                params={
+                    "construction_unit_id": str(construction_unit_id),
+                    "receivable_id": str(receivable_id),
+                    "reason": reason,
+                },
+            )
+            response.raise_for_status()
+
+    def _service_headers(self, *, company_id: UUID, user_id: UUID | None) -> dict[str, str]:
+        headers = {
+            "X-Service-Key": settings.erp_service_key or "",
+            "X-Company-ID": str(company_id),
+        }
+        if user_id is not None:
+            headers["X-User-ID"] = str(user_id)
+
+        return headers
+
+    async def create_unit_adjustment(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        construction_unit_id: UUID,
+        contract_id: UUID,
+        amount: Decimal,
+        installments: int,
+        first_due_date: date,
+        reason: str | None,
+        cost_center_id: UUID | None,
+        unit_code: str,
+    ) -> dict[str, object]:
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for Construction adjustment integration.")
 
         headers = {
             "X-Service-Key": settings.erp_service_key,
@@ -149,15 +306,21 @@ class ErpConstructionClient:
         }
         if user_id is not None:
             headers["X-User-ID"] = str(user_id)
+
         payload: dict[str, object] = {
-            "receivable_id": str(receivable_id),
-            "installment_number": installment_number,
+            "construction_unit_id": str(construction_unit_id),
+            "contract_id": str(contract_id),
+            "unit_code": unit_code,
+            "amount": format(amount, "f"),
+            "installments": installments,
+            "first_due_date": first_due_date.isoformat(),
+            "reason": reason,
+            "cost_center_id": str(cost_center_id) if cost_center_id is not None else None,
         }
-        payload.update(changes)
 
         async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
-            response = await client.patch(
-                "/v1/internal/construction/unit-installment",
+            response = await client.post(
+                "/v1/internal/construction/unit-adjustment",
                 headers=headers,
                 json=payload,
             )

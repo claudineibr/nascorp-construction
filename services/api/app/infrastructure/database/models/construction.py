@@ -66,6 +66,8 @@ class ConstructionProject(Base):
     actual_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     synthetic_cost_center_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     analytic_cost_center_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    receipt_template_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    commission_receipt_template_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -190,6 +192,11 @@ class ConstructionUnit(Base):
         back_populates="unit",
         cascade="all, delete-orphan",
         order_by="ConstructionUnitDocumentation.sequence_number",
+    )
+    commissions: Mapped[list[ConstructionUnitCommission]] = relationship(
+        back_populates="unit",
+        cascade="all, delete-orphan",
+        order_by="ConstructionUnitCommission.sequence_number",
     )
 
     @property
@@ -470,6 +477,54 @@ class ConstructionUnitDocumentation(Base):
 
     unit: Mapped[ConstructionUnit] = relationship(back_populates="documentations")
     documentation_type: Mapped[ConstructionDocumentationType] = relationship(lazy="selectin")
+
+
+class ConstructionUnitCommission(Base):
+    """O sinal do legado: a comissao do corretor, paga pelo comprador.
+
+    Nao e conta a receber da construtora -- o dinheiro vai direto ao corretor.
+    Quando ``composes_sale_price`` esta marcado, o valor compoe o preco da
+    unidade e reduz o saldo a parcelar; desmarcado, e cobranca por fora e nao
+    toca o saldo.
+    """
+
+    __tablename__ = "construction_unit_commissions"
+    __table_args__ = (
+        UniqueConstraint("unit_id", "sequence_number", name="uq_construction_unit_commissions_sequence"),
+        {"schema": CONSTRUCTION_SCHEMA},
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    unit_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_units.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    beneficiary_person_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    due_date: Mapped[date] = mapped_column(Date, nullable=False)
+    payment_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    composes_sale_price: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    receipt_template_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    document_number: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    unit: Mapped[ConstructionUnit] = relationship(back_populates="commissions")
 
 
 class ConstructionMeasurementItem(Base):
