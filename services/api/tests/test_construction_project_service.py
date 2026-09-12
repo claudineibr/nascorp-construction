@@ -844,6 +844,35 @@ async def test_create_project_rejects_duplicate_code() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_project_keeps_the_receipt_templates_chosen_on_the_form() -> None:
+    """Os dois modelos de recibo sao escolhidos na obra e herdados pela unidade.
+
+    Eles chegavam no `ConstructionProjectCreate` e morriam ali: so o update
+    persistia, entao a obra nascia sem modelo e toda comissao criada antes de um
+    novo save congelava `receipt_template_id=None` -- o snapshot da comissao nao
+    volta a ler a obra depois.
+    """
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    service = make_service(repository=repository)
+    receipt_template_id = uuid4()
+    commission_receipt_template_id = uuid4()
+
+    project = await service.create_project(
+        company_id=company_id,
+        request=ConstructionProjectCreate(
+            code="OBRA-011",
+            name="Obra com modelo de recibo",
+            receipt_template_id=receipt_template_id,
+            commission_receipt_template_id=commission_receipt_template_id,
+        ),
+    )
+
+    assert project.receipt_template_id == receipt_template_id
+    assert project.commission_receipt_template_id == commission_receipt_template_id
+
+
+@pytest.mark.asyncio
 async def test_create_project_records_project_created_outbox_event() -> None:
     company_id = uuid4()
     user_id = uuid4()

@@ -203,6 +203,8 @@ class ConstructionProjectService:
             start_date=request.start_date,
             expected_end_date=request.expected_end_date,
             actual_end_date=request.actual_end_date,
+            receipt_template_id=request.receipt_template_id,
+            commission_receipt_template_id=request.commission_receipt_template_id,
         )
         await self.repository.add(project)
         project_created_event = self._build_project_created_event(project=project, actor_user_id=actor_user_id)
