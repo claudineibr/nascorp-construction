@@ -2489,6 +2489,19 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_UNIT_COMMISSION_SETTLED",
             )
 
+        # `_apply_updates` e um setattr cru, e `exclude_unset` so diz que a chave
+        # veio -- nao que veio preenchida. A tela manda as seis chaves sempre
+        # (`updateConstructionUnitCommission`), entao limpar um campo obrigatorio
+        # no formulario chegava aqui como `None` e ia direto para uma coluna
+        # NOT NULL: IntegrityError, 500 generico, e o usuario sem saber o que
+        # deu errado.
+        for field_name in ("beneficiary_person_id", "amount", "due_date", "composes_sale_price"):
+            if field_name in updates and updates[field_name] is None:
+                raise ConstructionInvalidValueError(
+                    message=f"O campo '{field_name}' do sinal não pode ficar em branco.",
+                    error_code="CONSTRUCTION_UNIT_COMMISSION_REQUIRED_FIELD",
+                )
+
         if updates.get("amount") is not None:
             updates["amount"] = Decimal(str(updates["amount"])).quantize(Decimal("0.01"))
 

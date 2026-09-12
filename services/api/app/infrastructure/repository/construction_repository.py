@@ -4,7 +4,7 @@ from uuid import UUID
 
 from decimal import Decimal
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -243,18 +243,38 @@ class ConstructionRepository:
         )
         return result.scalars().first()
 
-    async def get_next_measurement_sequence(self, *, company_id: UUID, project_id: UUID) -> int:
-        result = await self.session.execute(
-            select(func.max(ConstructionMeasurement.sequence_number)).where(
-                ConstructionMeasurement.company_id == company_id,
-                ConstructionMeasurement.project_id == project_id,
-            )
+    async def _next_scoped_sequence(self, *, column, filters, lock_scope: str) -> int:
+        """Reserva o proximo numero da serie, segurando quem chega junto.
+
+        Ler o MAX e inserir depois e uma corrida contra o indice unico que essas
+        series tem: dois pedidos simultaneos leem o mesmo numero, o segundo
+        INSERT estoura `IntegrityError` e, como ninguem trata, o usuario ve um
+        500 -- num "Lancar sinal" que ele so tentou duas vezes ao mesmo tempo.
+
+        O advisory lock e por TRANSACAO: solta sozinho no commit e no rollback,
+        entao nao ha lock vazado, e a chave e a propria serie -- duas unidades
+        diferentes continuam alocando em paralelo.
+        """
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
+            {"scope": lock_scope},
         )
+        result = await self.session.execute(select(func.max(column)).where(*filters))
         current_sequence = result.scalar_one_or_none()
         if current_sequence is None:
             return 1
 
         return int(current_sequence) + 1
+
+    async def get_next_measurement_sequence(self, *, company_id: UUID, project_id: UUID) -> int:
+        return await self._next_scoped_sequence(
+            column=ConstructionMeasurement.sequence_number,
+            filters=(
+                ConstructionMeasurement.company_id == company_id,
+                ConstructionMeasurement.project_id == project_id,
+            ),
+            lock_scope=f"construction_measurements:{project_id}",
+        )
 
     async def get_measurement_by_external_accounts_payable_id(
         self,
@@ -468,17 +488,14 @@ class ConstructionRepository:
         return result.scalar_one_or_none()
 
     async def get_next_commission_sequence(self, *, company_id: UUID, unit_id: UUID) -> int:
-        result = await self.session.execute(
-            select(func.max(ConstructionUnitCommission.sequence_number)).where(
+        return await self._next_scoped_sequence(
+            column=ConstructionUnitCommission.sequence_number,
+            filters=(
                 ConstructionUnitCommission.company_id == company_id,
                 ConstructionUnitCommission.unit_id == unit_id,
-            )
+            ),
+            lock_scope=f"construction_unit_commissions:{unit_id}",
         )
-        current_sequence = result.scalar_one_or_none()
-        if current_sequence is None:
-            return 1
-
-        return int(current_sequence) + 1
 
     async def get_service_template(
         self,
@@ -573,17 +590,14 @@ class ConstructionRepository:
         return list(result.scalars().all())
 
     async def get_next_measurement_item_sequence(self, *, company_id: UUID, measurement_id: UUID) -> int:
-        result = await self.session.execute(
-            select(func.max(ConstructionMeasurementItem.sequence_number)).where(
+        return await self._next_scoped_sequence(
+            column=ConstructionMeasurementItem.sequence_number,
+            filters=(
                 ConstructionMeasurementItem.company_id == company_id,
                 ConstructionMeasurementItem.measurement_id == measurement_id,
-            )
+            ),
+            lock_scope=f"construction_measurement_items:{measurement_id}",
         )
-        current_sequence = result.scalar_one_or_none()
-        if current_sequence is None:
-            return 1
-
-        return int(current_sequence) + 1
 
     async def get_measurement_items_amount(self, *, company_id: UUID, measurement_id: UUID) -> Decimal:
         result = await self.session.execute(
@@ -625,17 +639,14 @@ class ConstructionRepository:
         return list(result.scalars().all())
 
     async def get_next_inspection_sequence(self, *, company_id: UUID, measurement_item_id: UUID) -> int:
-        result = await self.session.execute(
-            select(func.max(ConstructionMeasurementItemInspection.sequence_number)).where(
+        return await self._next_scoped_sequence(
+            column=ConstructionMeasurementItemInspection.sequence_number,
+            filters=(
                 ConstructionMeasurementItemInspection.company_id == company_id,
                 ConstructionMeasurementItemInspection.measurement_item_id == measurement_item_id,
-            )
+            ),
+            lock_scope=f"construction_measurement_item_inspections:{measurement_item_id}",
         )
-        current_sequence = result.scalar_one_or_none()
-        if current_sequence is None:
-            return 1
-
-        return int(current_sequence) + 1
 
     async def count_pending_measurement_inspections(self, *, company_id: UUID, measurement_id: UUID) -> int:
         result = await self.session.execute(
@@ -671,17 +682,14 @@ class ConstructionRepository:
         return result.scalars().first()
 
     async def get_next_occurrence_sequence(self, *, company_id: UUID, measurement_item_id: UUID) -> int:
-        result = await self.session.execute(
-            select(func.max(ConstructionMeasurementItemOccurrence.sequence_number)).where(
+        return await self._next_scoped_sequence(
+            column=ConstructionMeasurementItemOccurrence.sequence_number,
+            filters=(
                 ConstructionMeasurementItemOccurrence.company_id == company_id,
                 ConstructionMeasurementItemOccurrence.measurement_item_id == measurement_item_id,
-            )
+            ),
+            lock_scope=f"construction_measurement_item_occurrences:{measurement_item_id}",
         )
-        current_sequence = result.scalar_one_or_none()
-        if current_sequence is None:
-            return 1
-
-        return int(current_sequence) + 1
 
     async def count_open_measurement_occurrences(self, *, company_id: UUID, measurement_id: UUID) -> int:
         result = await self.session.execute(

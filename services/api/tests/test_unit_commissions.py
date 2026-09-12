@@ -289,6 +289,49 @@ async def test_changing_composes_sale_price_after_settlement_is_refused() -> Non
         )
 
 
+async def test_clearing_a_required_field_is_refused_instead_of_breaking_the_row() -> None:
+    """A tela manda as seis chaves sempre, inclusive as vazias.
+
+    `exclude_unset` so diz que a chave veio -- nao que veio preenchida. Sem esta
+    recusa, o `None` ia direto para uma coluna NOT NULL e virava IntegrityError:
+    500 generico, sem dizer ao usuario qual campo ele apagou.
+    """
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    _, unit = seed_project_and_unit(repository, company_id=company_id)
+    service = ConstructionProjectService(repository=repository)
+    commissions = await service.create_unit_commissions(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitCommissionCreate(
+            beneficiary_person_id=uuid4(),
+            amount=Decimal("5000.00"),
+            due_date=date(2026, 3, 10),
+            composes_sale_price=True,
+        ),
+    )
+
+    for field_name in ("beneficiary_person_id", "amount", "due_date", "composes_sale_price"):
+        with pytest.raises(ConstructionInvalidValueError) as error:
+            await service.update_unit_commission(
+                company_id=company_id,
+                commission_id=commissions[0].id,
+                request=ConstructionUnitCommissionUpdate.model_validate({field_name: None}),
+            )
+
+        assert error.value.error_code == "CONSTRUCTION_UNIT_COMMISSION_REQUIRED_FIELD"
+        assert field_name in error.value.message
+
+    # O que nao e obrigatorio continua podendo ser limpo.
+    updated = await service.update_unit_commission(
+        company_id=company_id,
+        commission_id=commissions[0].id,
+        request=ConstructionUnitCommissionUpdate(document_number=None, notes=None),
+    )
+    assert updated.document_number is None
+    assert updated.amount == Decimal("5000.00")
+
+
 async def test_commission_copies_the_project_template_and_keeps_it_after_the_project_changes() -> None:
     company_id = uuid4()
     repository = FakeConstructionRepository()
