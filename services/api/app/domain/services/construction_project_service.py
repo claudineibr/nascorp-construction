@@ -1,6 +1,6 @@
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 from uuid import UUID, uuid4
 
 import httpx
@@ -8,6 +8,7 @@ import httpx
 from app.domain.constants import (
     BLOCK_STATUSES,
     ConstructionUnitPaymentSource,
+    ConstructionDocumentationType,
     ConstructionInspectionStatus,
     ConstructionOccurrenceStatus,
     CONSTRUCTION_PROCUREMENT_APPROVAL_THRESHOLD,
@@ -21,6 +22,7 @@ from app.domain.constants import (
     UNIT_STATUSES,
 )
 from app.domain.exceptions import (
+    ConstructionDomainError,
     ConstructionDuplicateCodeError,
     ConstructionInvalidStatusTransitionError,
     ConstructionInvalidValueError,
@@ -38,10 +40,12 @@ from app.domain.services.construction_integration_dispatcher import Construction
 from app.domain.services.construction_service_template_parser import parse_service_template_spreadsheet
 from app.infrastructure.database.models import (
     ConstructionBlock,
+    ConstructionDocumentationType as ConstructionDocumentationTypeModel,
     ConstructionMeasurement,
     ConstructionMeasurementItem,
     ConstructionServiceTemplate,
     ConstructionServiceTemplateItem,
+    ConstructionUnitDocumentation as ConstructionUnitDocumentationModel,
     ConstructionUnitPaymentSource as ConstructionUnitPaymentSourceModel,
     ConstructionMeasurementItemInspection,
     ConstructionMeasurementItemOccurrence,
@@ -54,6 +58,8 @@ from app.infrastructure.repository.construction_repository import ConstructionRe
 from app.infrastructure.repository.event_repository import EventRepository
 from app.schemas.construction import (
     ConstructionBlockCreate,
+    ConstructionDocumentationTypeCreate,
+    ConstructionDocumentationTypeUpdate,
     ConstructionMeasurementInspectionVerifyRequest,
     ConstructionMeasurementItemCreate,
     ConstructionMeasurementItemInspectionCreate,
@@ -129,6 +135,12 @@ class ConstructionEventDispatcher(Protocol):
 
 
 class ConstructionProjectService:
+    #: Empresas cujo catalogo de documentacao ja foi semeado neste processo.
+    #: O seed e idempotente; isto so evita repetir a consulta a cada tecla do
+    #: combobox. Nasce vazio a cada boot, entao um banco restaurado por baixo
+    #: nao fica com o cache mentindo.
+    _companies_with_seeded_documentation_types: ClassVar[set[UUID]] = set()
+
     def __init__(
         self,
         repository: ConstructionRepository,
@@ -603,22 +615,26 @@ class ConstructionProjectService:
             )
 
         net_sale_price = sale_price - discount_amount
+        documentations = await self._resolve_sale_documentations(unit=unit, request=request)
+        documentation_total = self._sum_documentations(documentations=documentations)
         payment_sources = self._build_sale_payment_sources(
             request=request,
             sale_price=sale_price,
             discount_amount=discount_amount,
+            documentation_total=documentation_total,
         )
         receivable_amount = self._sum_installment_sources(payment_sources=payment_sources)
         if receivable_amount <= Decimal("0"):
             raise ConstructionInvalidValueError(
                 message=(
                     "The sale has nothing left to charge the buyer: entry plus bank sources and discount "
-                    "already cover the sale price."
+                    "already cover the sale price plus documentation."
                 ),
                 error_code="CONSTRUCTION_UNIT_WITHOUT_INSTALLMENT_SOURCE",
             )
 
         await self._replace_unit_payment_sources(unit=unit, payment_sources=payment_sources)
+        await self._replace_unit_documentations(unit=unit, documentations=documentations)
 
         unit.status = ConstructionUnitStatus.SOLD
         unit.buyer_person_id = request.buyer_person_id
@@ -637,11 +653,16 @@ class ConstructionProjectService:
             first_due_date=request.first_due_date,
             installments=request.installments,
             payment_sources=payment_sources,
+            documentations=documentations,
+            documentation_total=documentation_total,
             net_sale_price=net_sale_price,
             receivable_amount=receivable_amount,
             actor_user_id=actor_user_id,
         )
-        dispatch_result = await self._dispatch_integration_event(event=sale_event)
+        dispatch_result = await self._dispatch_integration_event(
+            event=sale_event,
+            fallback_message="Não foi possível registrar a venda no ERP.",
+        )
         if dispatch_result is not None and dispatch_result.response_event is not None:
             erp_event = dispatch_result.response_event
             self._apply_contract_snapshot_from_payload(unit=unit, payload=erp_event.payload)
@@ -1596,6 +1617,155 @@ class ConstructionProjectService:
             service_template_id=service_template.id,
         )
 
+    async def list_documentation_types(
+        self,
+        *,
+        company_id: UUID,
+        only_active: bool = True,
+        search: str | None = None,
+    ) -> list[ConstructionDocumentationTypeModel]:
+        await self._ensure_default_documentation_types(company_id=company_id)
+        return await self.repository.list_documentation_types(
+            company_id=company_id,
+            only_active=only_active,
+            search=search,
+        )
+
+    async def _ensure_default_documentation_types(self, *, company_id: UUID) -> None:
+        """Semeia os quatro tipos do legado na primeira vez que a empresa olha o catalogo.
+
+        A migration cobre quem ja tem projeto; empresa criada depois cai aqui. A
+        verificacao e por ``system_code`` justamente para que renomear
+        "Avaliacao" nao faca o seed recria-la.
+        """
+        if company_id in self._companies_with_seeded_documentation_types:
+            return
+
+        default_codes = [system_code for system_code, _ in ConstructionDocumentationType.DEFAULT_TYPES]
+        existing = await self.repository.list_documentation_types_by_system_codes(
+            company_id=company_id,
+            system_codes=default_codes,
+        )
+        existing_codes = {documentation_type.system_code for documentation_type in existing}
+        missing = [
+            (system_code, name)
+            for system_code, name in ConstructionDocumentationType.DEFAULT_TYPES
+            if system_code not in existing_codes
+        ]
+        if missing:
+            for system_code, name in missing:
+                await self.repository.upsert_documentation_type_system_code(
+                    company_id=company_id,
+                    name=name,
+                    normalized_name=ConstructionDocumentationType.normalize_name(name),
+                    system_code=system_code,
+                )
+
+            await self.repository.commit()
+
+        # O seed e idempotente, mas o combobox lista a cada tecla: sem isto
+        # cada busca pagaria a consulta dos quatro codigos de novo.
+        self._companies_with_seeded_documentation_types.add(company_id)
+
+    async def create_documentation_type(
+        self,
+        *,
+        company_id: UUID,
+        request: ConstructionDocumentationTypeCreate,
+    ) -> ConstructionDocumentationTypeModel:
+        documentation_type = await self._get_or_create_documentation_type(
+            company_id=company_id,
+            name=request.name,
+        )
+        # Recriar um tipo inativo e o jeito de reativa-lo: foi pedido de
+        # proposito, ao contrario do que acontece ao digitar o nome na venda.
+        documentation_type.is_active = True
+        await self.repository.commit()
+        await self.repository.refresh(documentation_type)
+        return documentation_type
+
+    async def update_documentation_type(
+        self,
+        *,
+        company_id: UUID,
+        documentation_type_id: UUID,
+        request: ConstructionDocumentationTypeUpdate,
+    ) -> ConstructionDocumentationTypeModel:
+        documentation_type = await self.repository.get_documentation_type(
+            company_id=company_id,
+            documentation_type_id=documentation_type_id,
+        )
+        if documentation_type is None:
+            raise ConstructionNotFoundError(resource_name="Construction documentation type")
+
+        # exclude_none porque o cliente manda `name: null` quando so alterna o
+        # is_active, e `name` e `is_active` sao NOT NULL: sem isso o PATCH de
+        # inativar grava NULL e estoura IntegrityError.
+        updates = request.model_dump(exclude_unset=True, exclude_none=True)
+        if updates.get("name"):
+            next_name = ConstructionDocumentationType.clean_name(updates["name"])
+            normalized_name = ConstructionDocumentationType.normalize_name(next_name)
+            if normalized_name != documentation_type.normalized_name:
+                duplicated = await self.repository.get_documentation_type_by_normalized_name(
+                    company_id=company_id,
+                    normalized_name=normalized_name,
+                )
+                if duplicated is not None and duplicated.id != documentation_type.id:
+                    raise ConstructionDuplicateCodeError(
+                        resource_name="Construction documentation type",
+                        code=next_name,
+                    )
+
+            updates["name"] = next_name
+            updates["normalized_name"] = normalized_name
+
+        self._apply_updates(entity=documentation_type, updates=updates)
+        await self.repository.commit()
+        await self.repository.refresh(documentation_type)
+        return documentation_type
+
+    async def _get_or_create_documentation_type(
+        self,
+        *,
+        company_id: UUID,
+        name: str,
+    ) -> ConstructionDocumentationTypeModel:
+        """Devolve o tipo com esse nome na empresa, criando-o se ainda nao existe.
+
+        Nao decide nada sobre ``is_active``: quem chama e que sabe se um tipo
+        inativo pode ser usado -- a venda recusa, o ``POST`` reativa.
+        """
+        clean_name = ConstructionDocumentationType.clean_name(name)
+        if not clean_name:
+            raise ConstructionInvalidValueError(
+                message="Informe o nome do tipo de documentação.",
+                error_code="CONSTRUCTION_DOCUMENTATION_TYPE_NAME_REQUIRED",
+            )
+
+        normalized_name = ConstructionDocumentationType.normalize_name(clean_name)
+        documentation_type = await self.repository.get_documentation_type_by_normalized_name(
+            company_id=company_id,
+            normalized_name=normalized_name,
+        )
+        if documentation_type is not None:
+            return documentation_type
+
+        # O INSERT pode nao voltar nada porque outra requisicao criou o mesmo
+        # nome no meio do caminho -- dois usuarios lancando "SEG CAIXA" ao
+        # mesmo tempo e caso real no combobox da venda.
+        created = await self.repository.insert_documentation_type_if_absent(
+            company_id=company_id,
+            name=clean_name,
+            normalized_name=normalized_name,
+        )
+        if created is not None:
+            return created
+
+        return await self.repository.get_documentation_type_by_normalized_name(
+            company_id=company_id,
+            normalized_name=normalized_name,
+        )
+
     async def import_service_templates(
         self,
         *,
@@ -1731,26 +1901,148 @@ class ConstructionProjectService:
         unit: ConstructionUnit,
         payment_sources: list[dict[str, Any]],
     ) -> None:
-        current_sources = await self.repository.list_unit_payment_sources(
+        await self.repository.replace_unit_children(
+            ConstructionUnitPaymentSourceModel,
             company_id=unit.company_id,
             unit_id=unit.id,
-        )
-        for current_source in current_sources:
-            await self.repository.delete(current_source)
-
-        for payment_source in payment_sources:
-            due_date = payment_source.get("due_date")
-            await self.repository.add(
+            entities=[
                 ConstructionUnitPaymentSourceModel(
                     company_id=unit.company_id,
                     unit_id=unit.id,
                     source_type=str(payment_source["source_type"]),
                     amount=Decimal(str(payment_source["amount"])),
-                    due_date=date.fromisoformat(str(due_date)) if due_date else None,
+                    due_date=(
+                        date.fromisoformat(str(payment_source["due_date"]))
+                        if payment_source.get("due_date")
+                        else None
+                    ),
                     installments=int(payment_source.get("installments") or 1),
                     generates_installments=bool(payment_source.get("generates_installments")),
                 )
+                for payment_source in payment_sources
+            ],
+        )
+
+    async def _resolve_sale_documentations(
+        self,
+        *,
+        unit: ConstructionUnit,
+        request: ConstructionUnitSaleConfirmRequest,
+    ) -> list[dict[str, Any]]:
+        """Resolve cada item de documentacao para um tipo do catalogo da empresa.
+
+        O tipo vem por id quando o usuario escolheu um existente, ou por nome
+        quando ele digitou um novo no combobox -- e so aqui o tipo novo e
+        criado, nunca ao digitar.
+        """
+        items = request.documentations or []
+        if not items:
+            return []
+
+        current_type_ids = {
+            documentation.documentation_type_id
+            for documentation in await self.repository.list_unit_documentations(
+                company_id=unit.company_id,
+                unit_id=unit.id,
             )
+        }
+
+        documentations: list[dict[str, Any]] = []
+        seen_type_ids: set[UUID] = set()
+        for sequence_number, item in enumerate(items, start=1):
+            if item.documentation_type_id is not None:
+                documentation_type = await self.repository.get_documentation_type(
+                    company_id=unit.company_id,
+                    documentation_type_id=item.documentation_type_id,
+                )
+                if documentation_type is None:
+                    raise ConstructionNotFoundError(resource_name="Construction documentation type")
+            else:
+                documentation_type = await self._get_or_create_documentation_type(
+                    company_id=unit.company_id,
+                    name=item.name or "",
+                )
+
+            # Inativar um tipo nao pode travar a edicao de uma venda que ja o
+            # usava: trocar o comprador quebraria por causa do catalogo. Vale
+            # igual para o tipo escolhido pelo id e para o digitado pelo nome
+            # -- e a venda nunca reativa o tipo, so tolera.
+            if not documentation_type.is_active and documentation_type.id not in current_type_ids:
+                raise ConstructionInvalidValueError(
+                    message=f"O tipo de documentação '{documentation_type.name}' está inativo.",
+                    error_code="CONSTRUCTION_DOCUMENTATION_TYPE_INACTIVE",
+                )
+
+            if documentation_type.id in seen_type_ids:
+                raise ConstructionInvalidValueError(
+                    message=f"A documentação '{documentation_type.name}' está informada mais de uma vez.",
+                    error_code="CONSTRUCTION_UNIT_DOCUMENTATION_DUPLICATE_TYPE",
+                )
+
+            seen_type_ids.add(documentation_type.id)
+            documentations.append(
+                {
+                    "documentation_type_id": str(documentation_type.id),
+                    "name": documentation_type.name,
+                    "amount": self._format_event_decimal(value=item.amount.quantize(Decimal("0.01"))),
+                    "sequence_number": sequence_number,
+                }
+            )
+
+        return documentations
+
+    @staticmethod
+    def _sum_documentations(*, documentations: list[dict[str, Any]]) -> Decimal:
+        return sum(
+            (Decimal(str(documentation["amount"])) for documentation in documentations),
+            Decimal("0"),
+        ).quantize(Decimal("0.01"))
+
+    async def _replace_unit_documentations(
+        self,
+        *,
+        unit: ConstructionUnit,
+        documentations: list[dict[str, Any]],
+    ) -> None:
+        await self.repository.replace_unit_children(
+            ConstructionUnitDocumentationModel,
+            company_id=unit.company_id,
+            unit_id=unit.id,
+            entities=[
+                ConstructionUnitDocumentationModel(
+                    company_id=unit.company_id,
+                    unit_id=unit.id,
+                    documentation_type_id=UUID(str(documentation["documentation_type_id"])),
+                    sequence_number=int(documentation.get("sequence_number") or 1),
+                    amount=Decimal(str(documentation["amount"])),
+                )
+                for documentation in documentations
+            ],
+        )
+
+    @staticmethod
+    def _erp_domain_error(
+        *,
+        request_error: httpx.HTTPStatusError,
+        fallback_message: str,
+    ) -> ConstructionDomainError:
+        """Traduz a recusa do ERP para a mensagem que vai a tela.
+
+        O ERP e quem conhece a regra que recusou -- recibo ja emitido, total
+        abaixo do que foi pago. Sem isso o usuario recebe um 502 generico no
+        lugar da unica frase que explica o que aconteceu.
+        """
+        try:
+            body = request_error.response.json()
+        except Exception:
+            body = None
+
+        detail = body.get("message") or body.get("detail") if isinstance(body, dict) else None
+        status_code = request_error.response.status_code
+        return ConstructionDomainError(
+            message=detail or fallback_message,
+            status_code=status_code if status_code < 500 else 502,
+        )
 
     async def build_project_summary(
         self,
@@ -1931,20 +2223,9 @@ class ConstructionProjectService:
                 changes=changes,
             )
         except httpx.HTTPStatusError as request_error:
-            # O ERP e quem conhece a regra do recibo emitido: a mensagem dele e
-            # mais util para o usuario do que um 502 generico.
-            detail = None
-            try:
-                body = request_error.response.json()
-                detail = body.get("message") or body.get("detail")
-            except Exception:
-                detail = None
-
-            raise ConstructionDomainError(
-                message=detail or "Não foi possível editar a parcela no ERP.",
-                status_code=request_error.response.status_code
-                if request_error.response.status_code < 500
-                else 502,
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message="Não foi possível editar a parcela no ERP.",
             ) from request_error
 
     async def build_unit_sale_composition(self, *, company_id: UUID, unit_id: UUID) -> dict[str, Any]:
@@ -1953,8 +2234,16 @@ class ConstructionProjectService:
             company_id=company_id,
             unit_id=unit_id,
         )
+        documentations = await self.repository.list_unit_documentations(
+            company_id=company_id,
+            unit_id=unit_id,
+        )
         sale_price = unit.sale_price or Decimal("0")
         discount_amount = unit.discount_amount or Decimal("0")
+        documentation_total = sum(
+            (documentation.amount for documentation in documentations),
+            Decimal("0"),
+        )
         installment_total = sum(
             (source.amount for source in payment_sources if source.generates_installments),
             Decimal("0"),
@@ -1968,10 +2257,25 @@ class ConstructionProjectService:
             "unit_code": unit.code,
             "sale_price": sale_price,
             "discount_amount": discount_amount,
+            "documentation_total": documentation_total,
+            # O liquido da unidade continua preco - desconto: a documentacao e
+            # repasse cobrado do comprador, nao receita da venda. O que ele deve
+            # e a soma dos dois.
+            "total_charged": sale_price - discount_amount + documentation_total,
             "installment_total": installment_total,
             "settlement_total": settlement_total,
             "external_receivable_id": unit.external_receivable_id,
             "external_receivable_status": unit.external_receivable_status,
+            "documentations": [
+                {
+                    "id": documentation.id,
+                    "documentation_type_id": documentation.documentation_type_id,
+                    "name": documentation.documentation_type.name,
+                    "amount": documentation.amount,
+                    "sequence_number": documentation.sequence_number,
+                }
+                for documentation in documentations
+            ],
             "sources": [
                 {
                     "source_type": source.source_type,
@@ -2427,18 +2731,20 @@ class ConstructionProjectService:
         request: ConstructionUnitSaleConfirmRequest,
         sale_price: Decimal,
         discount_amount: Decimal,
+        documentation_total: Decimal = Decimal("0"),
     ) -> list[dict[str, Any]]:
         """Monta a composicao da venda no modelo do legado.
 
         O usuario informa entrada, financiamento, FGTS e subsidio; o SALDO e o
-        que sobra do preco depois de abater essas fontes e o desconto, e e ele
-        que vira as parcelas do contas a receber:
+        que sobra do preco mais a documentacao depois de abater essas fontes e o
+        desconto, e e ele que vira as parcelas do contas a receber:
 
-            SALDO = preco - desconto - entrada - financiamento - FGTS - subsidio
+            SALDO = preco + documentacao - desconto - entrada - financiamento - FGTS - subsidio
 
         E a mesma conta do tooltip de Dwelling/Resume.cshtml:170. Nao existe uma
         fonte "parcela construtora" para digitar: se ela pudesse ser informada,
-        o usuario teria de fazer essa subtracao de cabeca.
+        o usuario teria de fazer essa subtracao de cabeca. A documentacao
+        tambem nao e fonte nem parcela propria -- ela dilui no saldo.
         """
         informed_total = Decimal("0")
         payment_sources: list[dict[str, Any]] = []
@@ -2474,11 +2780,11 @@ class ConstructionProjectService:
                 }
             )
 
-        balance = (sale_price - discount_amount - informed_total).quantize(Decimal("0.01"))
+        balance = (sale_price + documentation_total - discount_amount - informed_total).quantize(Decimal("0.01"))
 
         if balance < Decimal("0"):
             raise ConstructionInvalidValueError(
-                message="Payment sources plus discount exceed the unit sale price.",
+                message="Payment sources plus discount exceed the unit sale price plus documentation.",
                 error_code="CONSTRUCTION_UNIT_PAYMENT_SOURCES_TOTAL_MISMATCH",
             )
 
@@ -2503,6 +2809,8 @@ class ConstructionProjectService:
         first_due_date: date,
         installments: int,
         payment_sources: list[dict[str, Any]],
+        documentations: list[dict[str, Any]],
+        documentation_total: Decimal,
         net_sale_price: Decimal,
         receivable_amount: Decimal,
         actor_user_id: UUID | None,
@@ -2522,6 +2830,8 @@ class ConstructionProjectService:
             "first_due_date": ConstructionProjectService._format_event_date(value=first_due_date),
             "installments": installments,
             "payment_sources": payment_sources,
+            "documentation_total": ConstructionProjectService._format_event_decimal(value=documentation_total),
+            "documentations": documentations,
             "analytic_cost_center_id": str(analytic_cost_center_id),
         }
         if unit.secondary_buyer_person_id is not None:
@@ -2597,17 +2907,35 @@ class ConstructionProjectService:
                 payload=dispatch_result.response_event.payload,
             )
 
-    async def _dispatch_integration_event(self, *, event: EventEnvelope):
-        if self.integration_dispatcher is not None:
-            return await self.integration_dispatcher.dispatch(event=event)
+    async def _dispatch_integration_event(
+        self,
+        *,
+        event: EventEnvelope,
+        fallback_message: str = "Não foi possível registrar a operação no ERP.",
+    ):
+        """Envia o evento ao ERP, traduzindo a recusa dele.
 
-        if self.event_repository is not None:
-            await self.event_repository.add_outbox_event(event=event)
+        Todo evento sai por aqui, entao a traducao vale para venda, projeto,
+        unidade, medicao e compra de uma vez -- antes so um 502 generico
+        chegava a tela.
+        """
+        try:
+            if self.integration_dispatcher is not None:
+                return await self.integration_dispatcher.dispatch(event=event)
 
-        if self.erp_client is None:
-            return None
+            if self.event_repository is not None:
+                await self.event_repository.add_outbox_event(event=event)
 
-        response_event = await self.erp_client.deliver_event(event=event)
+            if self.erp_client is None:
+                return None
+
+            response_event = await self.erp_client.deliver_event(event=event)
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message=fallback_message,
+            ) from request_error
+
         return ConstructionIntegrationDispatchResult(
             event=event,
             response_event=response_event,

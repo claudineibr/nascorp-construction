@@ -186,6 +186,11 @@ class ConstructionUnit(Base):
         cascade="all, delete-orphan",
         order_by="ConstructionUnitPaymentSource.source_type",
     )
+    documentations: Mapped[list[ConstructionUnitDocumentation]] = relationship(
+        back_populates="unit",
+        cascade="all, delete-orphan",
+        order_by="ConstructionUnitDocumentation.sequence_number",
+    )
 
     @property
     def net_sale_price(self) -> Decimal | None:
@@ -391,6 +396,80 @@ class ConstructionServiceTemplateItem(Base):
     )
 
     service_template: Mapped[ConstructionServiceTemplate] = relationship(back_populates="items")
+
+
+class ConstructionDocumentationType(Base):
+    """Catalogo de tipos de documentacao cobrada do comprador, por empresa.
+
+    No legado a documentacao era quatro colunas fixas mais uma lista de texto
+    livre, e as 184 descricoes distintas do dump provam no que isso da. Aqui o
+    tipo e uma linha: os quatro do legado nascem semeados, o resto e criado
+    pelo proprio combobox da venda.
+    """
+
+    __tablename__ = "construction_documentation_types"
+    __table_args__ = (
+        UniqueConstraint(
+            "company_id",
+            "normalized_name",
+            name="uq_construction_documentation_types_normalized_name",
+        ),
+        UniqueConstraint(
+            "company_id",
+            "system_code",
+            name="uq_construction_documentation_types_system_code",
+        ),
+        {"schema": CONSTRUCTION_SCHEMA},
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    normalized_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    system_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class ConstructionUnitDocumentation(Base):
+    __tablename__ = "construction_unit_documentations"
+    __table_args__ = (
+        UniqueConstraint("unit_id", "documentation_type_id", name="uq_construction_unit_documentations_type"),
+        {"schema": CONSTRUCTION_SCHEMA},
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    unit_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_units.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    documentation_type_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_documentation_types.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    unit: Mapped[ConstructionUnit] = relationship(back_populates="documentations")
+    documentation_type: Mapped[ConstructionDocumentationType] = relationship(lazy="selectin")
 
 
 class ConstructionMeasurementItem(Base):

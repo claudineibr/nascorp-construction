@@ -70,12 +70,36 @@ class ConstructionUnitPaymentSource:
 
     LABELS = {
         DOWN_PAYMENT: "Entrada",
-        BALANCE: "Saldo a parcelar",
-        DIRECT_BUILDER: "Saldo a parcelar",
+        BALANCE: "Saldo devedor",
+        DIRECT_BUILDER: "Saldo devedor",
         GOVERNMENT_SUBSIDY: "Subsídio",
         FGTS: "FGTS",
         FINANCING: "Financiamento",
     }
+
+
+class ConstructionDocumentationType:
+    """Tipos de documentacao semeados por empresa.
+
+    A identidade estavel e o ``system_code``, nao o nome: renomear "Avaliacao"
+    nao pode duplicar o seed nem quebrar o de-para do ETL.
+    """
+
+    DEFAULT_TYPES = (
+        ("APPRAISAL", "Avaliação"),
+        ("CITY_HALL", "Prefeitura"),
+        ("NOTARY", "Cartório"),
+        ("IPTU", "IPTU"),
+    )
+
+    @staticmethod
+    def clean_name(value: str) -> str:
+        """Nome como o usuario digitou, sem espaco sobrando -- e o que vai ao contrato."""
+        return " ".join((value or "").split())
+
+    @staticmethod
+    def normalize_name(value: str) -> str:
+        return ConstructionDocumentationType.clean_name(value).upper()
 
 
 class ConstructionInspectionStatus:

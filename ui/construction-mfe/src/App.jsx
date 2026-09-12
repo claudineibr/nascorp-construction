@@ -26,6 +26,7 @@ import {
   Unlock,
 } from "lucide-react"
 import styles from "./App.module.css"
+import CreatableCombobox from "./components/CreatableCombobox.jsx"
 import { resolveConstructionBridge } from "./bridge/constructionBridge.js"
 import {
   approveConstructionProcurementRequest,
@@ -51,6 +52,7 @@ import {
   deleteConstructionUnit,
   fetchConstructionAddressByZip,
   listConstructionBlocks,
+  listConstructionDocumentationTypes,
   getConstructionProjectSummary,
   getConstructionUnitPaymentPlan,
   updateConstructionUnitInstallment,
@@ -305,6 +307,7 @@ const defaultSaleUnitForm = {
   financingAmount: "",
   financingDueDate: "",
   financingInstallments: "1",
+  documentations: [],
 }
 
 // Das fontes informadas, so a entrada vira parcela. O saldo tambem parcela,
@@ -710,6 +713,46 @@ function parseCurrencyFormValue(value) {
   return Number.isNaN(parsedValue) ? 0 : parsedValue
 }
 
+let saleDocumentationKeySequence = 0
+
+function nextSaleDocumentationKey() {
+  saleDocumentationKeySequence += 1
+  return `doc-${saleDocumentationKeySequence}`
+}
+
+function makeSaleDocumentationRow() {
+  return {
+    key: nextSaleDocumentationKey(),
+    documentationTypeId: "",
+    documentationTypeName: "",
+    amount: "",
+  }
+}
+
+// Mesma normalização do backend (colapsa espaços e sobe a caixa): é ela que
+// decide se duas linhas são o mesmo tipo.
+function normalizeDocumentationName(value) {
+  return String(value ?? "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .join(" ")
+    .toUpperCase()
+}
+
+function buildSaleDocumentationsFromForm(formSale) {
+  return (formSale.documentations ?? [])
+    .map((documentation) => ({
+      documentationTypeId: String(documentation.documentationTypeId ?? "").trim(),
+      name: String(documentation.documentationTypeName ?? "").trim(),
+      amountValue: parseCurrencyFormValue(documentation.amount),
+    }))
+    .filter((documentation) => documentation.amountValue > 0)
+}
+
+function sumSaleDocumentations(documentations) {
+  return documentations.reduce((total, documentation) => total + documentation.amountValue, 0)
+}
+
 function buildSalePaymentSourcesFromForm(formSale) {
   return salePaymentSourceDefinitions
     .map((definition) => ({
@@ -743,6 +786,36 @@ function requiredSaleFieldError(formSale) {
     return "O desconto deve ser menor que o preço da venda."
   }
 
+  const seenDocumentationKeys = new Set()
+  let documentationTotal = 0
+  for (const documentationRow of formSale.documentations ?? []) {
+    const rowTypeName = String(documentationRow.documentationTypeName ?? "").trim()
+    const rowTypeId = String(documentationRow.documentationTypeId ?? "").trim()
+    const rowAmount = parseCurrencyFormValue(documentationRow.amount)
+
+    // Gravar é replace-all: uma linha com tipo e sem valor sairia da lista em
+    // silêncio e apagaria a documentação que já estava na venda.
+    if ((rowTypeId || rowTypeName) && rowAmount <= 0) {
+      return `Informe o valor da documentação '${rowTypeName || "selecionada"}' ou remova a linha.`
+    }
+
+    if (rowAmount <= 0) {
+      continue
+    }
+
+    if (!rowTypeId && !rowTypeName) {
+      return "Informe o tipo da documentação."
+    }
+
+    const documentationKey = rowTypeId || normalizeDocumentationName(rowTypeName)
+    if (seenDocumentationKeys.has(documentationKey)) {
+      return `A documentação '${rowTypeName || "informada"}' está informada mais de uma vez.`
+    }
+
+    seenDocumentationKeys.add(documentationKey)
+    documentationTotal += rowAmount
+  }
+
   const paymentSources = buildSalePaymentSourcesFromForm(formSale)
   if (paymentSources.length) {
     for (const paymentSource of paymentSources) {
@@ -759,16 +832,16 @@ function requiredSaleFieldError(formSale) {
     const sourcesTotal = paymentSources.reduce((total, paymentSource) => total + paymentSource.amountValue, 0)
     // O que sobra do preço é o saldo, e o saldo é o que vira parcela. Só é erro
     // quando as fontes informadas passam do preço, nunca quando sobra.
-    const balance = grossSalePrice - discountAmount - sourcesTotal
+    const balance = grossSalePrice + documentationTotal - discountAmount - sourcesTotal
     if (grossSalePrice > 0 && balance < -0.01) {
-      return `A composição somada ao desconto excede o preço da venda em ${formatMoney(Math.abs(balance))}.`
+      return `A composição somada ao desconto excede o preço da venda mais a documentação em ${formatMoney(Math.abs(balance))}.`
     }
 
     const downPaymentTotal = paymentSources
       .filter((paymentSource) => SALE_INSTALLMENT_SOURCE_TYPES.includes(paymentSource.sourceType))
       .reduce((total, paymentSource) => total + paymentSource.amountValue, 0)
     if (grossSalePrice > 0 && downPaymentTotal + Math.max(balance, 0) <= 0.01) {
-      return "Não sobrou nada para cobrar do comprador: entrada, desconto e liberações do banco já cobrem o preço."
+      return "Não sobrou nada para cobrar do comprador: entrada, desconto e liberações do banco já cobrem o preço mais a documentação."
     }
 
     for (const paymentSource of paymentSources) {
@@ -903,6 +976,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [unitPaymentPlanError, setUnitPaymentPlanError] = useState(null)
   const [saleUnitForm, setSaleUnitForm] = useState(defaultSaleUnitForm)
   const [saleTargetUnit, setSaleTargetUnit] = useState(null)
+  const [documentationTypes, setDocumentationTypes] = useState([])
+  const [loadingDocumentationTypes, setLoadingDocumentationTypes] = useState(false)
   const [submittingSale, setSubmittingSale] = useState(false)
   const [editingInstallment, setEditingInstallment] = useState(null)
   const [editInstallmentForm, setEditInstallmentForm] = useState(defaultEditInstallmentForm)
@@ -1190,6 +1265,21 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       setLoadingProcurement(false)
     }
   }, [activeProjectId, bridge])
+
+  // O catálogo inteiro é carregado uma vez por abertura do modal de venda: são
+  // poucos tipos por empresa, e o combobox filtra localmente. Buscar por
+  // combobox faria um GET por linha de documentação.
+  const loadDocumentationTypes = useCallback(async () => {
+    setLoadingDocumentationTypes(true)
+    try {
+      const result = await listConstructionDocumentationTypes({ bridge })
+      setDocumentationTypes(result.items)
+    } catch {
+      setDocumentationTypes([])
+    } finally {
+      setLoadingDocumentationTypes(false)
+    }
+  }, [bridge])
 
   const loadPersonSummaries = useCallback(
     async (search = "") => {
@@ -1852,6 +1942,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       void loadPersonSummaries()
     }
 
+    void loadDocumentationTypes()
     setSaleTargetUnit(unit)
     setSaleUnitForm({
       ...defaultSaleUnitForm,
@@ -1873,7 +1964,16 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     // valendo, senão editar o comprador zeraria os valores sem avisar.
     try {
       const plan = await getConstructionUnitPaymentPlan({ bridge, unitId: unit.id })
-      setSaleUnitForm((current) => ({ ...current, ...saleFormFieldsFromSources(plan.sources) }))
+      setSaleUnitForm((current) => ({
+        ...current,
+        ...saleFormFieldsFromSources(plan.sources),
+        documentations: (plan.documentations ?? []).map((documentation) => ({
+          key: nextSaleDocumentationKey(),
+          documentationTypeId: documentation.documentationTypeId ?? "",
+          documentationTypeName: documentation.name ?? "",
+          amount: formatCurrencyFromNumber(documentation.amount),
+        })),
+      }))
     } catch (requestError) {
       bridge?.feedback?.warning?.(
         requestError?.message ?? "Não foi possível carregar a composição atual da venda.",
@@ -1989,8 +2089,12 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         saleData: {
           ...saleUnitForm,
           paymentSources,
+          documentations: buildSaleDocumentationsFromForm(saleUnitForm),
         },
       })
+      // Os tipos criados digitando no combobox só existem depois do confirm:
+      // recarregar deixa o próximo lançamento achá-los na lista.
+      void loadDocumentationTypes()
       const wasEditing = saleTargetUnit.status === "sold"
       bridge?.feedback?.success?.(
         wasEditing ? "Venda atualizada: contrato e parcelas em aberto refeitos." : "Venda confirmada com sucesso.",
@@ -3092,6 +3196,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           onClose={closeSaleUnitModal}
           onChange={handleSaleUnitChange}
           onSubmit={handleSaleUnitSubmit}
+          documentationTypes={documentationTypes}
+          loadingDocumentationTypes={loadingDocumentationTypes}
           loading={submittingSale}
         />
       ) : null}
@@ -4051,6 +4157,7 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale, on
   const sources = composition.sources ?? []
   const installmentSources = sources.filter((source) => source.generatesInstallments)
   const settlementSources = sources.filter((source) => !source.generatesInstallments)
+  const documentations = composition.documentations ?? []
   const installments = paymentPlan.installments ?? []
 
   return (
@@ -4067,6 +4174,15 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale, on
           <h3>Liberado pelo banco</h3>
           <p className={styles.metricValue}>{formatMoney(composition.settlementTotal)}</p>
           <p className={styles.metricHint}>subsídio, FGTS e financiamento - não geram parcela</p>
+        </article>
+        <article className={styles.integrationCard}>
+          <h3>Documentação</h3>
+          <p className={styles.metricValue}>{formatMoney(composition.documentationTotal)}</p>
+          <p className={styles.metricHint}>
+            {documentations.length
+              ? `${documentations.length} item(ns), diluída no saldo`
+              : "sem documentação"}
+          </p>
         </article>
         <article className={styles.integrationCard}>
           <h3>Cobrado em parcelas</h3>
@@ -4087,8 +4203,9 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale, on
         <strong>Como a venda foi composta</strong>
         <p className={styles.metricHint}>
           O que o banco libera (subsídio, FGTS e financiamento) entra no preço da venda mas não vira parcela: a
-          data de pagamento depende da liberação. O que sobra do preço depois do desconto, da entrada e dessas
-          liberações é o <strong>saldo</strong>, e são a entrada e o saldo que o comprador paga em parcelas no
+          data de pagamento depende da liberação. A <strong>documentação</strong> é cobrada do comprador junto
+          do preço. O que sobra do preço mais a documentação, depois do desconto, da entrada e dessas
+          liberações, é o <strong>saldo</strong>, e são a entrada e o saldo que o comprador paga em parcelas no
           contas a receber.
         </p>
         {sources.length ? (
@@ -4130,6 +4247,26 @@ function UnitInstallmentsPanel({ unit, plan, loading, error, onRetry, onSale, on
               : "Sem composição registrada para esta unidade."}
           </p>
         )}
+        {documentations.length ? (
+          <div className={styles.tableWrapper}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th>Documentação</th>
+                  <th>Valor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {documentations.map((documentation) => (
+                  <tr key={documentation.id}>
+                    <td>{documentation.name}</td>
+                    <td>{formatMoney(documentation.amount)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
         {canSale || canEditSale ? (
           <div className={styles.filtersFooter}>
             <button type="button" className={styles.primaryButton} onClick={() => onSale(unit)}>
@@ -5963,7 +6100,17 @@ function ReserveUnitModal({ reserveForm, unit, people, onClose, onChange, onSubm
   )
 }
 
-function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, loading }) {
+function SaleUnitModal({
+  saleForm,
+  unit,
+  people,
+  onClose,
+  onChange,
+  onSubmit,
+  documentationTypes,
+  loadingDocumentationTypes,
+  loading,
+}) {
   const isEditing = unit?.status === "sold"
   const grossSalePrice = parseCurrencyFormValue(saleForm.salePrice)
   const discountAmount = parseCurrencyFormValue(saleForm.discountAmount)
@@ -5987,9 +6134,15 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
   const downPaymentTotal = installmentSources.reduce((total, source) => total + source.amountValue, 0)
   const settlementTotal = settlementSources.reduce((total, source) => total + source.amountValue, 0)
 
-  // SALDO = preço - desconto - entrada - financiamento - FGTS - subsídio.
+  const documentationRows = saleForm.documentations ?? []
+  const documentationTotal = sumSaleDocumentations(buildSaleDocumentationsFromForm(saleForm))
+
+  // SALDO = preço + documentação - desconto - entrada - financiamento - FGTS - subsídio.
   // É a conta do legado (Dwelling/Resume.cshtml), e é o saldo que vira parcela.
-  const balance = grossSalePrice - discountAmount - downPaymentTotal - settlementTotal
+  // A documentação é repasse cobrado do comprador: não vira parcela própria,
+  // dilui no saldo.
+  const balance =
+    grossSalePrice + documentationTotal - discountAmount - downPaymentTotal - settlementTotal
   const balanceInstallments = Math.max(Number(saleForm.installments || 1), 1)
   const balanceInstallmentAmount = balance > 0 ? balance / balanceInstallments : 0
 
@@ -6000,6 +6153,24 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
       .reduce((total, source) => total + source.installments, 0) +
     (balance > 0 ? balanceInstallments : 0)
   const exceedsPrice = grossSalePrice > 0 && balance < -0.01
+
+  const changeDocumentationRow = (key, changes) => {
+    onChange(
+      "documentations",
+      documentationRows.map((row) => (row.key === key ? { ...row, ...changes } : row)),
+    )
+  }
+
+  const removeDocumentationRow = (key) => {
+    onChange(
+      "documentations",
+      documentationRows.filter((row) => row.key !== key),
+    )
+  }
+
+  const addDocumentationRow = () => {
+    onChange("documentations", [...documentationRows, makeSaleDocumentationRow()])
+  }
 
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
@@ -6079,10 +6250,130 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
 
           <div className={styles.card}>
             <div className={styles.scopeMeta}>
+              <strong>Documentação</strong>
+              <span className={styles.metricHint}>
+                Avaliação, prefeitura, cartório, IPTU e outras taxas cobradas do comprador.{" "}
+                <strong>Entram no saldo devedor.</strong>
+              </span>
+            </div>
+            {documentationRows.map((documentationRow) => (
+              <div key={documentationRow.key} className={styles.formGrid}>
+                <div className={styles.filterControl}>
+                  <span>Tipo</span>
+                  <CreatableCombobox
+                    allowCreate
+                    items={documentationTypes}
+                    loading={loadingDocumentationTypes}
+                    placeholder="Escolha ou digite um novo tipo"
+                    emptyMessage="Nenhum tipo cadastrado."
+                    notFoundMessage="Nenhum tipo encontrado."
+                    value={
+                      documentationRow.documentationTypeName
+                        ? {
+                            id: documentationRow.documentationTypeId || null,
+                            name: documentationRow.documentationTypeName,
+                          }
+                        : null
+                    }
+                    onChange={(documentationType) =>
+                      changeDocumentationRow(documentationRow.key, {
+                        documentationTypeId: documentationType?.id ?? "",
+                        documentationTypeName: documentationType?.name ?? "",
+                      })
+                    }
+                  />
+                </div>
+                <label className={styles.filterControl}>
+                  <span>Valor</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={documentationRow.amount}
+                    onChange={(event) =>
+                      changeDocumentationRow(documentationRow.key, {
+                        amount: formatCurrencyInput(event.target.value),
+                      })
+                    }
+                    placeholder="0,00"
+                  />
+                </label>
+                <div className={styles.filterControl}>
+                  <span>&nbsp;</span>
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() => removeDocumentationRow(documentationRow.key)}
+                  >
+                    <Trash2 size={16} />
+                    Remover
+                  </button>
+                </div>
+              </div>
+            ))}
+            <div className={styles.formGrid}>
+              <div className={styles.filterControl}>
+                <span>&nbsp;</span>
+                <button type="button" className={styles.secondaryButton} onClick={addDocumentationRow}>
+                  <Plus size={16} />
+                  Incluir documentação
+                </button>
+              </div>
+              <div className={styles.filterControl}>
+                <span>Total da documentação</span>
+                <strong className={styles.installmentPreview}>
+                  {documentationTotal > 0 ? formatMoney(documentationTotal) : "-"}
+                </strong>
+              </div>
+            </div>
+          </div>
+
+          <div className={styles.card}>
+            <div className={styles.scopeMeta}>
+              <strong>Liberado pelo banco</strong>
+              <span className={styles.metricHint}>
+                Compoe o preço da venda e <strong>não gera parcela</strong>: a data de pagamento depende da
+                liberação, então a data informada e apenas a previsão.
+              </span>
+            </div>
+            {settlementSources.map((source) => (
+              <div key={source.sourceType} className={styles.formGrid}>
+                <label className={styles.filterControl}>
+                  <span>{source.label}</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={saleForm[source.amountField]}
+                    onChange={(event) =>
+                      onChange(source.amountField, formatCurrencyInput(event.target.value))
+                    }
+                    placeholder="0,00"
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Previsão de liberação</span>
+                  <input
+                    type="date"
+                    value={saleForm[source.dueDateField]}
+                    onChange={(event) => onChange(source.dueDateField, event.target.value)}
+                  />
+                </label>
+                <div className={styles.filterControl}>
+                  <span>Entra na venda como</span>
+                  <strong className={styles.installmentPreview}>
+                    {source.amountValue > 0 ? `${formatMoney(source.amountValue)} a vista` : "-"}
+                  </strong>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className={styles.card}>
+            <div className={styles.scopeMeta}>
               <strong>Cobrado do comprador</strong>
               <span className={styles.metricHint}>
                 Gera contas a receber. O valor informado e o <strong>total da fonte</strong> e e dividido pela
-                quantidade de parcelas.
+                quantidade de parcelas. O <strong>saldo</strong> abaixo e o que sobra depois da documentação e
+                das liberações do banco informadas acima.
               </span>
             </div>
             {installmentSources.map((source) => (
@@ -6130,12 +6421,12 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
 
             <div className={styles.formGrid}>
               <div className={styles.filterControl}>
-                <span>Saldo a parcelar</span>
+                <span>Saldo devedor</span>
                 <strong className={styles.installmentPreview}>
                   {grossSalePrice > 0 ? formatMoney(Math.max(balance, 0)) : "-"}
                 </strong>
                 <span className={styles.rowSecondaryText}>
-                  preço - desconto - entrada - liberações do banco
+                  preço + documentação - desconto - entrada - liberações do banco
                 </span>
               </div>
               <label className={styles.filterControl}>
@@ -6165,46 +6456,6 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
             </div>
           </div>
 
-          <div className={styles.card}>
-            <div className={styles.scopeMeta}>
-              <strong>Liberado pelo banco</strong>
-              <span className={styles.metricHint}>
-                Compoe o preço da venda e <strong>não gera parcela</strong>: a data de pagamento depende da
-                liberação, então a data informada e apenas a previsão.
-              </span>
-            </div>
-            {settlementSources.map((source) => (
-              <div key={source.sourceType} className={styles.formGrid}>
-                <label className={styles.filterControl}>
-                  <span>{source.label}</span>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={saleForm[source.amountField]}
-                    onChange={(event) =>
-                      onChange(source.amountField, formatCurrencyInput(event.target.value))
-                    }
-                    placeholder="0,00"
-                  />
-                </label>
-                <label className={styles.filterControl}>
-                  <span>Previsão de liberação</span>
-                  <input
-                    type="date"
-                    value={saleForm[source.dueDateField]}
-                    onChange={(event) => onChange(source.dueDateField, event.target.value)}
-                  />
-                </label>
-                <div className={styles.filterControl}>
-                  <span>Entra na venda como</span>
-                  <strong className={styles.installmentPreview}>
-                    {source.amountValue > 0 ? `${formatMoney(source.amountValue)} a vista` : "-"}
-                  </strong>
-                </div>
-              </div>
-            ))}
-          </div>
-
           <label className={styles.filterControl}>
             <span>Observação</span>
             <textarea
@@ -6225,6 +6476,10 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
                     <td className={styles.textRight}>{formatMoney(grossSalePrice)}</td>
                   </tr>
                   <tr>
+                    <td>Documentação</td>
+                    <td className={styles.textRight}>+ {formatMoney(documentationTotal)}</td>
+                  </tr>
+                  <tr>
                     <td>Desconto</td>
                     <td className={styles.textRight}>- {formatMoney(discountAmount)}</td>
                   </tr>
@@ -6238,7 +6493,7 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
                   </tr>
                   <tr>
                     <td>
-                      <strong>Saldo a parcelar</strong>
+                      <strong>Saldo devedor</strong>
                       <div className={styles.rowSecondaryText}>o que sobra e vira parcela</div>
                     </td>
                     <td className={styles.textRight}>
@@ -6263,7 +6518,7 @@ function SaleUnitModal({ saleForm, unit, people, onClose, onChange, onSubmit, lo
               {grossSalePrice <= 0
                 ? "Informe o preço da venda"
                 : exceedsPrice
-                  ? `Composição excede o preço em ${formatMoney(Math.abs(balance))}`
+                  ? `Composição excede o preço mais a documentação em ${formatMoney(Math.abs(balance))}`
                   : `Cobrança do comprador: ${formatMoney(receivableTotal)}`}
             </span>
           </div>

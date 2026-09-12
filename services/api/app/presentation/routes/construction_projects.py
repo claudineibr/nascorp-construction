@@ -20,6 +20,10 @@ from app.schemas.construction import (
     ConstructionBlockListResponse,
     ConstructionBlockResponse,
     ConstructionBlockUpdate,
+    ConstructionDocumentationTypeCreate,
+    ConstructionDocumentationTypeListResponse,
+    ConstructionDocumentationTypeResponse,
+    ConstructionDocumentationTypeUpdate,
     ConstructionPersonSummaryListResponse,
     ConstructionUnitInstallmentUpdateRequest,
     ConstructionProjectCreate,
@@ -580,6 +584,64 @@ async def update_unit_installment(
             changes=payload.model_dump(exclude_unset=True, exclude_none=True, mode="json"),
             user_id=ctx.user_id,
         )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/documentation-types", response_model=ConstructionDocumentationTypeListResponse)
+async def list_documentation_types(
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+    search: str | None = Query(default=None),
+    only_active: bool = Query(default=True),
+) -> ConstructionDocumentationTypeListResponse:
+    try:
+        documentation_types = await service.list_documentation_types(
+            company_id=ctx.company_id,
+            only_active=only_active,
+            search=search,
+        )
+        return ConstructionDocumentationTypeListResponse(
+            items=[
+                ConstructionDocumentationTypeResponse.model_validate(documentation_type)
+                for documentation_type in documentation_types
+            ],
+            total=len(documentation_types),
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/documentation-types", response_model=ConstructionDocumentationTypeResponse)
+async def create_documentation_type(
+    request_data: ConstructionDocumentationTypeCreate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionDocumentationTypeResponse:
+    try:
+        documentation_type = await service.create_documentation_type(
+            company_id=ctx.company_id,
+            request=request_data,
+        )
+        return ConstructionDocumentationTypeResponse.model_validate(documentation_type)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.patch("/documentation-types/{documentation_type_id}", response_model=ConstructionDocumentationTypeResponse)
+async def update_documentation_type(
+    documentation_type_id: UUID,
+    request_data: ConstructionDocumentationTypeUpdate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionDocumentationTypeResponse:
+    try:
+        documentation_type = await service.update_documentation_type(
+            company_id=ctx.company_id,
+            documentation_type_id=documentation_type_id,
+            request=request_data,
+        )
+        return ConstructionDocumentationTypeResponse.model_validate(documentation_type)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 

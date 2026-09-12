@@ -1,5 +1,6 @@
 from app.infrastructure.database.models.construction import (
     ConstructionBlock,
+    ConstructionDocumentationType,
     ConstructionMeasurement,
     ConstructionMeasurementItem,
     ConstructionMeasurementItemInspection,
@@ -9,6 +10,7 @@ from app.infrastructure.database.models.construction import (
     ConstructionSchedulePhase,
     ConstructionServiceTemplate,
     ConstructionServiceTemplateItem,
+    ConstructionUnitDocumentation,
     ConstructionUnitPaymentSource,
     ConstructionUnit,
 )
@@ -17,6 +19,7 @@ from app.infrastructure.database.models.event import DeadLetterEvent, OutboxEven
 
 __all__ = [
     "ConstructionBlock",
+    "ConstructionDocumentationType",
     "ConstructionMeasurement",
     "ConstructionMeasurementItem",
     "ConstructionMeasurementItemInspection",
@@ -26,6 +29,7 @@ __all__ = [
     "ConstructionSchedulePhase",
     "ConstructionServiceTemplate",
     "ConstructionServiceTemplateItem",
+    "ConstructionUnitDocumentation",
     "ConstructionUnitPaymentSource",
     "ConstructionUnit",
     "DeadLetterEvent",

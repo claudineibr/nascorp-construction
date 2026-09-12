@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.constants import (
     ConstructionBlockStatus,
@@ -214,6 +214,52 @@ class ConstructionUnitSalePaymentSource(BaseModel):
     installments: int = Field(default=1, ge=1, le=120)
 
 
+class ConstructionUnitSaleDocumentation(BaseModel):
+    """Um item de documentacao cobrado do comprador.
+
+    O tipo chega pelo id quando ja existe no catalogo, ou pelo nome digitado no
+    combobox -- e nesse caso e criado na hora da confirmacao, nunca antes:
+    cancelar o modal nao pode deixar tipo orfao.
+    """
+
+    documentation_type_id: UUID | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    amount: Decimal = Field(..., gt=0)
+
+    @model_validator(mode="after")
+    def validate_type_reference(self) -> "ConstructionUnitSaleDocumentation":
+        if self.documentation_type_id is None and not (self.name or "").strip():
+            raise ValueError("Informe o tipo da documentação.")
+
+        return self
+
+
+class ConstructionDocumentationTypeCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+
+
+class ConstructionDocumentationTypeUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    is_active: bool | None = None
+
+
+class ConstructionDocumentationTypeResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    company_id: UUID
+    name: str
+    system_code: str | None = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConstructionDocumentationTypeListResponse(BaseModel):
+    items: list[ConstructionDocumentationTypeResponse]
+    total: int
+
+
 class ConstructionUnitSaleConfirmRequest(BaseModel):
     buyer_person_id: UUID
     secondary_buyer_person_id: UUID | None = None
@@ -225,6 +271,9 @@ class ConstructionUnitSaleConfirmRequest(BaseModel):
     first_due_date: date
     installments: int = Field(default=1, ge=1, le=120)
     payment_sources: list[ConstructionUnitSalePaymentSource] | None = None
+    #: ``None`` e ``[]`` significam a mesma coisa -- sem documentacao -- porque
+    #: a gravacao e replace-all: o que nao vier no request e apagado.
+    documentations: list[ConstructionUnitSaleDocumentation] | None = None
 
 
 class ConstructionUnitInstallmentUpdateRequest(BaseModel):

@@ -141,6 +141,44 @@ class FakeProjectService:
             updated_at=now,
         )
 
+    async def list_documentation_types(self, *, company_id: UUID, only_active=True, search=None):
+        now = datetime.now(tz=UTC)
+        return [
+            SimpleNamespace(
+                id=uuid4(),
+                company_id=company_id,
+                name="Cartório",
+                system_code="NOTARY",
+                is_active=True,
+                created_at=now,
+                updated_at=now,
+            )
+        ]
+
+    async def create_documentation_type(self, *, company_id: UUID, request):
+        now = datetime.now(tz=UTC)
+        return SimpleNamespace(
+            id=uuid4(),
+            company_id=company_id,
+            name=request.name,
+            system_code=None,
+            is_active=True,
+            created_at=now,
+            updated_at=now,
+        )
+
+    async def update_documentation_type(self, *, company_id: UUID, documentation_type_id: UUID, request):
+        now = datetime.now(tz=UTC)
+        return SimpleNamespace(
+            id=documentation_type_id,
+            company_id=company_id,
+            name=request.name or "Cartório",
+            system_code="NOTARY",
+            is_active=True if request.is_active is None else request.is_active,
+            created_at=now,
+            updated_at=now,
+        )
+
     async def create_procurement_request(self, *, company_id: UUID, project_id: UUID, request):
         now = datetime.now(tz=UTC)
         return SimpleNamespace(
@@ -428,3 +466,101 @@ def test_submit_procurement_request_accepts_update_permission() -> None:
     assert payload["id"] == str(procurement_request_id)
     assert payload["company_id"] == str(company_id)
     assert payload["status"] == "pending_approval"
+
+
+def test_list_documentation_types_requires_units_read_permission() -> None:
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.CREATE})
+
+    response = client.get(
+        "/v1/construction/documentation-types",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+    )
+
+    assert response.status_code == 403
+
+
+def test_list_documentation_types_accepts_units_read_permission() -> None:
+    company_id = uuid4()
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.READ})
+
+    response = client.get(
+        "/v1/construction/documentation-types",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(company_id),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["name"] == "Cartório"
+    assert payload["items"][0]["system_code"] == "NOTARY"
+
+
+def test_create_documentation_type_requires_units_update_permission() -> None:
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.READ})
+
+    response = client.post(
+        "/v1/construction/documentation-types",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={"name": "SANESUL"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_create_documentation_type_accepts_units_update_permission() -> None:
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.UPDATE})
+
+    response = client.post(
+        "/v1/construction/documentation-types",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={"name": "SANESUL"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "SANESUL"
+
+
+def test_update_documentation_type_requires_units_update_permission() -> None:
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.READ})
+
+    response = client.patch(
+        f"/v1/construction/documentation-types/{uuid4()}",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={"is_active": False},
+    )
+
+    assert response.status_code == 403
+
+
+def test_update_documentation_type_accepts_units_update_permission() -> None:
+    documentation_type_id = uuid4()
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.UPDATE})
+
+    response = client.patch(
+        f"/v1/construction/documentation-types/{documentation_type_id}",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={"is_active": False},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == str(documentation_type_id)
+    assert payload["is_active"] is False

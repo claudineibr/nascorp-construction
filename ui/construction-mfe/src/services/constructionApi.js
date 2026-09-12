@@ -98,6 +98,14 @@ const toServiceTemplateView = (template) => ({
   })),
 })
 
+const toDocumentationTypeView = (documentationType) => ({
+  id: documentationType.id,
+  companyId: documentationType.company_id,
+  name: documentationType.name,
+  systemCode: documentationType.system_code ?? null,
+  isActive: documentationType.is_active,
+})
+
 const toMeasurementItemView = (item) => ({
   id: item.id,
   companyId: item.company_id,
@@ -356,6 +364,12 @@ const toSalePaymentSourcePayload = (paymentSource = {}) => ({
   amount: toNullableNumber(paymentSource.amount),
   due_date: toNullableString(paymentSource.dueDate),
   installments: Number(paymentSource.installments || 1),
+})
+
+const toSaleDocumentationPayload = (documentation = {}) => ({
+  documentation_type_id: toNullableString(documentation.documentationTypeId),
+  name: toNullableString(documentation.name),
+  amount: toNullableNumber(documentation.amountValue),
 })
 
 async function requestJson({ bridge, path, method = "GET", body = null, baseUrl = null }) {
@@ -681,6 +695,7 @@ export async function confirmConstructionUnitSale({ bridge, unitId, saleData }) 
       first_due_date: firstPaymentDueDate,
       installments: Number(saleData.installments || paymentSources[0]?.installments || 1),
       payment_sources: paymentSources.length ? paymentSources : null,
+      documentations: (saleData.documentations ?? []).map(toSaleDocumentationPayload),
     },
   })
 
@@ -740,10 +755,19 @@ export async function getConstructionUnitPaymentPlan({ bridge, unitId }) {
     unitCode: payload.unit_code,
     salePrice: payload.sale_price ?? null,
     discountAmount: payload.discount_amount ?? null,
+    documentationTotal: payload.documentation_total ?? null,
+    totalCharged: payload.total_charged ?? null,
     installmentTotal: payload.installment_total ?? null,
     settlementTotal: payload.settlement_total ?? null,
     externalReceivableId: payload.external_receivable_id ?? null,
     externalReceivableStatus: payload.external_receivable_status ?? null,
+    documentations: (payload.documentations ?? []).map((documentation) => ({
+      id: documentation.id,
+      documentationTypeId: documentation.documentation_type_id,
+      name: documentation.name,
+      amount: documentation.amount ?? null,
+      sequenceNumber: documentation.sequence_number ?? 1,
+    })),
     sources: (payload.sources ?? []).map((source) => ({
       sourceType: source.source_type,
       label: source.label,
@@ -780,6 +804,25 @@ export async function getConstructionUnitPaymentPlan({ bridge, unitId }) {
         paymentMethod: installment.payment_method ?? "",
       })),
     },
+  }
+}
+
+export async function listConstructionDocumentationTypes({ bridge, search = null, onlyActive = true } = {}) {
+  const params = new URLSearchParams()
+  if (search) {
+    params.set("search", search)
+  }
+
+  params.set("only_active", onlyActive ? "true" : "false")
+
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/documentation-types?${params.toString()}`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toDocumentationTypeView),
+    total: payload.total ?? 0,
   }
 }
 

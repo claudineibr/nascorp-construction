@@ -4,7 +4,8 @@ from uuid import UUID
 
 from decimal import Decimal
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,8 +13,10 @@ from app.domain.constants import ConstructionInspectionStatus, ConstructionOccur
 
 from app.infrastructure.database.models import (
     ConstructionBlock,
+    ConstructionDocumentationType,
     ConstructionMeasurement,
     ConstructionServiceTemplate,
+    ConstructionUnitDocumentation,
     ConstructionUnitPaymentSource,
     ConstructionMeasurementItem,
     ConstructionMeasurementItemInspection,
@@ -40,6 +43,27 @@ class ConstructionRepository:
 
     async def delete(self, entity: object) -> None:
         await self.session.delete(entity)
+
+    async def replace_unit_children(
+        self,
+        model: type,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        entities: list[object],
+    ) -> None:
+        """Troca todas as linhas filhas de uma unidade pelas novas.
+
+        O DELETE sai como statement, antes dos INSERT, por construcao: o unit
+        of work do SQLAlchemy emite os INSERT antes dos DELETE que ele mesmo
+        agenda, e as tabelas de fonte e de documentacao tem unique por
+        (unidade, tipo) -- editar a venda mantendo a mesma fonte estouraria.
+        """
+        await self.session.execute(
+            delete(model).where(model.company_id == company_id, model.unit_id == unit_id)
+        )
+        for entity in entities:
+            self.session.add(entity)
 
     async def get_project(self, *, company_id: UUID, project_id: UUID) -> ConstructionProject | None:
         result = await self.session.execute(
@@ -269,6 +293,146 @@ class ConstructionRepository:
                 ConstructionUnitPaymentSource.unit_id == unit_id,
             )
             .order_by(ConstructionUnitPaymentSource.source_type)
+        )
+        return list(result.scalars().all())
+
+    async def get_documentation_type(
+        self,
+        *,
+        company_id: UUID,
+        documentation_type_id: UUID,
+    ) -> ConstructionDocumentationType | None:
+        result = await self.session.execute(
+            select(ConstructionDocumentationType).where(
+                ConstructionDocumentationType.company_id == company_id,
+                ConstructionDocumentationType.id == documentation_type_id,
+            )
+        )
+        return result.scalars().first()
+
+    async def get_documentation_type_by_normalized_name(
+        self,
+        *,
+        company_id: UUID,
+        normalized_name: str,
+    ) -> ConstructionDocumentationType | None:
+        result = await self.session.execute(
+            select(ConstructionDocumentationType).where(
+                ConstructionDocumentationType.company_id == company_id,
+                ConstructionDocumentationType.normalized_name == normalized_name,
+            )
+        )
+        return result.scalars().first()
+
+    async def list_documentation_types(
+        self,
+        *,
+        company_id: UUID,
+        only_active: bool = True,
+        search: str | None = None,
+    ) -> list[ConstructionDocumentationType]:
+        statement = select(ConstructionDocumentationType).where(
+            ConstructionDocumentationType.company_id == company_id
+        )
+        if only_active:
+            statement = statement.where(ConstructionDocumentationType.is_active.is_(True))
+
+        if search:
+            statement = statement.where(ConstructionDocumentationType.name.ilike(f"%{search}%"))
+
+        result = await self.session.execute(statement.order_by(ConstructionDocumentationType.name))
+        return list(result.scalars().all())
+
+    async def list_documentation_types_by_system_codes(
+        self,
+        *,
+        company_id: UUID,
+        system_codes: list[str],
+    ) -> list[ConstructionDocumentationType]:
+        if not system_codes:
+            return []
+
+        result = await self.session.execute(
+            select(ConstructionDocumentationType).where(
+                ConstructionDocumentationType.company_id == company_id,
+                ConstructionDocumentationType.system_code.in_(system_codes),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def insert_documentation_type_if_absent(
+        self,
+        *,
+        company_id: UUID,
+        name: str,
+        normalized_name: str,
+    ) -> ConstructionDocumentationType | None:
+        """Cria o tipo sem estourar quando outra requisicao criou o mesmo nome.
+
+        O combobox da venda cria tipo digitando, entao dois usuarios lancando
+        "SEG CAIXA" ao mesmo tempo e um caso real -- e um 500 por violacao de
+        unique seria a unica pista. Devolve ``None`` quando a linha ja existia.
+        """
+        statement = (
+            pg_insert(ConstructionDocumentationType)
+            .values(company_id=company_id, name=name, normalized_name=normalized_name)
+            .on_conflict_do_nothing(constraint="uq_construction_documentation_types_normalized_name")
+            .returning(ConstructionDocumentationType)
+        )
+        result = await self.session.execute(statement)
+        return result.scalars().first()
+
+    async def upsert_documentation_type_system_code(
+        self,
+        *,
+        company_id: UUID,
+        name: str,
+        normalized_name: str,
+        system_code: str,
+    ) -> ConstructionDocumentationType | None:
+        """Semeia o tipo, ou carimba o ``system_code`` no que a empresa ja tinha.
+
+        A empresa pode ter criado "Cartorio" a mao antes do seed. Um
+        ``DO NOTHING`` descartaria o INSERT e o tipo nunca ganharia o codigo
+        que o ETL usa para achar o de-para -- por isso o UPDATE, restrito a
+        quem ainda nao tem codigo nenhum.
+
+        Devolve ``None`` quando havia linha com esse nome e ela ja carregava
+        outro ``system_code``: o de-para dela e escolha de quem a criou, e o
+        seed nao sobrescreve.
+        """
+        statement = (
+            pg_insert(ConstructionDocumentationType)
+            .values(
+                company_id=company_id,
+                name=name,
+                normalized_name=normalized_name,
+                system_code=system_code,
+            )
+            .on_conflict_do_update(
+                constraint="uq_construction_documentation_types_normalized_name",
+                set_={"system_code": system_code},
+                where=ConstructionDocumentationType.system_code.is_(None),
+            )
+            .returning(ConstructionDocumentationType)
+        )
+        result = await self.session.execute(statement)
+        return result.scalars().first()
+
+    async def list_unit_documentations(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+    ) -> list[ConstructionUnitDocumentation]:
+        result = await self.session.execute(
+            select(ConstructionUnitDocumentation)
+            .options(selectinload(ConstructionUnitDocumentation.documentation_type))
+            .where(
+                ConstructionUnitDocumentation.company_id == company_id,
+                ConstructionUnitDocumentation.unit_id == unit_id,
+            )
+            .order_by(ConstructionUnitDocumentation.sequence_number)
         )
         return list(result.scalars().all())
 

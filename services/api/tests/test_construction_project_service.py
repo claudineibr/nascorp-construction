@@ -8,6 +8,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from app.domain.constants import ConstructionMeasurementStatus, ConstructionProcurementStatus, ConstructionProjectStatus
 from app.domain.exceptions import (
+    ConstructionDomainError,
     ConstructionDuplicateCodeError,
     ConstructionInvalidStatusTransitionError,
     ConstructionInvalidValueError,
@@ -17,6 +18,7 @@ from app.domain.events.constants import ConstructionEventType, ConstructionInteg
 from app.domain.events.contracts import EventEnvelope
 from app.domain.services import ConstructionIntegrationDispatcher, ConstructionProjectService
 from app.infrastructure.database.models import (
+    ConstructionDocumentationType,
     ConstructionMeasurement,
     ConstructionMeasurementItem,
     ConstructionMeasurementItemInspection,
@@ -27,9 +29,12 @@ from app.infrastructure.database.models import (
     ConstructionServiceTemplate,
     ConstructionServiceTemplateItem,
     ConstructionUnit,
+    ConstructionUnitDocumentation,
     ConstructionUnitPaymentSource,
 )
 from app.schemas.construction import (
+    ConstructionDocumentationTypeCreate,
+    ConstructionDocumentationTypeUpdate,
     ConstructionMeasurementCreate,
     ConstructionMeasurementInspectionVerifyRequest,
     ConstructionMeasurementItemCreate,
@@ -57,7 +62,10 @@ class FakeConstructionRepository:
         self.unit_payment_sources: dict[tuple[object, object], ConstructionUnitPaymentSource] = {}
         self.service_templates: dict[tuple[object, object], ConstructionServiceTemplate] = {}
         self.service_template_items: dict[tuple[object, object], ConstructionServiceTemplateItem] = {}
+        self.documentation_types: dict[tuple[object, object], ConstructionDocumentationType] = {}
+        self.unit_documentations: dict[tuple[object, object], ConstructionUnitDocumentation] = {}
         self.commits = 0
+        self.replaced_children = 0
 
     def _template_items(self, *, company_id, service_template_id):
         return sorted(
@@ -77,6 +85,99 @@ class FakeConstructionRepository:
                 if source_company_id == company_id and source.unit_id == unit_id
             ),
             key=lambda source: source.source_type,
+        )
+
+    async def get_documentation_type(self, *, company_id, documentation_type_id):
+        return self.documentation_types.get((company_id, documentation_type_id))
+
+    async def get_documentation_type_by_normalized_name(self, *, company_id, normalized_name):
+        return next(
+            (
+                documentation_type
+                for (stored_company_id, _), documentation_type in self.documentation_types.items()
+                if stored_company_id == company_id and documentation_type.normalized_name == normalized_name
+            ),
+            None,
+        )
+
+    async def list_documentation_types(self, *, company_id, only_active=True, search=None):
+        documentation_types = []
+        for (stored_company_id, _), documentation_type in self.documentation_types.items():
+            if stored_company_id != company_id:
+                continue
+
+            if only_active and not documentation_type.is_active:
+                continue
+
+            if search and search.lower() not in documentation_type.name.lower():
+                continue
+
+            documentation_types.append(documentation_type)
+
+        return sorted(documentation_types, key=lambda documentation_type: documentation_type.name)
+
+    async def list_documentation_types_by_system_codes(self, *, company_id, system_codes):
+        return [
+            documentation_type
+            for (stored_company_id, _), documentation_type in self.documentation_types.items()
+            if stored_company_id == company_id and documentation_type.system_code in set(system_codes)
+        ]
+
+    async def upsert_documentation_type_system_code(
+        self,
+        *,
+        company_id,
+        name,
+        normalized_name,
+        system_code,
+    ):
+        existing = await self.get_documentation_type_by_normalized_name(
+            company_id=company_id,
+            normalized_name=normalized_name,
+        )
+        if existing is not None:
+            if existing.system_code is None:
+                existing.system_code = system_code
+
+            return existing
+
+        documentation_type = ConstructionDocumentationType(
+            id=uuid4(),
+            company_id=company_id,
+            name=name,
+            normalized_name=normalized_name,
+            system_code=system_code,
+            is_active=True,
+        )
+        self.documentation_types[(company_id, documentation_type.id)] = documentation_type
+        return documentation_type
+
+    async def insert_documentation_type_if_absent(self, *, company_id, name, normalized_name):
+        existing = await self.get_documentation_type_by_normalized_name(
+            company_id=company_id,
+            normalized_name=normalized_name,
+        )
+        if existing is not None:
+            return None
+
+        documentation_type = ConstructionDocumentationType(
+            id=uuid4(),
+            company_id=company_id,
+            name=name,
+            normalized_name=normalized_name,
+            is_active=True,
+        )
+        self.documentation_types[(company_id, documentation_type.id)] = documentation_type
+        return documentation_type
+
+    async def list_unit_documentations(self, *, company_id, unit_id):
+        return sorted(
+            (
+                documentation
+                for (stored_company_id, _), documentation in self.unit_documentations.items()
+                if stored_company_id == company_id and documentation.unit_id == unit_id
+            ),
+            key=lambda documentation: documentation.sequence_number,
         )
 
     async def get_service_template(self, *, company_id, service_template_id):
@@ -226,6 +327,17 @@ class FakeConstructionRepository:
             self.unit_payment_sources[(entity.company_id, entity.id)] = entity
             return
 
+        if isinstance(entity, ConstructionDocumentationType):
+            self.documentation_types[(entity.company_id, entity.id)] = entity
+            return
+
+        if isinstance(entity, ConstructionUnitDocumentation):
+            entity.documentation_type = self.documentation_types.get(
+                (entity.company_id, entity.documentation_type_id)
+            )
+            self.unit_documentations[(entity.company_id, entity.id)] = entity
+            return
+
         if isinstance(entity, ConstructionServiceTemplate):
             self.service_templates[(entity.company_id, entity.id)] = entity
             return
@@ -250,6 +362,19 @@ class FakeConstructionRepository:
 
     async def commit(self) -> None:
         self.commits += 1
+
+    async def replace_unit_children(self, model, *, company_id, unit_id, entities) -> None:
+        rows = self.unit_documentations if model is ConstructionUnitDocumentation else self.unit_payment_sources
+        for key in [
+            key
+            for key, row in rows.items()
+            if key[0] == company_id and row.unit_id == unit_id
+        ]:
+            rows.pop(key, None)
+
+        self.replaced_children += 1
+        for entity in entities:
+            await self.add(entity)
 
     async def refresh(
         self,
@@ -280,6 +405,14 @@ class FakeConstructionRepository:
     ) -> None:
         if isinstance(entity, ConstructionUnitPaymentSource):
             self.unit_payment_sources.pop((entity.company_id, entity.id), None)
+            return
+
+        if isinstance(entity, ConstructionUnitDocumentation):
+            self.unit_documentations.pop((entity.company_id, entity.id), None)
+            return
+
+        if isinstance(entity, ConstructionDocumentationType):
+            self.documentation_types.pop((entity.company_id, entity.id), None)
             return
 
         if isinstance(entity, ConstructionProject):
@@ -2262,3 +2395,349 @@ async def test_project_summary_survives_an_erp_refusal_without_leaking_the_url()
     assert summary["received_amount"] == Decimal("0")
     assert "permiss" in summary["erp_unavailable_reason"]
     assert "http" not in summary["erp_unavailable_reason"]
+
+
+def build_sale_scenario(*, sale_price="300000.00"):
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    erp_client = FakeErpMeasurementClient()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-DOC",
+        name="Unit sale with documentation",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    unit = ConstructionUnit(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        code="D-101",
+        unit_type="house",
+        sale_price=Decimal(sale_price),
+        analytic_cost_center_id=uuid4(),
+        status="available",
+    )
+    repository.projects[(company_id, project.id)] = project
+    repository.units[(company_id, unit.id)] = unit
+    service = ConstructionProjectService(repository=repository, erp_client=erp_client)
+    return company_id, repository, erp_client, unit, service
+
+
+async def test_documentation_is_diluted_into_the_balance_the_buyer_still_owes() -> None:
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+        payment_sources=[
+            {
+                "source_type": "financing",
+                "amount": Decimal("200000.00"),
+                "due_date": date(2026, 9, 10),
+                "installments": 1,
+            }
+        ],
+        documentations=[
+            {"name": "Cartório", "amount": Decimal("5000.00")},
+        ],
+    )
+
+    await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    payload = erp_client.events[0].payload
+    balance = next(
+        source for source in payload["payment_sources"] if source["source_type"] == "balance"
+    )
+    assert balance["amount"] == "105000.00"
+    assert payload["receivable_amount"] == "105000.00"
+    assert payload["documentation_total"] == "5000.00"
+    assert payload["documentations"] == [
+        {
+            "documentation_type_id": payload["documentations"][0]["documentation_type_id"],
+            "name": "Cartório",
+            "amount": "5000.00",
+            "sequence_number": 1,
+        }
+    ]
+
+
+async def test_documentation_type_is_reused_regardless_of_the_typed_case() -> None:
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+    existing = await service.create_documentation_type(
+        company_id=company_id,
+        request=ConstructionDocumentationTypeCreate(name="SANESUL"),
+    )
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+        documentations=[{"name": "  sanesul ", "amount": Decimal("298.20")}],
+    )
+
+    await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    payload = erp_client.events[0].payload
+    assert payload["documentations"][0]["documentation_type_id"] == str(existing.id)
+    assert payload["documentations"][0]["name"] == "SANESUL"
+    assert len(repository.documentation_types) == 1
+
+
+async def test_the_same_documentation_type_twice_in_one_sale_is_refused() -> None:
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+        documentations=[
+            {"name": "Cartório", "amount": Decimal("1000.00")},
+            {"name": "  cartório ", "amount": Decimal("500.00")},
+        ],
+    )
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert error.value.error_code == "CONSTRUCTION_UNIT_DOCUMENTATION_DUPLICATE_TYPE"
+
+
+async def test_an_inactive_documentation_type_is_refused_on_a_new_sale() -> None:
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+    documentation_type = await service.create_documentation_type(
+        company_id=company_id,
+        request=ConstructionDocumentationTypeCreate(name="SANESUL"),
+    )
+    await service.update_documentation_type(
+        company_id=company_id,
+        documentation_type_id=documentation_type.id,
+        request=ConstructionDocumentationTypeUpdate(is_active=False),
+    )
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+        documentations=[
+            {"documentation_type_id": documentation_type.id, "amount": Decimal("298.20")},
+        ],
+    )
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert error.value.error_code == "CONSTRUCTION_DOCUMENTATION_TYPE_INACTIVE"
+
+
+async def test_an_inactive_type_already_used_by_the_sale_still_allows_editing_it() -> None:
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+    documentation_type = await service.create_documentation_type(
+        company_id=company_id,
+        request=ConstructionDocumentationTypeCreate(name="SANESUL"),
+    )
+    first_request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+        documentations=[
+            {"documentation_type_id": documentation_type.id, "amount": Decimal("298.20")},
+        ],
+    )
+    await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=first_request)
+    await service.update_documentation_type(
+        company_id=company_id,
+        documentation_type_id=documentation_type.id,
+        request=ConstructionDocumentationTypeUpdate(is_active=False),
+    )
+
+    edit_request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+        documentations=[
+            {"documentation_type_id": documentation_type.id, "amount": Decimal("298.20")},
+        ],
+    )
+    await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=edit_request)
+
+    documentations = await repository.list_unit_documentations(company_id=company_id, unit_id=unit.id)
+    assert len(documentations) == 1
+    assert repository.replaced_children > 0
+
+
+async def test_editing_the_sale_without_documentation_clears_what_was_there() -> None:
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+    first_request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+        documentations=[{"name": "Cartório", "amount": Decimal("2521.40")}],
+    )
+    await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=first_request)
+
+    edit_request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+        documentations=[],
+    )
+    await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=edit_request)
+
+    assert await repository.list_unit_documentations(company_id=company_id, unit_id=unit.id) == []
+    assert erp_client.events[-1].payload["documentation_total"] == "0.00"
+    assert erp_client.events[-1].payload["receivable_amount"] == "300000.00"
+
+
+async def test_sale_composition_exposes_the_documentation_and_the_total_charged() -> None:
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        discount_amount=Decimal("10000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+        documentations=[
+            {"name": "Cartório", "amount": Decimal("2521.40")},
+            {"name": "SANESUL", "amount": Decimal("298.20")},
+        ],
+    )
+    await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    composition = await service.build_unit_sale_composition(company_id=company_id, unit_id=unit.id)
+
+    assert composition["documentation_total"] == Decimal("2819.60")
+    assert composition["total_charged"] == Decimal("292819.60")
+    assert [item["name"] for item in composition["documentations"]] == ["Cartório", "SANESUL"]
+    assert [item["sequence_number"] for item in composition["documentations"]] == [1, 2]
+
+
+async def test_documentation_larger_than_the_sale_still_has_a_balance_to_charge() -> None:
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=1,
+        payment_sources=[
+            {
+                "source_type": "financing",
+                "amount": Decimal("300000.00"),
+                "due_date": date(2026, 9, 10),
+                "installments": 1,
+            }
+        ],
+        documentations=[{"name": "Cartório", "amount": Decimal("2521.40")}],
+    )
+
+    await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert erp_client.events[0].payload["receivable_amount"] == "2521.40"
+
+
+async def test_the_erp_refusal_reaches_the_user_instead_of_a_generic_gateway_error() -> None:
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+
+    async def refuse_event(*, event):
+        raise httpx.HTTPStatusError(
+            "conflict",
+            request=httpx.Request("POST", "http://erp/v1/internal/construction/unit-sold-event"),
+            response=httpx.Response(
+                409,
+                json={"message": "O total da venda ficou abaixo do que já foi pago."},
+            ),
+        )
+
+    erp_client.deliver_event = refuse_event
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+        documentations=[{"name": "Cartório", "amount": Decimal("2521.40")}],
+    )
+
+    with pytest.raises(ConstructionDomainError) as error:
+        await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert error.value.status_code == 409
+    assert "já foi pago" in error.value.message
+    assert repository.commits == 0
+
+
+async def test_typing_the_name_of_an_inactive_type_does_not_resurrect_it_on_a_new_sale() -> None:
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+    documentation_type = await service.create_documentation_type(
+        company_id=company_id,
+        request=ConstructionDocumentationTypeCreate(name="SANESUL"),
+    )
+    await service.update_documentation_type(
+        company_id=company_id,
+        documentation_type_id=documentation_type.id,
+        request=ConstructionDocumentationTypeUpdate(is_active=False),
+    )
+
+    request = ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(),
+        sale_price=Decimal("300000.00"),
+        first_due_date=date(2026, 6, 10),
+        installments=12,
+        documentations=[{"name": "sanesul", "amount": Decimal("298.20")}],
+    )
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert error.value.error_code == "CONSTRUCTION_DOCUMENTATION_TYPE_INACTIVE"
+    assert repository.documentation_types[(company_id, documentation_type.id)].is_active is False
+
+
+async def test_typing_the_name_of_an_inactive_type_the_sale_already_used_still_works() -> None:
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+    documentation_type = await service.create_documentation_type(
+        company_id=company_id,
+        request=ConstructionDocumentationTypeCreate(name="SANESUL"),
+    )
+    await service.confirm_unit_sale(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitSaleConfirmRequest(
+            buyer_person_id=uuid4(),
+            sale_price=Decimal("300000.00"),
+            first_due_date=date(2026, 6, 10),
+            installments=12,
+            documentations=[{"documentation_type_id": documentation_type.id, "amount": Decimal("298.20")}],
+        ),
+    )
+    await service.update_documentation_type(
+        company_id=company_id,
+        documentation_type_id=documentation_type.id,
+        request=ConstructionDocumentationTypeUpdate(is_active=False),
+    )
+
+    await service.confirm_unit_sale(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitSaleConfirmRequest(
+            buyer_person_id=uuid4(),
+            sale_price=Decimal("300000.00"),
+            first_due_date=date(2026, 6, 10),
+            installments=12,
+            documentations=[{"name": "SANESUL", "amount": Decimal("350.00")}],
+        ),
+    )
+
+    documentations = await repository.list_unit_documentations(company_id=company_id, unit_id=unit.id)
+    assert [documentation.amount for documentation in documentations] == [Decimal("350.00")]
