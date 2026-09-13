@@ -143,6 +143,7 @@ class FakeProjectService:
 
     def __init__(self) -> None:
         self.paid_installments: list[dict] = []
+        self.reversed_installments: list[dict] = []
         self.deleted_installments: list[dict] = []
         self.deleted_adjustments: list[dict] = []
 
@@ -161,10 +162,30 @@ class FakeProjectService:
                 "unit_id": unit_id,
                 "installment_number": installment_number,
                 "receivable_id": receivable_id,
-                "payment_method": request.payment_method,
+                # A tela manda N formas: capturar so a primeira faria o teste
+                # passar com metade do pagamento perdido no caminho.
+                "payments": [line.model_dump(mode="json") for line in request.payments],
             }
         )
         return {"id": str(uuid4()), "installment_number": installment_number, "status": "PAID"}
+
+    async def reverse_unit_installment(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        installment_number: int,
+        receivable_id=None,
+        user_id=None,
+    ) -> dict:
+        self.reversed_installments.append(
+            {
+                "unit_id": unit_id,
+                "installment_number": installment_number,
+                "receivable_id": receivable_id,
+            }
+        )
+        return {"id": str(uuid4()), "installment_number": installment_number, "status": "OPEN"}
 
     async def delete_unit_installment(
         self,
@@ -821,12 +842,110 @@ def test_pay_unit_installment_carries_the_adjustment_receivable() -> None:
             "Authorization": make_authorization_header(user_id=uuid4()),
             "X-Company-ID": str(uuid4()),
         },
-        json={"receivable_id": str(receivable_id), "payment_method": "PIX", "paid_amount": "4000.00"},
+        json={
+            "receivable_id": str(receivable_id),
+            "payments": [{"payment_method": "PIX", "amount": "4000.00"}],
+        },
     )
 
     assert response.status_code == 200
     assert service.paid_installments[0]["receivable_id"] == receivable_id
     assert service.paid_installments[0]["installment_number"] == 2
+
+
+def test_pay_unit_installment_carries_every_payment_line() -> None:
+    """A parcela e quitada por N formas: o que a tela compos tem de chegar
+    inteiro ao ERP, cada linha com a sua conta bancaria e a sua data."""
+    unit_id = uuid4()
+    bank_account_id = uuid4()
+    service = FakeProjectService()
+    client = create_test_client(
+        permissions={ConstructionFeature.UNITS: PermissionAction.UPDATE},
+        service=service,
+    )
+
+    response = client.post(
+        f"/v1/construction/units/{unit_id}/installments/1/pay",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={
+            "payments": [
+                {
+                    "payment_method": "PIX",
+                    "amount": "2500.00",
+                    "paid_at": "2026-09-10T00:00:00",
+                    "company_bank_account_id": str(bank_account_id),
+                },
+                {"payment_method": "TRANSFER", "amount": "1500.00", "paid_at": "2026-09-13T00:00:00"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    lines = service.paid_installments[0]["payments"]
+    assert [line["payment_method"] for line in lines] == ["PIX", "TRANSFER"]
+    assert [line["amount"] for line in lines] == ["2500.00", "1500.00"]
+    assert lines[0]["company_bank_account_id"] == str(bank_account_id)
+    assert lines[1]["company_bank_account_id"] is None
+
+
+def test_pay_unit_installment_refuses_a_payment_without_lines() -> None:
+    """Baixa sem forma de recebimento nao existe -- o contrato recusa antes de
+    chegar ao ERP."""
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.UPDATE})
+
+    response = client.post(
+        f"/v1/construction/units/{uuid4()}/installments/1/pay",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={"payments": []},
+    )
+
+    assert response.status_code == 422
+
+
+def test_reverse_unit_installment_carries_the_adjustment_receivable() -> None:
+    """O estorno da unidade existe para o operador nao depender do Contas a
+    Receber -- e precisa acertar a serie, como a baixa."""
+    unit_id = uuid4()
+    receivable_id = uuid4()
+    service = FakeProjectService()
+    client = create_test_client(
+        permissions={ConstructionFeature.UNITS: PermissionAction.UPDATE},
+        service=service,
+    )
+
+    response = client.post(
+        f"/v1/construction/units/{unit_id}/installments/2/reverse",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={"receivable_id": str(receivable_id)},
+    )
+
+    assert response.status_code == 200
+    assert service.reversed_installments[0]["receivable_id"] == receivable_id
+    assert service.reversed_installments[0]["installment_number"] == 2
+
+
+def test_reverse_unit_installment_requires_units_update_permission() -> None:
+    client = create_test_client(permissions={ConstructionFeature.UNITS: PermissionAction.READ})
+
+    response = client.post(
+        f"/v1/construction/units/{uuid4()}/installments/1/reverse",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+        json={},
+    )
+
+    assert response.status_code == 403
 
 
 def test_delete_unit_installment_requires_units_delete_permission() -> None:

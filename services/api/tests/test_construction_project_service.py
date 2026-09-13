@@ -44,6 +44,8 @@ from app.schemas.construction import (
     ConstructionMeasurementItemOccurrenceUpdate,
     ConstructionProcurementRequestCreate,
     ConstructionProjectCreate,
+    ConstructionUnitInstallmentPaymentLine,
+    ConstructionUnitInstallmentPaymentRequest,
     ConstructionProjectUpdate,
     ConstructionUnitCreate,
     ConstructionUnitSaleConfirmRequest,
@@ -2800,3 +2802,99 @@ async def test_typing_the_name_of_an_inactive_type_the_sale_already_used_still_w
 
     documentations = await repository.list_unit_documentations(company_id=company_id, unit_id=unit.id)
     assert [documentation.amount for documentation in documentations] == [Decimal("350.00")]
+
+
+async def test_the_erp_closure_refusal_reaches_the_user_on_a_unit_payment() -> None:
+    """Quem recusa a soma que nao fecha e o financeiro, e a mensagem dele tem de
+    chegar ao operador da unidade: sem isso ele ve "erro no gateway" e nao sabe
+    quanto falta."""
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+    unit.external_receivable_id = uuid4()
+
+    async def refuse_payment(**kwargs):
+        raise httpx.HTTPStatusError(
+            "unprocessable",
+            request=httpx.Request("POST", "http://erp/v1/internal/construction/unit-installment/pay"),
+            response=httpx.Response(
+                422,
+                json={
+                    "message": (
+                        "A soma das formas de recebimento precisa fechar o valor da parcela. "
+                        "Lançado: 2.500,00; a receber: 4.000,00; diferença: 1.500,00 a menos."
+                    )
+                },
+            ),
+        )
+
+    erp_client.pay_unit_installment = refuse_payment
+
+    with pytest.raises(ConstructionDomainError) as error:
+        await service.pay_unit_installment(
+            company_id=company_id,
+            unit_id=unit.id,
+            installment_number=1,
+            request=ConstructionUnitInstallmentPaymentRequest(
+                payments=[
+                    ConstructionUnitInstallmentPaymentLine(
+                        payment_method="PIX",
+                        amount=Decimal("2500.00"),
+                    )
+                ],
+            ),
+        )
+
+    assert error.value.status_code == 422
+    assert "1.500,00 a menos" in error.value.message
+
+
+async def test_a_unit_payment_forwards_every_line_to_the_erp() -> None:
+    """O submodulo e transparente na baixa: as N formas que a tela compos tem de
+    sair daqui do jeito que entraram, ou o ERP recusa por soma que nao fecha."""
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+    unit.external_receivable_id = uuid4()
+    captured: dict = {}
+
+    async def capture_payment(**kwargs):
+        captured.update(kwargs)
+        return {"id": str(uuid4()), "installment_number": 1, "status": "PAID"}
+
+    erp_client.pay_unit_installment = capture_payment
+
+    await service.pay_unit_installment(
+        company_id=company_id,
+        unit_id=unit.id,
+        installment_number=1,
+        request=ConstructionUnitInstallmentPaymentRequest(
+            payments=[
+                ConstructionUnitInstallmentPaymentLine(payment_method="PIX", amount=Decimal("2500.00")),
+                ConstructionUnitInstallmentPaymentLine(payment_method="TRANSFER", amount=Decimal("1500.00")),
+            ],
+        ),
+    )
+
+    lines = captured["payment"]["payments"]
+    assert [line["payment_method"] for line in lines] == ["PIX", "TRANSFER"]
+    assert [line["amount"] for line in lines] == ["2500.00", "1500.00"]
+
+
+async def test_reversing_a_unit_payment_targets_the_resolved_receivable() -> None:
+    """O estorno da unidade e o caminho de correcao do operador de Obras: ele
+    precisa acertar a serie que a tela esta mostrando."""
+    company_id, repository, erp_client, unit, service = build_sale_scenario()
+    unit.external_receivable_id = uuid4()
+    captured: dict = {}
+
+    async def capture_reversal(**kwargs):
+        captured.update(kwargs)
+        return {"id": str(uuid4()), "installment_number": 3, "status": "OPEN"}
+
+    erp_client.reverse_unit_installment = capture_reversal
+
+    await service.reverse_unit_installment(
+        company_id=company_id,
+        unit_id=unit.id,
+        installment_number=3,
+    )
+
+    assert captured["receivable_id"] == unit.external_receivable_id
+    assert captured["installment_number"] == 3

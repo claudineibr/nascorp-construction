@@ -2328,6 +2328,40 @@ class ConstructionProjectService:
                 fallback_message="Não foi possível baixar a parcela no ERP.",
             ) from request_error
 
+    async def reverse_unit_installment(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        installment_number: int,
+        receivable_id: UUID | None = None,
+        user_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Derruba a baixa inteira da parcela da unidade.
+
+        Existe aqui porque a tela da unidade passou a concentrar a baixa
+        multi-forma: mandar o operador ao Contas a Receber para corrigir
+        supunha uma permissao que ele pode nao ter.
+        """
+        unit, target_receivable_id = await self._resolve_unit_receivable_target(
+            company_id=company_id,
+            unit_id=unit_id,
+            receivable_id=receivable_id,
+        )
+        try:
+            return await self.erp_client.reverse_unit_installment(
+                company_id=company_id,
+                user_id=user_id,
+                construction_unit_id=unit.id,
+                receivable_id=target_receivable_id,
+                installment_number=installment_number,
+            )
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message="Não foi possível estornar a baixa da parcela no ERP.",
+            ) from request_error
+
     async def delete_unit_installment(
         self,
         *,

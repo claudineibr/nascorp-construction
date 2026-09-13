@@ -27,6 +27,7 @@ from app.schemas.construction import (
     ConstructionPersonSummaryListResponse,
     ConstructionUnitInstallmentCreateRequest,
     ConstructionUnitInstallmentPaymentRequest,
+    ConstructionUnitInstallmentReversalRequest,
     ConstructionUnitInstallmentUpdateRequest,
     ConstructionProjectCreate,
     ConstructionProjectListResponse,
@@ -631,6 +632,26 @@ async def pay_unit_installment(
             unit_id=unit_id,
             installment_number=installment_number,
             request=payload,
+            receivable_id=payload.receivable_id,
+            user_id=ctx.user_id,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/installments/{installment_number}/reverse")
+async def reverse_unit_installment(
+    unit_id: UUID,
+    installment_number: int,
+    payload: ConstructionUnitInstallmentReversalRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        return await service.reverse_unit_installment(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            installment_number=installment_number,
             receivable_id=payload.receivable_id,
             user_id=ctx.user_id,
         )

@@ -314,22 +314,48 @@ class ConstructionUnitInstallmentCreateRequest(BaseModel):
     amount: Decimal | None = Field(default=None, gt=0)
 
 
+class ConstructionUnitInstallmentPaymentLine(BaseModel):
+    """Uma forma de recebimento da parcela.
+
+    ``amount`` e o dinheiro recebido nesta forma -- o que esta no extrato --,
+    nao o principal amortizado: quem deriva o principal e o financeiro.
+    """
+
+    payment_method: str = Field(..., min_length=1, max_length=30)
+    amount: Decimal = Field(..., gt=0)
+    paid_at: datetime | None = None
+    document_number: str | None = Field(default=None, max_length=100)
+    company_bank_account_id: UUID | None = None
+
+
 class ConstructionUnitInstallmentPaymentRequest(BaseModel):
     """Baixa de uma parcela da unidade, no mesmo contrato do Contas a Receber.
 
     ``receivable_id`` ausente significa a série da venda; preenchido, aponta o
     aditivo. Vencimento e valor da parcela continuam fora: a baixa registra o
     que foi pago, não reescreve a parcela.
+
+    A parcela e quitada por N formas de recebimento, e o ERP so aceita quando a
+    soma fecha o que ha para receber.
     """
 
     receivable_id: UUID | None = None
-    payment_method: str = Field(..., min_length=1, max_length=30)
-    paid_amount: Decimal | None = Field(default=None, gt=0)
-    paid_at: datetime | None = None
+    payments: list[ConstructionUnitInstallmentPaymentLine] = Field(..., min_length=1)
     interest: Decimal | None = Field(default=None, ge=0)
     fine: Decimal | None = Field(default=None, ge=0)
     discount: Decimal | None = Field(default=None, ge=0)
     observation: str | None = None
+
+
+class ConstructionUnitInstallmentReversalRequest(BaseModel):
+    """Estorno da baixa inteira da parcela da unidade.
+
+    Nao ha estorno por linha: com recibo emitido a parcela e imutavel, e a
+    correcao e derrubar a baixa toda -- o recibo e cancelado e o numero fica
+    queimado.
+    """
+
+    receivable_id: UUID | None = None
 
 
 class ConstructionUnitCommissionCreate(BaseModel):
