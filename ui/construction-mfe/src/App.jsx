@@ -16,6 +16,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
   Route,
   Send,
   ShieldCheck,
@@ -61,6 +62,9 @@ import {
   listConstructionDocumentationTypes,
   getConstructionProjectSummary,
   getConstructionUnitPaymentPlan,
+  listErpCompanyBankAccounts,
+  listErpPaymentMethods,
+  reverseConstructionUnitInstallment,
   updateConstructionUnitInstallment,
   importConstructionServiceTemplates,
   listConstructionMeasurementItems,
@@ -189,6 +193,13 @@ const statusOptions = Object.entries(statusLabel)
 const dateFormatter = new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" })
 const moneyFormatter = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" })
 
+// A forma ingenua (`toISOString().slice(0, 10)`) devolve a data em UTC, e o
+// arquivo ja tinha quatro copias dela.
+const todayISO = () => {
+  const now = new Date()
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
+}
+
 const stripNonDigits = (value) => String(value ?? "").replace(/\D/g, "")
 
 const formatCurrencyInput = (value = "") => {
@@ -309,12 +320,6 @@ const defaultReserveUnitForm = {
   reservationExpiresAt: "",
 }
 
-const defaultEditInstallmentForm = {
-  paymentMethod: "",
-  documentNumber: "",
-  observation: "",
-}
-
 const defaultCommissionForm = {
   beneficiaryPersonId: "",
   amount: "",
@@ -340,14 +345,43 @@ const defaultCreateInstallmentForm = {
   amount: "",
 }
 
+// Um diálogo so por parcela: a baixa por N formas absorveu os campos que o
+// "Editar parcela" tinha (numero do documento e observacao).
 const defaultPayInstallmentForm = {
-  paymentMethod: "PIX",
-  paidAmount: "",
-  paidAt: "",
+  lines: [],
   interest: "",
   fine: "",
   discount: "",
   observation: "",
+  documentNumber: "",
+}
+
+let installmentLineSeq = 0
+const newInstallmentLine = (defaults = {}) => ({
+  key: `installment-line-${(installmentLineSeq += 1)}`,
+  paymentMethod: defaults.paymentMethod ?? "",
+  amount: defaults.amount ?? "",
+  paidAt: defaults.paidAt || todayISO(),
+  documentNumber: "",
+  companyBankAccountId: defaults.companyBankAccountId ?? "",
+})
+
+// O rodape da regra da tela: o que foi lancado, o que ha para receber e o que
+// falta. O botao so destrava quando falta zero -- e o servidor refaz a mesma
+// conta sob lock, entao a tela nunca e a autoridade.
+const installmentClosing = (installment, form) => {
+  const posted = (form.lines ?? []).reduce(
+    (total, line) => total + parseCurrencyToNumber(line.amount),
+    0,
+  )
+  const due = Math.max(
+    0,
+    installmentOutstanding(installment)
+      + parseCurrencyToNumber(form.interest)
+      + parseCurrencyToNumber(form.fine)
+      - parseCurrencyToNumber(form.discount),
+  )
+  return { posted, due, missing: due - posted, closes: Math.abs(due - posted) < 0.005 }
 }
 
 const defaultSaleUnitForm = {
@@ -1048,9 +1082,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [documentationTypes, setDocumentationTypes] = useState([])
   const [loadingDocumentationTypes, setLoadingDocumentationTypes] = useState(false)
   const [submittingSale, setSubmittingSale] = useState(false)
-  const [editingInstallment, setEditingInstallment] = useState(null)
-  const [editInstallmentForm, setEditInstallmentForm] = useState(defaultEditInstallmentForm)
-  const [savingInstallment, setSavingInstallment] = useState(false)
+  const [paymentMethodOptions, setPaymentMethodOptions] = useState([])
+  const [companyBankAccounts, setCompanyBankAccounts] = useState([])
+  const [confirmRequest, setConfirmRequest] = useState(null)
+  const [confirmRunning, setConfirmRunning] = useState(false)
   const [isCommissionModalOpen, setIsCommissionModalOpen] = useState(false)
   const [commissionForm, setCommissionForm] = useState(defaultCommissionForm)
   const [submittingCommission, setSubmittingCommission] = useState(false)
@@ -1644,12 +1679,16 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const handleDeleteProject = async (project) => {
-    const confirmed = window.confirm(`Deseja remover a obra ${project.code} - ${project.name}?`)
-    if (!confirmed) {
-      return
-    }
+  const handleDeleteProject = (project) => {
+    setConfirmRequest({
+      title: `Remover a obra ${project.code}`,
+      message: `${project.name} sai da lista, junto com o que estiver pendurado nela.`,
+      confirmLabel: "Remover obra",
+      run: () => runDeleteProject(project),
+    })
+  }
 
+  const runDeleteProject = async (project) => {
     try {
       await deleteConstructionProject({ bridge, projectId: project.id })
       bridge?.feedback?.success?.("Obra removida com sucesso.")
@@ -1738,12 +1777,16 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const handleDeleteBlock = async (block) => {
-    const confirmed = window.confirm(`Deseja remover o bloco ${block.code} - ${block.name}?`)
-    if (!confirmed) {
-      return
-    }
+  const handleDeleteBlock = (block) => {
+    setConfirmRequest({
+      title: `Remover o bloco ${block.code}`,
+      message: `${block.name} sai da obra.`,
+      confirmLabel: "Remover bloco",
+      run: () => runDeleteBlock(block),
+    })
+  }
 
+  const runDeleteBlock = async (block) => {
     try {
       await deleteConstructionBlock({ bridge, blockId: block.id })
       bridge?.feedback?.success?.("Bloco removido com sucesso.")
@@ -1834,12 +1877,16 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const handleDeleteSchedulePhase = async (phase) => {
-    const confirmed = window.confirm(`Deseja remover a fase ${phase.name}?`)
-    if (!confirmed) {
-      return
-    }
+  const handleDeleteSchedulePhase = (phase) => {
+    setConfirmRequest({
+      title: "Remover fase do cronograma",
+      message: `A fase "${phase.name}" sai do cronograma da obra.`,
+      confirmLabel: "Remover fase",
+      run: () => runDeleteSchedulePhase(phase),
+    })
+  }
 
+  const runDeleteSchedulePhase = async (phase) => {
     try {
       await deleteConstructionSchedulePhase({ bridge, phaseId: phase.id })
       bridge?.feedback?.success?.("Fase removida com sucesso.")
@@ -1937,12 +1984,16 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const handleDeleteUnit = async (unit) => {
-    const confirmed = window.confirm(`Deseja remover a unidade ${unit.code}?`)
-    if (!confirmed) {
-      return
-    }
+  const handleDeleteUnit = (unit) => {
+    setConfirmRequest({
+      title: `Remover a unidade ${unit.code}`,
+      message: "A unidade sai da obra, junto com o que estiver ligado a ela.",
+      confirmLabel: "Remover unidade",
+      run: () => runDeleteUnit(unit),
+    })
+  }
 
+  const runDeleteUnit = async (unit) => {
     try {
       await deleteConstructionUnit({
         bridge,
@@ -2013,12 +2064,16 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const handleReleaseUnit = async (unit) => {
-    const confirmed = window.confirm(`Deseja liberar a reserva da unidade ${unit.code}?`)
-    if (!confirmed) {
-      return
-    }
+  const handleReleaseUnit = (unit) => {
+    setConfirmRequest({
+      title: `Liberar a reserva da unidade ${unit.code}`,
+      message: "A unidade volta a ficar disponível e o interessado perde a reserva.",
+      confirmLabel: "Liberar reserva",
+      run: () => runReleaseUnit(unit),
+    })
+  }
 
+  const runReleaseUnit = async (unit) => {
     try {
       await releaseConstructionUnitReservation({
         bridge,
@@ -2128,14 +2183,144 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }
 
   const handleOpenPayInstallment = (installment) => {
+    if (!paymentMethodOptions.length) {
+      void loadSettlementOptions()
+    }
     setPayingInstallment(installment)
+    const hasPayments = (installment.payments?.length ?? 0) > 0
+    const agreedExtras = hasPayments
+      ? 0
+      : (Number(installment.interest) || 0)
+        + (Number(installment.fine) || 0)
+        - (Number(installment.discount) || 0)
+    const outstanding = installmentOutstanding(installment) + agreedExtras
     setPayInstallmentForm({
       ...defaultPayInstallmentForm,
-      paymentMethod: installment.paymentMethod || "PIX",
-      // A parcela aceita N recebimentos, entao o valor sugerido e o SALDO. Com o
-      // valor cheio numa parcela ja recebida em parte o ERP recusa a baixa.
-      paidAmount: formatCurrencyFromNumber(installmentOutstanding(installment)),
-      paidAt: new Date().toISOString().slice(0, 10),
+      // Uma linha ja semeada com o saldo: a baixa de uma forma so fica a um
+      // clique, e quem recebeu em duas divide a partir dai.
+      lines:
+        outstanding > 0
+          ? [
+              newInstallmentLine({
+                paymentMethod: installment.paymentMethod || "",
+                amount: formatCurrencyFromNumber(outstanding),
+              }),
+            ]
+          : [],
+      // O combinado da parcela so vale no PRIMEIRO recebimento -- e a mesma
+      // regra do servidor. Com recebimento anterior, os campos nascem vazios.
+      interest: hasPayments ? "" : formatCurrencyFromNumber(installment.interest) || "",
+      fine: hasPayments ? "" : formatCurrencyFromNumber(installment.fine) || "",
+      discount: hasPayments ? "" : formatCurrencyFromNumber(installment.discount) || "",
+      documentNumber: installment.documentNumber ?? "",
+      observation: installment.observation ?? "",
+    })
+  }
+
+  const handlePayInstallmentLineChange = (key, field, value) => {
+    setPayInstallmentForm((current) => ({
+      ...current,
+      lines: current.lines.map((line) => (line.key === key ? { ...line, [field]: value } : line)),
+    }))
+  }
+
+  const handleAddPayInstallmentLine = () => {
+    setPayInstallmentForm((current) => {
+      // A linha nova herda a data da anterior: dinheiro que chega em duas formas
+      // costuma chegar no mesmo dia, e quando nao chega o operador troca o campo.
+      const previous = current.lines[current.lines.length - 1]
+      const { missing } = installmentClosing(payingInstallment, current)
+      return {
+        ...current,
+        lines: [
+          ...current.lines,
+          // A linha nova herda data E conta da anterior: dinheiro que chega em
+          // duas formas costuma chegar no mesmo dia e no mesmo banco.
+          newInstallmentLine({
+            paidAt: previous?.paidAt,
+            companyBankAccountId: previous?.companyBankAccountId,
+            amount: missing > 0 ? formatCurrencyFromNumber(missing) : "",
+          }),
+        ],
+      }
+    })
+  }
+
+  const handleRemovePayInstallmentLine = (key) => {
+    setPayInstallmentForm((current) => ({
+      ...current,
+      lines: current.lines.filter((line) => line.key !== key),
+    }))
+  }
+
+  // O diálogo fundido guarda o que o "Editar parcela" guardava. Sem esta porta,
+  // corrigir o numero do documento de uma parcela em aberto exigiria baixa-la.
+  const handleSaveInstallmentData = async () => {
+    if (!payingInstallment || !selectedUnit) {
+      return
+    }
+
+    // So viaja o que o usuario mexeu: o PATCH do ERP trata ausente como
+    // "mantem", e mandar o valor atual de volta marcaria a parcela como
+    // alterada na auditoria sem nada ter mudado.
+    const changes = {}
+    if (payInstallmentForm.documentNumber !== (payingInstallment.documentNumber ?? "")) {
+      changes.document_number = payInstallmentForm.documentNumber
+    }
+    if (payInstallmentForm.observation !== (payingInstallment.observation ?? "")) {
+      changes.observation = payInstallmentForm.observation
+    }
+
+    if (!Object.keys(changes).length) {
+      bridge?.feedback?.warning?.("Nenhuma alteração para salvar nesta parcela.")
+      return
+    }
+
+    setSubmittingInstallmentPayment(true)
+    try {
+      await updateConstructionUnitInstallment({
+        bridge,
+        unitId: selectedUnit.id,
+        installmentNumber: payingInstallment.installmentNumber,
+        receivableId: payingInstallment.receivableId ?? null,
+        changes,
+      })
+      bridge?.feedback?.success?.("Parcela atualizada.")
+      setPayingInstallment(null)
+      setPayInstallmentForm(defaultPayInstallmentForm)
+      await loadUnitPaymentPlan(selectedUnit.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível editar a parcela.")
+    } finally {
+      setSubmittingInstallmentPayment(false)
+    }
+  }
+
+  const handleReverseInstallment = (installment) => {
+    if (!selectedUnit) {
+      return
+    }
+
+    setConfirmRequest({
+      title: `Estornar baixa da parcela ${installment.installmentNumber}`,
+      message:
+        "Todos os recebimentos da parcela são apagados e ela volta a ficar em aberto. Os "
+        + "lançamentos contábeis saem junto.",
+      confirmLabel: "Estornar baixa",
+      run: async () => {
+        try {
+          await reverseConstructionUnitInstallment({
+            bridge,
+            unitId: selectedUnit.id,
+            installmentNumber: installment.installmentNumber,
+            receivableId: installment.receivableId ?? null,
+          })
+          bridge?.feedback?.success?.("Baixa estornada. A parcela voltou a ficar em aberto.")
+          await loadUnitPaymentPlan(selectedUnit.id)
+        } catch (requestError) {
+          bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível estornar a baixa.")
+        }
+      },
     })
   }
 
@@ -2159,6 +2344,14 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       return
     }
 
+    const { closes } = installmentClosing(payingInstallment, payInstallmentForm)
+    if (!closes) {
+      bridge?.feedback?.warning?.(
+        "A soma das formas de recebimento precisa fechar o valor a receber.",
+      )
+      return
+    }
+
     setSubmittingInstallmentPayment(true)
     try {
       await payConstructionUnitInstallment({
@@ -2166,13 +2359,18 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         unitId: selectedUnit.id,
         installmentNumber: payingInstallment.installmentNumber,
         receivableId: payingInstallment.receivableId ?? null,
-        paymentData: payInstallmentForm,
+        paymentData: {
+          ...payInstallmentForm,
+          payments: payInstallmentForm.lines.map((line) => ({
+            paymentMethod: line.paymentMethod,
+            amount: line.amount,
+            paidAt: line.paidAt,
+            documentNumber: line.documentNumber || payInstallmentForm.documentNumber,
+            companyBankAccountId: line.companyBankAccountId,
+          })),
+        },
       })
-      bridge?.feedback?.success?.(
-        installmentOutstanding(payingInstallment) > parseCurrencyToNumber(payInstallmentForm.paidAmount)
-          ? "Recebimento registrado. A parcela segue em aberto pelo saldo."
-          : "Parcela baixada.",
-      )
+      bridge?.feedback?.success?.("Parcela baixada.")
       setPayingInstallment(null)
       setPayInstallmentForm(defaultPayInstallmentForm)
       await loadUnitPaymentPlan(selectedUnit.id)
@@ -2183,31 +2381,48 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const handleDeleteInstallment = async (installment) => {
+  const runConfirmedAction = async () => {
+    if (!confirmRequest || confirmRunning) {
+      return
+    }
+
+    setConfirmRunning(true)
+    try {
+      await confirmRequest.run()
+    } finally {
+      setConfirmRunning(false)
+      setConfirmRequest(null)
+    }
+  }
+
+  const handleDeleteInstallment = (installment) => {
     if (!selectedUnit) {
       return
     }
 
-    const label = installment.receivableId ? "do aditivo" : "da venda"
-    const confirmed = window.confirm(
-      `Deseja excluir a parcela ${installment.installmentNumber} ${label}? A parcela é cancelada e os lançamentos contábeis dela são desfeitos.`,
-    )
-    if (!confirmed) {
-      return
-    }
-
-    try {
-      await deleteConstructionUnitInstallment({
-        bridge,
-        unitId: selectedUnit.id,
-        installmentNumber: installment.installmentNumber,
-        receivableId: installment.receivableId ?? null,
-      })
-      bridge?.feedback?.success?.("Parcela excluída.")
-      await loadUnitPaymentPlan(selectedUnit.id)
-    } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível excluir a parcela.")
-    }
+    setConfirmRequest({
+      title: `Excluir parcela ${installment.installmentNumber} ${
+        installment.receivableId ? "do aditivo" : "da venda"
+      }`,
+      message:
+        "A parcela é cancelada e os lançamentos contábeis dela são desfeitos. As outras parcelas "
+        + "continuam como estão.",
+      confirmLabel: "Excluir parcela",
+      run: async () => {
+        try {
+          await deleteConstructionUnitInstallment({
+            bridge,
+            unitId: selectedUnit.id,
+            installmentNumber: installment.installmentNumber,
+            receivableId: installment.receivableId ?? null,
+          })
+          bridge?.feedback?.success?.("Parcela excluída.")
+          await loadUnitPaymentPlan(selectedUnit.id)
+        } catch (requestError) {
+          bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível excluir a parcela.")
+        }
+      },
+    })
   }
 
   const handleOpenDeleteAdjustment = (adjustment) => {
@@ -2247,79 +2462,6 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível excluir o aditivo.")
     } finally {
       setSubmittingAdjustmentDelete(false)
-    }
-  }
-
-  const handleOpenEditInstallment = (installment) => {
-    setEditingInstallment(installment)
-    setEditInstallmentForm({
-      paymentMethod: installment.paymentMethod ?? "",
-      documentNumber: installment.documentNumber ?? "",
-      observation: installment.observation ?? "",
-    })
-  }
-
-  const closeEditInstallmentModal = () => {
-    if (savingInstallment) {
-      return
-    }
-
-    setEditingInstallment(null)
-    setEditInstallmentForm(defaultEditInstallmentForm)
-  }
-
-  const handleEditInstallmentChange = (field, value) => {
-    setEditInstallmentForm((current) => ({ ...current, [field]: value }))
-  }
-
-  const handleSubmitEditInstallment = async (event) => {
-    event.preventDefault()
-
-    if (!editingInstallment || !selectedUnit) {
-      return
-    }
-
-    // Só viaja o que o usuário mexeu: o PATCH do ERP trata ausente como
-    // "mantém", e mandar o valor atual de volta marcaria a parcela como
-    // alterada na auditoria sem nada ter mudado.
-    const changes = {}
-    if (
-      editInstallmentForm.paymentMethod &&
-      editInstallmentForm.paymentMethod !== (editingInstallment.paymentMethod ?? "")
-    ) {
-      changes.payment_method = editInstallmentForm.paymentMethod
-    }
-
-    if (editInstallmentForm.documentNumber !== (editingInstallment.documentNumber ?? "")) {
-      changes.document_number = editInstallmentForm.documentNumber
-    }
-
-    if (editInstallmentForm.observation !== (editingInstallment.observation ?? "")) {
-      changes.observation = editInstallmentForm.observation
-    }
-
-    if (!Object.keys(changes).length) {
-      bridge?.feedback?.warning?.("Nenhuma alteração para salvar nesta parcela.")
-      return
-    }
-
-    setSavingInstallment(true)
-    try {
-      await updateConstructionUnitInstallment({
-        bridge,
-        unitId: selectedUnit.id,
-        installmentNumber: editingInstallment.installmentNumber,
-        receivableId: editingInstallment.receivableId ?? null,
-        changes,
-      })
-      bridge?.feedback?.success?.("Parcela atualizada.")
-      setEditingInstallment(null)
-      setEditInstallmentForm(defaultEditInstallmentForm)
-      await loadUnitPaymentPlan(selectedUnit.id)
-    } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível editar a parcela.")
-    } finally {
-      setSavingInstallment(false)
     }
   }
 
@@ -2560,6 +2702,21 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     },
     [bridge]
   )
+
+  // As formas de recebimento e as contas bancarias vem do financeiro: enquanto a
+  // lista de formas morava aqui, uma forma nova so aparecia na tela com deploy do
+  // MFE — e com o rótulo escrito de novo, livre para divergir do recibo.
+  //
+  // Carregadas na primeira abertura do diálogo, nao na montagem do modulo: quem
+  // nunca baixa parcela nao paga por elas.
+  const loadSettlementOptions = useCallback(async () => {
+    const [methods, accounts] = await Promise.all([
+      listErpPaymentMethods({ bridge }).catch(() => []),
+      listErpCompanyBankAccounts({ bridge }).catch(() => []),
+    ])
+    setPaymentMethodOptions(methods)
+    setCompanyBankAccounts(accounts)
+  }, [bridge])
 
   const loadReceiptTemplates = useCallback(async () => {
     setReceiptTemplatesError(null)
@@ -2934,12 +3091,16 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const handleDeleteMeasurement = async (measurement) => {
-    const confirmed = window.confirm(`Deseja remover a medição ${measurement.code}?`)
-    if (!confirmed) {
-      return
-    }
+  const handleDeleteMeasurement = (measurement) => {
+    setConfirmRequest({
+      title: `Remover a medição ${measurement.code}`,
+      message: "A medição sai da obra e deixa de contar no avanço.",
+      confirmLabel: "Remover medição",
+      run: () => runDeleteMeasurement(measurement),
+    })
+  }
 
+  const runDeleteMeasurement = async (measurement) => {
     try {
       await deleteConstructionMeasurement({ bridge, measurementId: measurement.id })
       bridge?.feedback?.success?.("Medição removida com sucesso.")
@@ -2949,12 +3110,17 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const handleApproveMeasurement = async (measurement) => {
-    const confirmed = window.confirm(`Deseja aprovar a medição ${measurement.code}?`)
-    if (!confirmed) {
-      return
-    }
+  const handleApproveMeasurement = (measurement) => {
+    setConfirmRequest({
+      title: `Aprovar a medição ${measurement.code}`,
+      message: "A medição passa a valer e conta no avanço da obra.",
+      confirmLabel: "Aprovar medição",
+      danger: false,
+      run: () => runApproveMeasurement(measurement),
+    })
+  }
 
+  const runApproveMeasurement = async (measurement) => {
     try {
       await approveConstructionMeasurement({ bridge, measurementId: measurement.id })
       bridge?.feedback?.success?.("Medição aprovada com sucesso.")
@@ -3090,12 +3256,16 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const handleDeleteProcurement = async (procurementRequest) => {
-    const confirmed = window.confirm(`Deseja remover a requisição ${procurementRequest.code}?`)
-    if (!confirmed) {
-      return
-    }
+  const handleDeleteProcurement = (procurementRequest) => {
+    setConfirmRequest({
+      title: `Remover a requisição ${procurementRequest.code}`,
+      message: "A requisição sai da lista com todos os itens dela.",
+      confirmLabel: "Remover requisição",
+      run: () => runDeleteProcurement(procurementRequest),
+    })
+  }
 
+  const runDeleteProcurement = async (procurementRequest) => {
     try {
       await deleteConstructionProcurementRequest({
         bridge,
@@ -3108,12 +3278,17 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const handleSubmitProcurement = async (procurementRequest) => {
-    const confirmed = window.confirm(`Deseja enviar a requisição ${procurementRequest.code} para aprovação?`)
-    if (!confirmed) {
-      return
-    }
+  const handleSubmitProcurement = (procurementRequest) => {
+    setConfirmRequest({
+      title: `Enviar a requisição ${procurementRequest.code} para aprovação`,
+      message: "A requisição sai da sua mão e vai para quem aprova. Até a resposta ela fica parada.",
+      confirmLabel: "Enviar para aprovação",
+      danger: false,
+      run: () => runSubmitProcurement(procurementRequest),
+    })
+  }
 
+  const runSubmitProcurement = async (procurementRequest) => {
     try {
       await submitConstructionProcurementRequest({
         bridge,
@@ -3126,12 +3301,17 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const handleApproveProcurement = async (procurementRequest) => {
-    const confirmed = window.confirm(`Deseja aprovar a requisição ${procurementRequest.code}?`)
-    if (!confirmed) {
-      return
-    }
+  const handleApproveProcurement = (procurementRequest) => {
+    setConfirmRequest({
+      title: `Aprovar a requisição ${procurementRequest.code}`,
+      message: "A requisição fica liberada para a compra seguir.",
+      confirmLabel: "Aprovar requisição",
+      danger: false,
+      run: () => runApproveProcurement(procurementRequest),
+    })
+  }
 
+  const runApproveProcurement = async (procurementRequest) => {
     try {
       await approveConstructionProcurementRequest({
         bridge,
@@ -3430,7 +3610,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                     loadingPaymentPlan={loadingUnitPaymentPlan}
                     paymentPlanError={unitPaymentPlanError}
                     onRetryPaymentPlan={loadUnitPaymentPlan}
-                    onEditInstallment={handleOpenEditInstallment}
+                    onReverseInstallment={handleReverseInstallment}
                     onPayInstallment={handleOpenPayInstallment}
                     onDeleteInstallment={handleDeleteInstallment}
                     onDeleteAdjustment={handleOpenDeleteAdjustment}
@@ -3641,10 +3821,28 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         <PayInstallmentModal
           installment={payingInstallment}
           form={payInstallmentForm}
+          paymentMethods={paymentMethodOptions}
+          bankAccounts={companyBankAccounts}
           onClose={closePayInstallmentModal}
           onChange={handlePayInstallmentChange}
+          onLineChange={handlePayInstallmentLineChange}
+          onAddLine={handleAddPayInstallmentLine}
+          onRemoveLine={handleRemovePayInstallmentLine}
+          onSaveData={handleSaveInstallmentData}
           onSubmit={handleSubmitPayInstallment}
           loading={submittingInstallmentPayment}
+        />
+      ) : null}
+
+      {confirmRequest ? (
+        <ConfirmModal
+          title={confirmRequest.title}
+          message={confirmRequest.message}
+          confirmLabel={confirmRequest.confirmLabel}
+          danger={confirmRequest.danger !== false}
+          loading={confirmRunning}
+          onCancel={() => (confirmRunning ? null : setConfirmRequest(null))}
+          onConfirm={runConfirmedAction}
         />
       ) : null}
 
@@ -3681,17 +3879,6 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           onChange={handleAdjustmentFormChange}
           onSubmit={handleSubmitAdjustment}
           loading={submittingAdjustment}
-        />
-      ) : null}
-
-      {editingInstallment ? (
-        <EditInstallmentModal
-          installment={editingInstallment}
-          form={editInstallmentForm}
-          onClose={closeEditInstallmentModal}
-          onChange={handleEditInstallmentChange}
-          onSubmit={handleSubmitEditInstallment}
-          loading={savingInstallment}
         />
       ) : null}
 
@@ -4445,7 +4632,7 @@ function UnitDetailPanel({
   loadingPaymentPlan,
   paymentPlanError,
   onRetryPaymentPlan,
-  onEditInstallment,
+  onReverseInstallment,
   onPayInstallment,
   onDeleteInstallment,
   onDeleteAdjustment,
@@ -4601,7 +4788,7 @@ function UnitDetailPanel({
           error={paymentPlanError}
           onRetry={() => onRetryPaymentPlan(unit.id)}
           onSale={onSale}
-          onEditInstallment={onEditInstallment}
+          onReverseInstallment={onReverseInstallment}
           onPayInstallment={onPayInstallment}
           onDeleteInstallment={onDeleteInstallment}
           onCreateAdjustment={onCreateAdjustment}
@@ -4644,7 +4831,7 @@ function UnitInstallmentsPanel({
   error,
   onRetry,
   onSale,
-  onEditInstallment,
+  onReverseInstallment,
   onPayInstallment,
   onDeleteInstallment,
   onCreateAdjustment,
@@ -4912,7 +5099,7 @@ function UnitInstallmentsPanel({
                         actions={buildInstallmentActions({
                           installment: row,
                           adjustment: row.adjustment,
-                          onEditInstallment,
+                          onReverseInstallment,
                           onPayInstallment,
                           onDeleteInstallment,
                           onDeleteAdjustment,
@@ -4939,27 +5126,26 @@ function UnitInstallmentsPanel({
 function buildInstallmentActions({
   installment,
   adjustment,
-  onEditInstallment,
+  onReverseInstallment,
   onPayInstallment,
   onDeleteInstallment,
   onDeleteAdjustment,
 }) {
   const isPaid = installment.status === "PAID"
-  const actions = [
-    {
-      key: "edit",
-      label: "Editar parcela",
-      icon: Pencil,
-      onSelect: () => onEditInstallment(installment),
-    },
-  ]
+  const hasPayments = (installment.payments?.length ?? 0) > 0
+  // D11: recibo emitido tranca a parcela. Os itens ficam visiveis e
+  // desabilitados, para o operador entender que a acao existe e por que nao
+  // cabe mais aqui.
+  const receiptIssued = Boolean(installment.hasIssuedReceipt)
+  const actions = []
 
-  // Parcela paga não reabre por aqui: o estorno é do Contas a Receber, e a
-  // exclusão de uma parcela já recebida apagaria o recebimento junto.
+  // Um diálogo so por parcela: "Baixar parcela" abre a composicao por formas e
+  // carrega tambem o numero do documento e a observacao, que antes moravam num
+  // "Editar parcela" separado.
   if (!isPaid) {
     actions.push({
       key: "pay",
-      label: "Marcar como pago",
+      label: "Baixar parcela",
       icon: CheckCircle,
       onSelect: () => onPayInstallment(installment),
     })
@@ -4968,7 +5154,24 @@ function buildInstallmentActions({
       label: "Excluir parcela",
       icon: Trash2,
       danger: true,
+      disabled: receiptIssued,
+      title: receiptIssued ? RECEIPT_ISSUED_HINT : undefined,
       onSelect: () => onDeleteInstallment(installment),
+    })
+  }
+
+  // O estorno mora aqui desde o plano 15: a tela da unidade concentra a baixa
+  // multi-forma, e mandar o operador ao Contas a Receber para corrigir supunha
+  // uma permissao que ele pode nao ter.
+  if (hasPayments) {
+    actions.push({
+      key: "reverse",
+      label: "Estornar baixa",
+      icon: RotateCcw,
+      danger: true,
+      disabled: receiptIssued,
+      title: receiptIssued ? RECEIPT_ISSUED_HINT : undefined,
+      onSelect: () => onReverseInstallment(installment),
     })
   }
 
@@ -5077,14 +5280,36 @@ function CreateInstallmentModal({ unit, form, onClose, onChange, onSubmit, loadi
   )
 }
 
-function PayInstallmentModal({ installment, form, onClose, onChange, onSubmit, loading }) {
+function PayInstallmentModal({
+  installment,
+  form,
+  paymentMethods,
+  bankAccounts,
+  onClose,
+  onChange,
+  onLineChange,
+  onAddLine,
+  onRemoveLine,
+  onSaveData,
+  onSubmit,
+  loading,
+}) {
+  const { posted, due, missing, closes } = installmentClosing(installment, form)
+  const everyLineIsFilled = form.lines.every(
+    (line) => line.paymentMethod && parseCurrencyToNumber(line.amount) > 0,
+  )
+  const locked = Boolean(installment?.hasIssuedReceipt)
+  const existingPayments = installment?.payments ?? []
+  const labelOfMethod = (value) =>
+    paymentMethods.find((option) => option.value === value)?.label ?? value ?? ""
+
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
       <section
         className={styles.modalCard}
         role="dialog"
         aria-modal="true"
-        aria-label="Marcar parcela como paga"
+        aria-label="Baixar parcela"
         onClick={(event) => event.stopPropagation()}
       >
         <header className={styles.modalHeader}>
@@ -5104,91 +5329,237 @@ function PayInstallmentModal({ installment, form, onClose, onChange, onSubmit, l
                   installmentOutstanding(installment),
                 )}`
               : ""}
-            . Cada recebimento gera o seu lançamento contábil, e o recibo sai provisório enquanto
-            sobrar saldo.
+            . A baixa só é aceita quando a soma das formas fecha o valor a receber.
           </p>
-          <div className={styles.formGrid}>
-            <label className={styles.filterControl}>
-              <span>Forma de pagamento*</span>
-              <select
-                value={form.paymentMethod}
-                onChange={(event) => onChange("paymentMethod", event.target.value)}
-                required
-              >
-                {installmentPaymentMethodOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className={styles.filterControl}>
-              <span>Data do pagamento</span>
-              <input
-                type="date"
-                value={form.paidAt}
-                onChange={(event) => onChange("paidAt", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Valor a receber</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={form.paidAmount}
-                onChange={(event) => onChange("paidAmount", formatCurrencyInput(event.target.value))}
-                placeholder="0,00"
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Juros</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={form.interest}
-                onChange={(event) => onChange("interest", formatCurrencyInput(event.target.value))}
-                placeholder="0,00"
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Multa</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={form.fine}
-                onChange={(event) => onChange("fine", formatCurrencyInput(event.target.value))}
-                placeholder="0,00"
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Desconto</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={form.discount}
-                onChange={(event) => onChange("discount", formatCurrencyInput(event.target.value))}
-                placeholder="0,00"
-              />
-            </label>
-            <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
-              <span>Observação</span>
-              <textarea
-                className={styles.textarea}
-                value={form.observation}
-                onChange={(event) => onChange("observation", event.target.value)}
-              />
-            </label>
-          </div>
+
+          {existingPayments.length ? (
+            <div className={styles.formGrid}>
+              <p className={`${styles.metricHint} ${styles.spanTwoColumns}`}>
+                Já lançado nesta parcela:{" "}
+                {existingPayments
+                  .map(
+                    (payment) =>
+                      `${labelOfMethod(payment.paymentMethod)} `
+                      + `${formatMoney(payment.netAmount ?? payment.amount)}`
+                      + (payment.paidAt ? ` em ${formatDate(payment.paidAt)}` : ""),
+                  )
+                  .join(" + ")}
+                .
+              </p>
+            </div>
+          ) : null}
+
+          {locked ? (
+            <p className={styles.metricHint}>
+              A parcela já tem recibo definitivo emitido — o número saiu do talão e o documento
+              existe. A baixa é definitiva: não aceita alteração, estorno nem exclusão. Qualquer
+              acerto tem que virar um lançamento novo.
+            </p>
+          ) : (
+            <>
+              {form.lines.map((line) => (
+                <div className={styles.formGrid} key={line.key}>
+                  <label className={styles.filterControl}>
+                    <span>Forma de recebimento*</span>
+                    <select
+                      value={line.paymentMethod}
+                      onChange={(event) => onLineChange(line.key, "paymentMethod", event.target.value)}
+                      required
+                    >
+                      <option value="">Selecione</option>
+                      {paymentMethods.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className={styles.filterControl}>
+                    <span>Valor recebido*</span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      value={line.amount}
+                      onChange={(event) =>
+                        onLineChange(line.key, "amount", formatCurrencyInput(event.target.value))
+                      }
+                      placeholder="0,00"
+                      required
+                    />
+                  </label>
+                  <label className={styles.filterControl}>
+                    <span>Data</span>
+                    <input
+                      type="date"
+                      value={line.paidAt}
+                      onChange={(event) => onLineChange(line.key, "paidAt", event.target.value)}
+                    />
+                  </label>
+                  <label className={styles.filterControl}>
+                    <span>Nº do documento</span>
+                    <input
+                      type="text"
+                      maxLength={100}
+                      value={line.documentNumber}
+                      onChange={(event) => onLineChange(line.key, "documentNumber", event.target.value)}
+                    />
+                  </label>
+                  <label className={styles.filterControl}>
+                    <span>Conta bancária</span>
+                    <select
+                      value={line.companyBankAccountId}
+                      onChange={(event) =>
+                        onLineChange(line.key, "companyBankAccountId", event.target.value)
+                      }
+                    >
+                      <option value="">Herdar da parcela</option>
+                      {bankAccounts.map((account) => (
+                        <option key={account.id} value={account.id}>
+                          {account.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className={styles.filterControl}>
+                    <span>&nbsp;</span>
+                    <button
+                      type="button"
+                      className={styles.secondaryButton}
+                      onClick={() => onRemoveLine(line.key)}
+                      disabled={form.lines.length === 1}
+                    >
+                      Remover forma
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              <button type="button" className={styles.secondaryButton} onClick={onAddLine}>
+                <Plus size={14} /> Incluir forma de recebimento
+              </button>
+
+              <div className={styles.formGrid}>
+                <label className={styles.filterControl}>
+                  <span>Juros</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={form.interest}
+                    onChange={(event) => onChange("interest", formatCurrencyInput(event.target.value))}
+                    placeholder="0,00"
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Multa</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={form.fine}
+                    onChange={(event) => onChange("fine", formatCurrencyInput(event.target.value))}
+                    placeholder="0,00"
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Desconto</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={form.discount}
+                    onChange={(event) => onChange("discount", formatCurrencyInput(event.target.value))}
+                    placeholder="0,00"
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Nº do documento da parcela</span>
+                  <input
+                    type="text"
+                    maxLength={100}
+                    value={form.documentNumber}
+                    onChange={(event) => onChange("documentNumber", event.target.value)}
+                  />
+                </label>
+                <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
+                  <span>Observação</span>
+                  <textarea
+                    className={styles.textarea}
+                    value={form.observation}
+                    onChange={(event) => onChange("observation", event.target.value)}
+                  />
+                </label>
+              </div>
+
+              <p className={styles.metricHint} data-testid="installment-closing">
+                Lançado {formatMoney(posted)} · A receber {formatMoney(due)} · Falta{" "}
+                {formatMoney(Math.abs(missing))}
+                {missing < -0.005 ? " a mais" : ""}
+              </p>
+            </>
+          )}
 
           <footer className={styles.modalFooter}>
             <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
               Cancelar
             </button>
-            <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Baixando..." : "Marcar como pago"}
+            <button
+              type="button"
+              className={styles.secondaryButton}
+              onClick={onSaveData}
+              disabled={loading || locked}
+            >
+              Salvar dados da parcela
+            </button>
+            <button
+              type="submit"
+              className={styles.primaryButton}
+              disabled={loading || locked || !closes || !everyLineIsFilled || !form.lines.length}
+              title={closes ? undefined : "A soma das formas precisa fechar o valor a receber."}
+            >
+              {loading ? "Baixando..." : "Baixar parcela"}
             </button>
           </footer>
         </form>
+      </section>
+    </div>
+  )
+}
+
+const RECEIPT_ISSUED_HINT =
+  "Recibo já emitido: a parcela não pode mais ser alterada, estornada nem excluída."
+
+function ConfirmModal({ title, message, confirmLabel, danger, onCancel, onConfirm, loading }) {
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onCancel}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>{title}</h3>
+          <button type="button" className={styles.closeButton} onClick={onCancel} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <div className={styles.modalBody}>
+          <p className={styles.metricHint}>{message}</p>
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onCancel} disabled={loading}>
+              Cancelar
+            </button>
+            <button
+              type="button"
+              className={
+                danger ? `${styles.secondaryButton} ${styles.dangerButton}` : styles.primaryButton
+              }
+              onClick={onConfirm}
+              disabled={loading}
+            >
+              {loading ? "Processando..." : confirmLabel}
+            </button>
+          </footer>
+        </div>
       </section>
     </div>
   )
@@ -5651,87 +6022,6 @@ function UnitContractPanel({ unit, plan, loading, error, onRetry }) {
   )
 }
 
-const installmentPaymentMethodOptions = [
-  { value: "PIX", label: "PIX" },
-  { value: "BOLETO", label: "Boleto" },
-  { value: "TRANSFER", label: "Transferência" },
-  { value: "CASH", label: "Dinheiro" },
-  { value: "CREDIT_CARD", label: "Cartão de crédito" },
-  { value: "DEBIT_CARD", label: "Cartão de débito" },
-]
-
-function EditInstallmentModal({ installment, form, onClose, onChange, onSubmit, loading }) {
-  return (
-    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
-      <section
-        className={styles.modalCard}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Editar parcela"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header className={styles.modalHeader}>
-          <h3>
-            Editar parcela {installment?.installmentNumber}/{installment?.totalInstallments}
-          </h3>
-          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
-            Fechar
-          </button>
-        </header>
-        <form className={styles.modalBody} onSubmit={onSubmit}>
-          <p className={styles.metricHint}>
-            Vencimento e valor são definidos na confirmação da venda e não mudam por aqui.
-          </p>
-
-          <label className={styles.filterControl}>
-            <span>Forma de pagamento</span>
-            <select
-              className={styles.select}
-              value={form.paymentMethod}
-              onChange={(event) => onChange("paymentMethod", event.target.value)}
-            >
-              <option value="">Selecione</option>
-              {installmentPaymentMethodOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className={styles.filterControl}>
-            <span>Número do documento</span>
-            <input
-              className={styles.input}
-              value={form.documentNumber}
-              maxLength={100}
-              onChange={(event) => onChange("documentNumber", event.target.value)}
-            />
-          </label>
-
-          <label className={styles.filterControl}>
-            <span>Observação</span>
-            <textarea
-              className={styles.textarea}
-              value={form.observation}
-              onChange={(event) => onChange("observation", event.target.value)}
-            />
-          </label>
-
-          <footer className={styles.modalFooter}>
-            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
-              Cancelar
-            </button>
-            <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Salvando..." : "Salvar parcela"}
-            </button>
-          </footer>
-        </form>
-      </section>
-    </div>
-  )
-}
-
 function RowActionsMenu({ label = "Ações", actions }) {
   const [isOpen, setIsOpen] = useState(false)
   const [menuPosition, setMenuPosition] = useState(null)
@@ -5820,6 +6110,7 @@ function RowActionsMenu({ label = "Ações", actions }) {
                   action.onSelect()
                 }}
                 disabled={action.disabled}
+                title={action.title}
               >
                 {ActionIcon ? <ActionIcon size={16} /> : null}
                 <span>{action.label}</span>

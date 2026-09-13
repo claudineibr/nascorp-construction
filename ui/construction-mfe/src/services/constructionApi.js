@@ -295,6 +295,21 @@ const toSchedulePhasePayload = (phaseData = {}) => ({
       : Number(phaseData.progressPercent),
 })
 
+const describeValidationErrors = (detail) => {
+  if (!Array.isArray(detail) || !detail.length) {
+    return null
+  }
+
+  const described = detail
+    .map((item) => {
+      const field = (item?.loc ?? []).filter((part) => part !== "body").join(".")
+      return field ? `${field}: ${item?.msg ?? "inválido"}` : item?.msg
+    })
+    .filter(Boolean)
+
+  return described.length ? `Dados recusados pelo servidor — ${described.join("; ")}.` : null
+}
+
 const toNullableNumber = (value) => {
   if (value === "" || value === null || value === undefined) {
     return null
@@ -418,6 +433,10 @@ async function requestJson({ bridge, path, method = "GET", body = null, baseUrl 
         payload?.detail?.message ||
         payload?.message ||
         (typeof payloadDetails === "string" ? payloadDetails : payloadDetails?.message) ||
+        // Um 422 do FastAPI traz `detail` como LISTA de erros de campo, e nenhuma
+        // das chaves acima existe nele: sem este ramo, toda recusa de contrato
+        // virava a mensagem generica e o operador nao sabia o que corrigir.
+        describeValidationErrors(payload?.detail) ||
         fallback
     } catch {
       errorMessage = fallback
@@ -738,6 +757,9 @@ export async function createConstructionUnitInstallments({ bridge, unitId, insta
   return (payload ?? []).map(toReceivableInstallmentView)
 }
 
+// A baixa e por N formas de recebimento, e o ERP so aceita quando a soma fecha o
+// que ha para receber. Cada linha leva o DINHEIRO daquela forma -- o principal
+// amortizado e derivado la, porque o extrato bancario nao traz principal.
 export async function payConstructionUnitInstallment({
   bridge,
   unitId,
@@ -751,15 +773,71 @@ export async function payConstructionUnitInstallment({
     method: "POST",
     body: {
       receivable_id: toNullableString(receivableId),
-      payment_method: paymentData.paymentMethod,
-      paid_amount: toNullableNumber(paymentData.paidAmount),
-      paid_at: paymentData.paidAt ? `${paymentData.paidAt}T12:00:00` : null,
-      interest: toNullableNumber(paymentData.interest),
-      fine: toNullableNumber(paymentData.fine),
-      discount: toNullableNumber(paymentData.discount),
+      payments: paymentData.payments.map((line) => ({
+        payment_method: line.paymentMethod,
+        amount: toNullableNumber(line.amount),
+        paid_at: line.paidAt ? `${line.paidAt}T12:00:00` : null,
+        document_number: toNullableString(line.documentNumber),
+      })),
+      // Sempre numero, nunca ausente: campo omitido faz o ERP herdar o juros e a
+      // multa combinados na parcela, e o rodape da tela fecharia numa conta
+      // enquanto o servidor recusa por outra.
+      interest: toNullableNumber(paymentData.interest) ?? 0,
+      fine: toNullableNumber(paymentData.fine) ?? 0,
+      discount: toNullableNumber(paymentData.discount) ?? 0,
       observation: toNullableString(paymentData.observation),
     },
   })
+}
+
+// Estorno da baixa inteira. Nao ha estorno por linha aqui: com recibo emitido a
+// parcela e imutavel, e derrubar a baixa toda cancela o recibo e queima o numero.
+export async function reverseConstructionUnitInstallment({
+  bridge,
+  unitId,
+  installmentNumber,
+  receivableId = null,
+}) {
+  return requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/installments/${installmentNumber}/reverse`,
+    method: "POST",
+    body: { receivable_id: toNullableString(receivableId) },
+  })
+}
+
+export async function listErpPaymentMethods({ bridge }) {
+  const erpApiBaseUrl = bridge?.erpApiBaseUrl || import.meta.env.VITE_ERP_API_URL || DEFAULT_ERP_API_URL
+  const payload = await requestJson({
+    bridge,
+    path: "/v1/finance/payment-methods",
+    baseUrl: erpApiBaseUrl,
+  })
+  return Array.isArray(payload) ? payload : []
+}
+
+// A conta que recebeu cada forma decide a conta contabil de debito
+// (BANK_CASH_{id}). Sem a lista aqui, PIX no Itau e TED no Bradesco debitariam o
+// mesmo razao -- o defeito que a conta por linha existe para corrigir.
+export async function listErpCompanyBankAccounts({ bridge }) {
+  const erpApiBaseUrl = bridge?.erpApiBaseUrl || import.meta.env.VITE_ERP_API_URL || DEFAULT_ERP_API_URL
+  const companyId = bridge?.companyContext?.companyId
+  if (!companyId) {
+    return []
+  }
+
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/company/${companyId}`,
+    baseUrl: erpApiBaseUrl,
+  })
+
+  return (payload?.financial_accounts ?? [])
+    .filter((account) => account?.is_active !== false)
+    .map((account) => ({
+      id: account.id,
+      label: account.bank_name || account.account_number || "Conta sem nome",
+    }))
 }
 
 export async function deleteConstructionUnitInstallment({
@@ -838,6 +916,21 @@ const toReceivableInstallmentView = (installment) => ({
   documentNumber: installment.document_number ?? "",
   observation: installment.observation ?? "",
   paymentMethod: installment.payment_method ?? "",
+  interest: installment.interest ?? null,
+  fine: installment.fine ?? null,
+  discount: installment.discount ?? null,
+  // Com recibo definitivo emitido a parcela e somente leitura: e o que faz o
+  // diálogo abrir travado em vez de deixar o operador digitar e o ERP recusar.
+  hasIssuedReceipt: Boolean(installment.has_issued_receipt),
+  payments: (installment.payments ?? []).map((payment) => ({
+    id: payment.id,
+    sequenceNumber: payment.sequence_number,
+    paymentMethod: payment.payment_method ?? "",
+    amount: payment.amount ?? null,
+    netAmount: payment.net_amount ?? null,
+    paidAt: payment.paid_at ?? null,
+    documentNumber: payment.document_number ?? "",
+  })),
 })
 
 export async function getConstructionUnitPaymentPlan({ bridge, unitId }) {
