@@ -702,7 +702,12 @@ export async function releaseConstructionUnitReservation({ bridge, unitId }) {
 
 export async function confirmConstructionUnitSale({ bridge, unitId, saleData }) {
   const paymentSources = (saleData.paymentSources ?? []).map(toSalePaymentSourcePayload)
-  const firstPaymentDueDate = paymentSources[0]?.due_date ?? saleData.firstDueDate
+  // first_due_date e a data do SALDO -- e com ela que o backend grava a fonte
+  // BALANCE. A precedencia era invertida: havendo qualquer fonte, o vencimento
+  // da primeira (a entrada, quase sempre) vinha na frente e o vencimento do
+  // saldo que o usuario escolheu era descartado, ancorando as parcelas na data
+  // errada. A fonte so serve de fallback para venda que nao tem saldo.
+  const firstPaymentDueDate = saleData.firstDueDate || paymentSources[0]?.due_date
   const payload = await requestJson({
     bridge,
     path: `/v1/construction/units/${unitId}/confirm-sale`,
@@ -949,6 +954,7 @@ export async function getConstructionUnitPaymentPlan({ bridge, unitId }) {
     documentationTotal: payload.documentation_total ?? null,
     totalCharged: payload.total_charged ?? null,
     installmentTotal: payload.installment_total ?? null,
+    balanceTotal: payload.balance_total ?? null,
     settlementTotal: payload.settlement_total ?? null,
     commissionTotal: payload.commission_total ?? null,
     commissionPaidTotal: payload.commission_paid_total ?? null,
@@ -1038,7 +1044,6 @@ export async function createConstructionUnitCommissions({ bridge, unitId, commis
       amount: toNullableNumber(commissionData.amount),
       due_date: toNullableString(commissionData.dueDate),
       installments: Number(commissionData.installments || 1),
-      composes_sale_price: Boolean(commissionData.composesSalePrice),
       document_number: toNullableString(commissionData.documentNumber),
       notes: toNullableString(commissionData.notes),
     },
@@ -1059,7 +1064,6 @@ export async function updateConstructionUnitCommission({ bridge, commissionId, c
       beneficiary_person_id: toNullableString(commissionData.beneficiaryPersonId),
       amount: toNullableNumber(commissionData.amount),
       due_date: toNullableString(commissionData.dueDate),
-      composes_sale_price: commissionData.composesSalePrice,
       document_number: toNullableString(commissionData.documentNumber),
       notes: toNullableString(commissionData.notes),
     },

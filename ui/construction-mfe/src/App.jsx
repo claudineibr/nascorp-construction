@@ -325,7 +325,6 @@ const defaultCommissionForm = {
   amount: "",
   dueDate: "",
   installments: "1",
-  composesSalePrice: false,
   documentNumber: "",
   notes: "",
 }
@@ -416,6 +415,107 @@ const SALE_INSTALLMENT_SOURCE_TYPES = ["down_payment"]
 // O saldo nao tem campo de valor: ele e calculado. Do que veio gravado
 // aproveitamos so as parcelas e o primeiro vencimento que o usuario escolheu.
 const SALE_BALANCE_SOURCE_TYPES = ["balance", "direct_builder"]
+
+// Saldo zerado: cobrar mais exigiria um valor que a venda nao tem. Os botoes
+// ficam visiveis e desabilitados -- some-los esconderia que a acao existe.
+const NOTHING_LEFT_TO_CHARGE =
+  "Saldo devedor zerado: tudo que o comprador deve já está lançado. Para cobrar a mais, aumente o preço da venda ou inclua uma documentação."
+
+// A ancora do saldo sai das fontes gravadas. Venda antiga nao tem fonte
+// nenhuma -- a tabela so passou a ser preenchida depois que elas foram
+// confirmadas -- e ai o unico registro do plano que sobrou sao as proprias
+// parcelas do contas a receber. Sem esse fallback o formulario reabre zerado,
+// e como a secao some na edicao ninguem ve que zerou: salvar refaz o plano
+// inteiro em silencio.
+function saleFormFieldsFromPlan(plan) {
+  const fields = saleFormFieldsFromSources(plan?.sources)
+  if (String(fields.firstDueDate ?? "").trim()) {
+    return fields
+  }
+
+  const dated = (plan?.paymentPlan?.installments ?? []).filter((installment) =>
+    String(installment.dueDate ?? "").trim(),
+  )
+  if (!dated.length) {
+    return fields
+  }
+
+  // Preferimos as em aberto: sao elas que serao refeitas, entao e a data da
+  // primeira delas que o usuario reconhece como "o proximo vencimento".
+  const open = dated.filter((installment) => installment.status !== "PAID")
+  const anchor = open.length ? open : dated
+  const ordered = [...anchor].sort((first, second) =>
+    String(first.dueDate).localeCompare(String(second.dueDate)),
+  )
+
+  return { ...fields, firstDueDate: ordered[0].dueDate, installments: String(ordered.length) }
+}
+
+// Soma meses numa data ISO sem passar por fuso: "2026-11-10" + 5 = "2027-04-10".
+// Dia que nao existe no mes de destino cai no ultimo dia dele (31/01 + 1 = 28/02),
+// que e como o parcelamento do ERP trata a virada.
+function addMonthsToIsoDate(value, months) {
+  const [year, month, day] = String(value ?? "")
+    .split("-")
+    .map(Number)
+  if (!year || !month || !day) {
+    return ""
+  }
+
+  const target = new Date(Date.UTC(year, month - 1 + months, 1))
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate()
+  target.setUTCDate(Math.min(day, lastDay))
+
+  return target.toISOString().slice(0, 10)
+}
+
+// O saldo so comeca a ser cobrado depois que a entrada termina -- cobrar os dois
+// no mesmo mes dobraria a prestacao do comprador. Sem entrada, o saldo comeca um
+// mes depois da ultima previsao de liberacao do banco, que e quando a construtora
+// sabe o quanto sobrou para financiar direto.
+function suggestBalanceDueDate(formSale) {
+  const downPaymentAmount = parseCurrencyFormValue(formSale.downPaymentAmount)
+  const downPaymentDueDate = String(formSale.downPaymentDueDate ?? "").trim()
+  if (downPaymentAmount > 0 && downPaymentDueDate) {
+    const installments = Math.max(Number(formSale.downPaymentInstallments || 1), 1)
+    return addMonthsToIsoDate(downPaymentDueDate, installments)
+  }
+
+  const settlementDueDates = salePaymentSourceDefinitions
+    .filter((definition) => !SALE_INSTALLMENT_SOURCE_TYPES.includes(definition.sourceType))
+    .filter((definition) => parseCurrencyFormValue(formSale[definition.amountField]) > 0)
+    .map((definition) => String(formSale[definition.dueDateField] ?? "").trim())
+    .filter(Boolean)
+    .sort()
+
+  if (settlementDueDates.length) {
+    return addMonthsToIsoDate(settlementDueDates[settlementDueDates.length - 1], 1)
+  }
+
+  return ""
+}
+
+// O vencimento do saldo saiu da tela: ninguém digita mais. Ele é derivado da
+// data que a venda já tem, e quem quiser outro plano usa Refazer plano de
+// pagamento depois -- que é onde parcelas e vencimento continuam editáveis.
+function resolveBalanceDueDate(formSale) {
+  const informed = String(formSale.firstDueDate ?? "").trim()
+  if (informed) {
+    return informed
+  }
+
+  const suggested = suggestBalanceDueDate(formSale)
+  if (suggested) {
+    return suggested
+  }
+
+  const signatureDate = String(formSale.contractSignatureDate ?? "").trim()
+  if (signatureDate) {
+    return addMonthsToIsoDate(signatureDate, 1)
+  }
+
+  return ""
+}
 
 function saleFormFieldsFromSources(sources) {
   const fields = {}
@@ -869,7 +969,7 @@ function buildSalePaymentSourcesFromForm(formSale) {
     .filter((paymentSource) => paymentSource.amountValue > 0)
 }
 
-function requiredSaleFieldError(formSale) {
+function requiredSaleFieldError(formSale, { isEditing = false } = {}) {
   if (!String(formSale.buyerPersonId ?? "").trim()) {
     return "Informe a pessoa compradora para confirmar a venda."
   }
@@ -920,52 +1020,52 @@ function requiredSaleFieldError(formSale) {
   }
 
   const paymentSources = buildSalePaymentSourcesFromForm(formSale)
-  if (paymentSources.length) {
-    for (const paymentSource of paymentSources) {
-      if (!String(paymentSource.dueDate ?? "").trim()) {
-        return `Informe o vencimento de ${paymentSource.label}.`
-      }
-
-      const sourceInstallments = Number(paymentSource.installments)
-      if (!Number.isInteger(sourceInstallments) || sourceInstallments <= 0 || sourceInstallments > 120) {
-        return `Parcelas de ${paymentSource.label} devem estar entre 1 e 120.`
-      }
+  for (const paymentSource of paymentSources) {
+    if (!String(paymentSource.dueDate ?? "").trim()) {
+      return `Informe o vencimento de ${paymentSource.label}.`
     }
 
-    const sourcesTotal = paymentSources.reduce((total, paymentSource) => total + paymentSource.amountValue, 0)
-    // O que sobra do preço é o saldo, e o saldo é o que vira parcela. Só é erro
-    // quando as fontes informadas passam do preço, nunca quando sobra.
-    const balance = grossSalePrice + documentationTotal - discountAmount - sourcesTotal
-    if (grossSalePrice > 0 && balance < -0.01) {
-      return `A composição somada ao desconto excede o preço da venda mais a documentação em ${formatMoney(Math.abs(balance))}.`
+    const sourceInstallments = Number(paymentSource.installments)
+    if (!Number.isInteger(sourceInstallments) || sourceInstallments <= 0 || sourceInstallments > 120) {
+      return `Parcelas de ${paymentSource.label} devem estar entre 1 e 120.`
     }
 
-    const downPaymentTotal = paymentSources
-      .filter((paymentSource) => SALE_INSTALLMENT_SOURCE_TYPES.includes(paymentSource.sourceType))
-      .reduce((total, paymentSource) => total + paymentSource.amountValue, 0)
-    if (grossSalePrice > 0 && downPaymentTotal + Math.max(balance, 0) <= 0.01) {
-      return "Não sobrou nada para cobrar do comprador: entrada, desconto e liberações do banco já cobrem o preço mais a documentação."
+    if (
+      !SALE_INSTALLMENT_SOURCE_TYPES.includes(paymentSource.sourceType) &&
+      Number(paymentSource.installments) > 1
+    ) {
+      return `${paymentSource.label} depende de liberação do banco e não pode ser parcelado.`
     }
+  }
 
-    for (const paymentSource of paymentSources) {
-      if (
-        !SALE_INSTALLMENT_SOURCE_TYPES.includes(paymentSource.sourceType) &&
-        Number(paymentSource.installments) > 1
-      ) {
-        return `${paymentSource.label} depende de liberação do banco e não pode ser parcelado.`
-      }
-    }
+  const sourcesTotal = paymentSources.reduce((total, paymentSource) => total + paymentSource.amountValue, 0)
+  // O que sobra do preço é o saldo, e o saldo é o que vira parcela. Só é erro
+  // quando as fontes informadas passam do preço, nunca quando sobra.
+  const balance = grossSalePrice + documentationTotal - discountAmount - sourcesTotal
+  if (grossSalePrice > 0 && balance < -0.01) {
+    return `A composição somada ao desconto excede o preço da venda mais a documentação em ${formatMoney(Math.abs(balance))}.`
+  }
 
+  const downPaymentTotal = paymentSources
+    .filter((paymentSource) => SALE_INSTALLMENT_SOURCE_TYPES.includes(paymentSource.sourceType))
+    .reduce((total, paymentSource) => total + paymentSource.amountValue, 0)
+  if (grossSalePrice > 0 && downPaymentTotal + Math.max(balance, 0) <= 0.01) {
+    return "Não sobrou nada para cobrar do comprador: entrada, desconto e liberações do banco já cobrem o preço mais a documentação."
+  }
+
+  // O saldo é validado sempre que existe, e não só quando nenhuma fonte foi
+  // informada. Antes o retorno era antecipado assim que havia qualquer fonte,
+  // e por isso venda com entrada era gravada sem que o vencimento do saldo
+  // fosse conferido -- o saldo ia para o banco com a data da entrada junto.
+  if (balance <= 0.01) {
     return null
   }
 
-  const installments = Number(formSale.installments)
-  if (!Number.isInteger(installments) || installments <= 0 || installments > 120) {
-    return "Parcelas devem estar entre 1 e 120."
-  }
-
-  if (!String(formSale.firstDueDate ?? "").trim()) {
-    return "Informe a data do primeiro vencimento."
+  // O vencimento do saldo não tem campo na tela: ele é derivado em
+  // resolveBalanceDueDate e só falta aqui se a venda não tiver nenhuma data de
+  // onde partir, o que exige refazer o plano.
+  if (!String(formSale.firstDueDate ?? "").trim() && !resolveBalanceDueDate(formSale)) {
+    return "Esta venda não tem nenhuma data de onde partir o parcelamento. Informe o vencimento da entrada ou das liberações do banco."
   }
 
   return null
@@ -1063,6 +1163,24 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [submittingReserve, setSubmittingReserve] = useState(false)
 
   const [isSaleModalOpen, setIsSaleModalOpen] = useState(false)
+  // Estado da carga da composição gravada. "failed" trava o salvar de
+  // propósito: sem ela o payload iria sem entrada nem saldo, e o backend
+  // recomporia o plano por cima das parcelas em aberto.
+  const [saleComposition, setSaleComposition] = useState({
+    status: "ready",
+    receivableTotal: null,
+    commissionOffset: 0,
+  })
+
+  const [isRebuildPlanModalOpen, setIsRebuildPlanModalOpen] = useState(false)
+  const [rebuildPlanUnit, setRebuildPlanUnit] = useState(null)
+  const [rebuildPlanForm, setRebuildPlanForm] = useState(defaultSaleUnitForm)
+  const [rebuildPlanComposition, setRebuildPlanComposition] = useState({
+    balance: 0,
+    paidTotal: 0,
+    paidCount: 0,
+  })
+  const [submittingRebuildPlan, setSubmittingRebuildPlan] = useState(false)
   const [itemsTargetMeasurement, setItemsTargetMeasurement] = useState(null)
   const [measurementItems, setMeasurementItems] = useState([])
   const [loadingMeasurementItems, setLoadingMeasurementItems] = useState(false)
@@ -2106,16 +2224,20 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     setIsSaleModalOpen(true)
 
     if (unit.status !== "sold") {
+      setSaleComposition({ status: "ready", receivableTotal: null, commissionOffset: 0 })
       return
     }
 
     // Venda já confirmada: o formulário tem de abrir com a composição que está
-    // valendo, senão editar o comprador zeraria os valores sem avisar.
+    // valendo, senão editar o comprador zeraria os valores sem avisar. Enquanto
+    // ela não chega o salvar fica travado -- na edição a composição não tem
+    // campo visível, então um form pela metade passaria despercebido.
+    setSaleComposition({ status: "loading", receivableTotal: null, commissionOffset: 0 })
     try {
       const plan = await getConstructionUnitPaymentPlan({ bridge, unitId: unit.id })
       setSaleUnitForm((current) => ({
         ...current,
-        ...saleFormFieldsFromSources(plan.sources),
+        ...saleFormFieldsFromPlan(plan),
         documentations: (plan.documentations ?? []).map((documentation) => ({
           key: nextSaleDocumentationKey(),
           documentationTypeId: documentation.documentationTypeId ?? "",
@@ -2123,10 +2245,159 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           amount: formatCurrencyFromNumber(documentation.amount),
         })),
       }))
+      setSaleComposition({
+        status: "ready",
+        receivableTotal: plan.paymentPlan?.receivableTotalAmount ?? null,
+        commissionOffset: Number(plan.commissionOffset ?? 0),
+      })
     } catch (requestError) {
+      setSaleComposition({ status: "failed", receivableTotal: null, commissionOffset: 0 })
       bridge?.feedback?.warning?.(
         requestError?.message ?? "Não foi possível carregar a composição atual da venda.",
       )
+    }
+  }
+
+  const openRebuildPlanModal = async (unit) => {
+    setRebuildPlanUnit(unit)
+    setRebuildPlanForm(defaultSaleUnitForm)
+    setRebuildPlanComposition({ balance: 0, paidTotal: 0, paidCount: 0 })
+    setIsRebuildPlanModalOpen(true)
+
+    try {
+      const plan = await getConstructionUnitPaymentPlan({ bridge, unitId: unit.id })
+      const planFields = saleFormFieldsFromPlan(plan)
+
+      // O que ja foi pago e historico e nao entra no plano novo. O formulario
+      // trabalha sobre o RESTANTE -- e o numero que interessa a quem esta
+      // reparcelando --, e o submit recompoe o total antes de enviar: o
+      // confirm-sale continua recebendo a venda inteira, senao ela encolheria
+      // a cada reparcelamento.
+      const paidInstallments = (plan.paymentPlan?.installments ?? []).filter(
+        (installment) => installment.status === "PAID",
+      )
+      const paidTotal = paidInstallments.reduce(
+        (total, installment) => total + Number(installment.paidAmount ?? installment.amount ?? 0),
+        0,
+      )
+      const paidCount = paidInstallments.length
+      const remainingFields = paidCount
+        ? {
+            downPaymentAmount: formatCurrencyFromNumber(
+              Math.max(parseCurrencyFormValue(planFields.downPaymentAmount) - paidTotal, 0),
+            ),
+            downPaymentInstallments: String(
+              Math.max(Number(planFields.downPaymentInstallments || 1) - paidCount, 1),
+            ),
+          }
+        : {}
+
+      // Refazer o plano reenvia a venda inteira pelo confirm-sale: o que nao se
+      // edita aqui precisa ir junto exatamente como esta gravado, senao some.
+      setRebuildPlanForm({
+        ...defaultSaleUnitForm,
+        buyerPersonId: unit.buyerPersonId ?? "",
+        secondaryBuyerPersonId: unit.secondaryBuyerPersonId ?? "",
+        brokerPersonId: unit.brokerPersonId ?? "",
+        salePrice: formatCurrencyFromNumber(unit.salePrice),
+        discountAmount: formatCurrencyFromNumber(unit.discountAmount),
+        contractSignatureDate: unit.contractSignatureDate ?? "",
+        saleNotes: unit.saleNotes ?? "",
+        ...planFields,
+        ...remainingFields,
+        documentations: (plan.documentations ?? []).map((documentation) => ({
+          key: nextSaleDocumentationKey(),
+          documentationTypeId: documentation.documentationTypeId ?? "",
+          documentationTypeName: documentation.name ?? "",
+          amount: formatCurrencyFromNumber(documentation.amount),
+        })),
+      })
+      // Mesma conta do backend, menos a entrada -- que é editável aqui e sai do
+      // formulário: preço + documentação - desconto - banco - sinal que compõe.
+      setRebuildPlanComposition({
+        balance:
+          Number(plan.totalCharged ?? 0) -
+          Number(plan.settlementTotal ?? 0) -
+          Number(plan.commissionOffset ?? 0),
+        paidTotal,
+        paidCount,
+      })
+    } catch (requestError) {
+      setIsRebuildPlanModalOpen(false)
+      setRebuildPlanUnit(null)
+      bridge?.feedback?.error?.(
+        requestError?.message ?? "Não foi possível carregar a composição atual da venda.",
+      )
+    }
+  }
+
+  const closeRebuildPlanModal = () => {
+    if (submittingRebuildPlan) {
+      return
+    }
+
+    setIsRebuildPlanModalOpen(false)
+    setRebuildPlanUnit(null)
+    setRebuildPlanForm(defaultSaleUnitForm)
+    setRebuildPlanComposition({ balance: 0, paidTotal: 0, paidCount: 0 })
+  }
+
+  const handleRebuildPlanChange = (field, value) => {
+    setRebuildPlanForm((currentForm) => ({ ...currentForm, [field]: value }))
+  }
+
+  const handleRebuildPlanSubmit = async (event) => {
+    event.preventDefault()
+
+    if (!rebuildPlanUnit) {
+      return
+    }
+
+    // O formulario mostra o restante; o confirm-sale espera a venda inteira. As
+    // parcelas pagas voltam para o total aqui -- o backend as reconhece pela
+    // posicao e recria so o que vem depois delas.
+    const { paidTotal, paidCount } = rebuildPlanComposition
+    const saleForm = paidCount
+      ? {
+          ...rebuildPlanForm,
+          downPaymentAmount: formatCurrencyFromNumber(
+            parseCurrencyFormValue(rebuildPlanForm.downPaymentAmount) + Number(paidTotal ?? 0),
+          ),
+          downPaymentInstallments: String(
+            Math.max(Number(rebuildPlanForm.downPaymentInstallments || 1), 1) + Number(paidCount),
+          ),
+        }
+      : rebuildPlanForm
+
+    const validationError = requiredSaleFieldError(saleForm)
+    if (validationError) {
+      bridge?.feedback?.warning?.(validationError)
+      return
+    }
+
+    setSubmittingRebuildPlan(true)
+    try {
+      await confirmConstructionUnitSale({
+        bridge,
+        unitId: rebuildPlanUnit.id,
+        saleData: {
+          ...saleForm,
+          firstDueDate: resolveBalanceDueDate(saleForm),
+          paymentSources: buildSalePaymentSourcesFromForm(saleForm),
+          documentations: buildSaleDocumentationsFromForm(saleForm),
+        },
+      })
+      bridge?.feedback?.success?.("Plano de pagamento refeito.")
+      setIsRebuildPlanModalOpen(false)
+      setRebuildPlanUnit(null)
+      setRebuildPlanForm(defaultSaleUnitForm)
+      await loadUnitPaymentPlan(rebuildPlanUnit.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(
+        requestError?.message ?? "Não foi possível refazer o plano de pagamento.",
+      )
+    } finally {
+      setSubmittingRebuildPlan(false)
     }
   }
 
@@ -2511,7 +2782,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       setCommissionForm(defaultCommissionForm)
       await loadUnitPaymentPlan(selectedUnit.id)
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível lançar o sinal.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível incluir o sinal.")
     } finally {
       setSubmittingCommission(false)
     }
@@ -2538,18 +2809,29 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const handleDeleteCommission = async (commission) => {
+  const handleDeleteCommission = (commission) => {
     if (!selectedUnit) {
       return
     }
 
-    try {
-      await deleteConstructionUnitCommission({ bridge, commissionId: commission.id })
-      bridge?.feedback?.success?.("Sinal removido.")
-      await loadUnitPaymentPlan(selectedUnit.id)
-    } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover o sinal.")
-    }
+    // Sem confirmação um clique em "Excluir" -- vizinho de "Baixar sinal" no
+    // mesmo menu -- destruía o lançamento na hora, e o sinal não tem de onde
+    // ser recuperado.
+    setConfirmRequest({
+      title: `Excluir sinal ${commission.sequenceNumber ?? ""}`.trim(),
+      message:
+        "O sinal compõe o valor da venda: excluir devolve esse valor ao saldo devedor da unidade.",
+      confirmLabel: "Excluir sinal",
+      run: async () => {
+        try {
+          await deleteConstructionUnitCommission({ bridge, commissionId: commission.id })
+          bridge?.feedback?.success?.("Sinal removido.")
+          await loadUnitPaymentPlan(selectedUnit.id)
+        } catch (requestError) {
+          bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover o sinal.")
+        }
+      },
+    })
   }
 
   const openAdjustmentModal = () => {
@@ -2589,7 +2871,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       setAdjustmentForm(defaultAdjustmentForm)
       await loadUnitPaymentPlan(selectedUnit.id)
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível lançar o aditivo.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível incluir o aditivo.")
     } finally {
       setSubmittingAdjustment(false)
     }
@@ -2602,6 +2884,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
     setSaleTargetUnit(null)
     setSaleUnitForm(defaultSaleUnitForm)
+    setSaleComposition({ status: "ready", receivableTotal: null, commissionOffset: 0 })
     setIsSaleModalOpen(false)
   }
 
@@ -2616,7 +2899,21 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       return
     }
 
-    const validationError = requiredSaleFieldError(saleUnitForm)
+    if (saleComposition.status === "loading") {
+      bridge?.feedback?.warning?.("Aguarde: a composição atual da venda ainda está carregando.")
+      return
+    }
+
+    if (saleComposition.status === "failed") {
+      bridge?.feedback?.error?.(
+        "A composição atual da venda não foi carregada. Feche e abra novamente: salvar agora refaria as parcelas em aberto com dados incompletos.",
+      )
+      return
+    }
+
+    const validationError = requiredSaleFieldError(saleUnitForm, {
+      isEditing: saleTargetUnit.status === "sold",
+    })
     if (validationError) {
       bridge?.feedback?.warning?.(validationError)
       return
@@ -2630,6 +2927,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         unitId: saleTargetUnit.id,
         saleData: {
           ...saleUnitForm,
+          firstDueDate: resolveBalanceDueDate(saleUnitForm),
           paymentSources,
           documentations: buildSaleDocumentationsFromForm(saleUnitForm),
         },
@@ -3615,6 +3913,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                     onDeleteInstallment={handleDeleteInstallment}
                     onDeleteAdjustment={handleOpenDeleteAdjustment}
                     onCreateInstallment={handleOpenCreateInstallment}
+                    onRebuildPlan={openRebuildPlanModal}
                     people={personSummaries}
                     onCreateCommission={openCommissionModal}
                     onSettleCommission={handleSettleCommission}
@@ -3803,6 +4102,19 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           documentationTypes={documentationTypes}
           loadingDocumentationTypes={loadingDocumentationTypes}
           loading={submittingSale}
+          composition={saleComposition}
+        />
+      ) : null}
+
+      {isRebuildPlanModalOpen && rebuildPlanUnit ? (
+        <RebuildSalePlanModal
+          unit={rebuildPlanUnit}
+          form={rebuildPlanForm}
+          composition={rebuildPlanComposition}
+          onClose={closeRebuildPlanModal}
+          onChange={handleRebuildPlanChange}
+          onSubmit={handleRebuildPlanSubmit}
+          loading={submittingRebuildPlan}
         />
       ) : null}
 
@@ -4637,6 +4949,7 @@ function UnitDetailPanel({
   onDeleteInstallment,
   onDeleteAdjustment,
   onCreateInstallment,
+  onRebuildPlan,
   people,
   onCreateCommission,
   onSettleCommission,
@@ -4672,10 +4985,16 @@ function UnitDetailPanel({
           <p className={styles.textMuted}>{unit.unitType}{unit.typology ? ` - ${unit.typology}` : ""}</p>
         </div>
         <div className={styles.tableHeaderActions}>
-          <button type="button" className={styles.secondaryButton} onClick={() => onEdit(unit)}>
+          <button type="button" className={styles.primaryButton} onClick={() => onEdit(unit)}>
             <Pencil size={16} />
-            Editar
+            Editar unidade
           </button>
+          {canEditSale ? (
+            <button type="button" className={styles.primaryButton} onClick={() => onSale(unit)}>
+              <ShoppingCart size={16} />
+              Editar venda
+            </button>
+          ) : null}
           {canReserve ? (
             <button type="button" className={styles.secondaryButton} onClick={() => onReserve(unit)}>
               <Clock size={16} />
@@ -4750,6 +5069,10 @@ function UnitDetailPanel({
         </div>
       ) : null}
 
+      {activeTab === "summary" ? (
+        <UnitSaleCompositionCard unit={unit} plan={paymentPlan} />
+      ) : null}
+
       {activeTab === "measurements" ? (
         <>
           <div className={styles.tableHeaderRow}>
@@ -4794,6 +5117,7 @@ function UnitDetailPanel({
           onCreateAdjustment={onCreateAdjustment}
           onDeleteAdjustment={onDeleteAdjustment}
           onCreateInstallment={onCreateInstallment}
+          onRebuildPlan={onRebuildPlan}
         />
       ) : null}
 
@@ -4824,6 +5148,132 @@ function UnitDetailPanel({
   )
 }
 
+// A composicao vive na aba Resumo: ela descreve a venda, nao as parcelas, e
+// ocupava metade da tela de Parcelas empurrando o contas a receber para baixo.
+function UnitSaleCompositionCard({ unit, plan }) {
+  const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
+
+  const composition = plan ?? {}
+  const sources = composition.sources ?? []
+  const installmentSources = sources.filter((source) => source.generatesInstallments)
+  // O saldo nao gera parcela, mas tambem nao e liberacao de banco: e divida do
+  // comprador esperando virar sinal ou aditivo. Separar os dois evita a tela
+  // dizer que o banco cobre o que o comprador ainda deve.
+  const balanceSources = sources.filter(
+    (source) => !source.generatesInstallments && SALE_BALANCE_SOURCE_TYPES.includes(source.sourceType),
+  )
+  const settlementSources = sources.filter(
+    (source) => !source.generatesInstallments && !SALE_BALANCE_SOURCE_TYPES.includes(source.sourceType),
+  )
+  const documentations = composition.documentations ?? []
+  const commissions = composition.commissions ?? []
+  const commissionOffset = Number(composition.commissionOffset ?? 0)
+  const orderedSources = installmentSources.concat(settlementSources, balanceSources)
+
+  return (
+    <div className={styles.card}>
+      <strong>Como a venda foi composta</strong>
+      <p className={styles.metricHint}>
+        O que o banco libera (subsídio, FGTS e financiamento) entra no preço da venda mas não vira parcela: a
+        data de pagamento depende da liberação. A <strong>documentação</strong> é cobrada do comprador junto
+        do preço. O <strong>sinal</strong> também compõe a venda, mas é pago direto ao corretor e por isso não
+        entra no contas a receber. O que sobra depois de tudo isso é o <strong>saldo</strong>, que não vira
+        parcela sozinho: quem o cobra é um sinal novo ou um aditivo. Só a <strong>entrada</strong> gera as
+        parcelas do contas a receber.
+      </p>
+      {sources.length || commissions.length ? (
+        <div className={styles.tableWrapper}>
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                <th>Fonte</th>
+                <th>Valor</th>
+                <th>Composição</th>
+                <th>Data</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orderedSources.map((source) => {
+                const isBalance = SALE_BALANCE_SOURCE_TYPES.includes(source.sourceType)
+                return (
+                  <tr key={source.sourceType}>
+                    <td>
+                      <strong>{source.label}</strong>
+                      <div className={styles.rowSecondaryText}>
+                        {source.generatesInstallments
+                          ? "cobrado do comprador"
+                          : isBalance
+                            ? "ainda sem cobrança lançada"
+                            : "liberado pelo banco"}
+                      </div>
+                    </td>
+                    <td>{formatMoney(source.amount)}</td>
+                    <td>
+                      {source.generatesInstallments
+                        ? `${source.installments} x ${formatMoney(Number(source.amount ?? 0) / Math.max(source.installments, 1))}`
+                        : isBalance
+                          ? "lance sinal ou aditivo"
+                          : "a vista, sem parcela"}
+                    </td>
+                    <td>{source.dueDate ? formatDate(source.dueDate) : "-"}</td>
+                  </tr>
+                )
+              })}
+              {commissionOffset > 0 ? (
+                <tr>
+                  <td>
+                    <strong>Sinal</strong>
+                    <div className={styles.rowSecondaryText}>
+                      pago ao corretor, fora do contas a receber
+                    </div>
+                  </td>
+                  <td>{formatMoney(commissionOffset)}</td>
+                  <td>
+                    {commissions.length > 1
+                      ? `${commissions.length} lançamentos`
+                      : "1 lançamento"}
+                  </td>
+                  <td>
+                    {commissions.length && commissions[0].dueDate
+                      ? formatDate(commissions[0].dueDate)
+                      : "-"}
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className={styles.metricHint}>
+          {canSale
+            ? "Unidade ainda não vendida - confirme a venda para compor o valor."
+            : "Sem composição registrada para esta unidade."}
+        </p>
+      )}
+      {documentations.length ? (
+        <div className={styles.tableWrapper}>
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                <th>Documentação</th>
+                <th>Valor</th>
+              </tr>
+            </thead>
+            <tbody>
+              {documentations.map((documentation) => (
+                <tr key={documentation.id}>
+                  <td>{documentation.name}</td>
+                  <td>{formatMoney(documentation.amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function UnitInstallmentsPanel({
   unit,
   plan,
@@ -4837,6 +5287,7 @@ function UnitInstallmentsPanel({
   onCreateAdjustment,
   onDeleteAdjustment,
   onCreateInstallment,
+  onRebuildPlan,
 }) {
   const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
   const canEditSale = unit.status === "sold" && Boolean(unit.analyticCostCenterId)
@@ -4870,6 +5321,10 @@ function UnitInstallmentsPanel({
   const documentations = composition.documentations ?? []
   const installments = paymentPlan.installments ?? []
   const adjustments = paymentPlan.adjustments ?? []
+  // Saldo zerado significa que tudo que o comprador deve ja esta lancado.
+  // Cobrar mais exigiria um valor que a venda nao tem, entao a acao some em vez
+  // de deixar o usuario montar a cobranca e levar recusa no final.
+  const hasBalanceToCharge = unit.status !== "sold" || Number(composition.balanceTotal ?? 0) > 0
   const canCreateAdjustment = Boolean(paymentPlan.contractId)
   const rows = [
     ...installments.map((installment) => ({
@@ -4939,116 +5394,60 @@ function UnitInstallmentsPanel({
       </div>
 
       <div className={styles.card}>
-        <strong>Como a venda foi composta</strong>
-        <p className={styles.metricHint}>
-          O que o banco libera (subsídio, FGTS e financiamento) entra no preço da venda mas não vira parcela: a
-          data de pagamento depende da liberação. A <strong>documentação</strong> é cobrada do comprador junto
-          do preço. O que sobra do preço mais a documentação, depois do desconto, da entrada e dessas
-          liberações, é o <strong>saldo</strong>, e são a entrada e o saldo que o comprador paga em parcelas no
-          contas a receber.
-        </p>
-        {sources.length ? (
-          <div className={styles.tableWrapper}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Fonte</th>
-                  <th>Valor</th>
-                  <th>Composição</th>
-                  <th>Data</th>
-                </tr>
-              </thead>
-              <tbody>
-                {installmentSources.concat(settlementSources).map((source) => (
-                  <tr key={source.sourceType}>
-                    <td>
-                      <strong>{source.label}</strong>
-                      <div className={styles.rowSecondaryText}>
-                        {source.generatesInstallments ? "cobrado do comprador" : "liberado pelo banco"}
-                      </div>
-                    </td>
-                    <td>{formatMoney(source.amount)}</td>
-                    <td>
-                      {source.generatesInstallments
-                        ? `${source.installments} x ${formatMoney(Number(source.amount ?? 0) / Math.max(source.installments, 1))}`
-                        : "a vista, sem parcela"}
-                    </td>
-                    <td>{source.dueDate ? formatDate(source.dueDate) : "-"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <p className={styles.metricHint}>
-            {canSale
-              ? "Unidade ainda não vendida - confirme a venda para compor o valor."
-              : "Sem composição registrada para esta unidade."}
-          </p>
-        )}
-        {documentations.length ? (
-          <div className={styles.tableWrapper}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Documentação</th>
-                  <th>Valor</th>
-                </tr>
-              </thead>
-              <tbody>
-                {documentations.map((documentation) => (
-                  <tr key={documentation.id}>
-                    <td>{documentation.name}</td>
-                    <td>{formatMoney(documentation.amount)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-        {canSale || canEditSale ? (
-          <div className={styles.filtersFooter}>
-            <button type="button" className={styles.primaryButton} onClick={() => onSale(unit)}>
-              <ShoppingCart size={16} />
-              {canEditSale ? "Editar venda" : "Confirmar venda"}
-            </button>
-          </div>
-        ) : null}
-      </div>
-
-      <div className={styles.card}>
         <div className={styles.tableHeaderRow}>
           <div>
             <strong>Contas a receber da unidade</strong>
             <p className={styles.metricHint}>
-              As duas séries do legado na mesma lista: <strong>Parcela</strong> é o parcelamento da
+              <strong>Parcela</strong> é o parcelamento da
               venda e <strong>Aditivo</strong> é a cobrança extra de quando o financiamento sai abaixo
               do previsto. Cada tipo tem a sua própria numeração, e o aditivo é um documento separado
               no contas a receber - editar a venda não mexe nele.
             </p>
           </div>
           <div className={styles.tableHeaderActions}>
-            {paymentPlan.receivableId ? (
-              <button
-                type="button"
-                className={styles.secondaryButton}
-                onClick={() => onCreateInstallment({ receivableId: null, installments })}
-              >
-                <Plus size={16} />
-                Incluir parcela
+            {canEditSale ? (
+              <button type="button" className={styles.primaryButton} onClick={() => onRebuildPlan(unit)}>
+                <ShoppingCart size={16} />
+                Refazer plano de pagamento
               </button>
             ) : null}
+            {paymentPlan.receivableId ? (
+              <span title={hasBalanceToCharge ? undefined : NOTHING_LEFT_TO_CHARGE}>
+                <button
+                  type="button"
+                  className={styles.primaryButton}
+                  disabled={!hasBalanceToCharge}
+                  onClick={() => onCreateInstallment({ receivableId: null, installments })}
+                >
+                  <Plus size={16} />
+                  Incluir parcela
+                </button>
+              </span>
+            ) : null}
             {canCreateAdjustment ? (
-              <button type="button" className={styles.secondaryButton} onClick={onCreateAdjustment}>
-                <Plus size={16} />
-                Lançar aditivo
-              </button>
+              <span title={hasBalanceToCharge ? undefined : NOTHING_LEFT_TO_CHARGE}>
+                <button
+                  type="button"
+                  className={styles.primaryButton}
+                  disabled={!hasBalanceToCharge}
+                  onClick={onCreateAdjustment}
+                >
+                  <Plus size={16} />
+                  Incluir aditivo
+                </button>
+              </span>
             ) : null}
           </div>
         </div>
         {paymentPlan.erpUnavailableReason ? (
           <p className={styles.metricHint}>
             Não foi possível consultar o ERP agora: {paymentPlan.erpUnavailableReason}
+          </p>
+        ) : null}
+        {!hasBalanceToCharge ? (
+          <p className={styles.metricHint}>
+            Saldo devedor zerado: tudo que o comprador deve já está lançado, então não há parcela nem
+            aditivo a incluir. Para cobrar a mais, aumente o preço da venda ou inclua uma documentação.
           </p>
         ) : null}
         {rows.length ? (
@@ -5212,7 +5611,7 @@ function CreateInstallmentModal({ unit, form, onClose, onChange, onSubmit, loadi
           <p className={styles.metricHint}>
             A numeração segue a partir do número informado, e um número que já existe na série é
             recusado. O valor sai do saldo do título que ainda não virou parcela: para cobrar a mais do
-            comprador, o caminho é <strong>lançar aditivo</strong>.
+            comprador, o caminho é <strong>incluir aditivo</strong>.
           </p>
           {!isAdjustment ? (
             <p className={styles.metricHint}>
@@ -5272,6 +5671,145 @@ function CreateInstallmentModal({ unit, form, onClose, onChange, onSubmit, loadi
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
               {loading ? "Incluindo..." : "Incluir parcela"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>
+  )
+}
+
+// Refazer o plano e a unica intencao que o modal de venda nao atende mais: la a
+// composicao e somente leitura, para que corrigir um dado cadastral nao mexa em
+// parcela sem querer. Quem quer mexer declara isso aqui.
+function RebuildSalePlanModal({ unit, form, composition, onClose, onChange, onSubmit, loading }) {
+  // O formulario guarda o RESTANTE a parcelar, nao o total da entrada: quem
+  // abre esta tela quer saber o que ainda vai ser cobrado. O total volta a ser
+  // montado no submit.
+  const remainingAmount = parseCurrencyFormValue(form.downPaymentAmount)
+  const remainingInstallments = Math.max(Number(form.downPaymentInstallments || 1), 1)
+  const paidTotal = Number(composition.paidTotal ?? 0)
+  const paidCount = Number(composition.paidCount ?? 0)
+  const hasPaidInstallments = paidCount > 0
+  const downPaymentAmount = remainingAmount + paidTotal
+  const balance = Math.max(Number(composition.balance ?? 0) - downPaymentAmount, 0)
+  const remainingInstallmentAmount =
+    remainingInstallments > 0 ? remainingAmount / remainingInstallments : 0
+  // O backend descarta as posicoes ja quitadas do plano, entao as parcelas
+  // novas comecam tantos meses depois da data informada quantas forem as pagas.
+  const firstNewDueDate = hasPaidInstallments
+    ? addMonthsToIsoDate(form.downPaymentDueDate, paidCount)
+    : form.downPaymentDueDate
+
+  return (
+    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
+      <section
+        className={styles.modalCard}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Refazer plano de pagamento"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className={styles.modalHeader}>
+          <h3>Refazer plano de pagamento{unit ? ` - unidade ${unit.code}` : ""}</h3>
+          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
+            Fechar
+          </button>
+        </header>
+        <form className={styles.modalBody} onSubmit={onSubmit}>
+          <p className={styles.metricHint}>
+            As parcelas <strong>em aberto</strong> são apagadas e recriadas com o que você definir aqui. As
+            parcelas já pagas são preservadas e só o saldo restante é redistribuído. Vencimentos ajustados à
+            mão numa parcela em aberto são perdidos.
+          </p>
+          <p className={styles.metricHint}>
+            O restante da venda - comprador, preço, desconto, documentação e liberações do banco - fica como
+            está. Para alterar esses, use <strong>Editar venda</strong>.
+          </p>
+          {hasPaidInstallments ? (
+            <p className={styles.metricHint}>
+              Já pagas: <strong>{paidCount} parcela(s)</strong> somando{" "}
+              <strong>{formatMoney(paidTotal)}</strong>. Elas não são alteradas, e o valor a parcelar fica
+              travado: depois do primeiro pagamento a venda virou histórico, e cobrar a mais é{" "}
+              <strong>aditivo</strong> ou <strong>sinal</strong>.
+            </p>
+          ) : null}
+          <div className={styles.formGrid}>
+            <label className={styles.filterControl}>
+              <span>{hasPaidInstallments ? "A parcelar - restante" : "Entrada - valor total"}</span>
+              {hasPaidInstallments ? (
+                <>
+                  <strong className={styles.installmentPreview}>{formatMoney(remainingAmount)}</strong>
+                  <span className={styles.rowSecondaryText}>
+                    entrada de {formatMoney(downPaymentAmount)} - {formatMoney(paidTotal)} já pagos
+                  </span>
+                </>
+              ) : (
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={form.downPaymentAmount}
+                  onChange={(event) => onChange("downPaymentAmount", formatCurrencyInput(event.target.value))}
+                  placeholder="0,00"
+                />
+              )}
+            </label>
+            <label className={styles.filterControl}>
+              <span>{hasPaidInstallments ? "Parcelas do restante" : "Parcelas da entrada"}</span>
+              <input
+                type="number"
+                min="1"
+                max="120"
+                value={form.downPaymentInstallments}
+                onChange={(event) => onChange("downPaymentInstallments", event.target.value)}
+              />
+            </label>
+            <label className={styles.filterControl}>
+              <span>1o vencimento da entrada</span>
+              <input
+                type="date"
+                value={form.downPaymentDueDate}
+                onChange={(event) => onChange("downPaymentDueDate", event.target.value)}
+              />
+              {hasPaidInstallments ? (
+                <span className={styles.rowSecondaryText}>
+                  as parcelas novas começam em {formatDate(firstNewDueDate)}
+                </span>
+              ) : null}
+            </label>
+            <div className={styles.filterControl}>
+              <span>Fica</span>
+              <strong className={styles.installmentPreview}>
+                {remainingAmount <= 0
+                  ? "-"
+                  : `${remainingInstallments} x ${formatMoney(remainingInstallmentAmount)}`}
+              </strong>
+            </div>
+          </div>
+          <div className={styles.formGrid}>
+            <div className={styles.filterControl}>
+              <span>Saldo devedor</span>
+              <strong className={styles.installmentPreview}>{formatMoney(balance)}</strong>
+              <span className={styles.rowSecondaryText}>
+                preço + documentação - desconto - entrada - liberações do banco
+              </span>
+            </div>
+            <div className={styles.filterControl}>
+              <span>Como é cobrado</span>
+              <strong className={styles.installmentPreview}>
+                {balance > 0 ? "sinal ou aditivo" : "-"}
+              </strong>
+              <span className={styles.rowSecondaryText}>
+                o saldo não vira parcela: lance o sinal ou um aditivo quando for cobrá-lo
+              </span>
+            </div>
+          </div>
+          <footer className={styles.modalFooter}>
+            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+              Cancelar
+            </button>
+            <button type="submit" className={styles.primaryButton} disabled={loading}>
+              {loading ? "Refazendo..." : "Refazer plano"}
             </button>
           </footer>
         </form>
@@ -5434,8 +5972,9 @@ function PayInstallmentModal({
                 </div>
               ))}
 
-              <button type="button" className={styles.secondaryButton} onClick={onAddLine}>
-                <Plus size={14} /> Incluir forma de recebimento
+              <button type="button" className={styles.primaryButton} onClick={onAddLine}>
+                <Plus size={16} />
+                Incluir forma de recebimento
               </button>
 
               <div className={styles.formGrid}>
@@ -5646,6 +6185,10 @@ function UnitCommissionsPanel({
   const composition = plan ?? {}
   const commissions = composition.commissions ?? []
   const personNameById = Object.fromEntries((people ?? []).map((person) => [person.id, person.name]))
+  // Antes da venda nao ha composicao, e o sinal costuma ser lancado justamente
+  // nessa fase. Depois de vendida, saldo zerado quer dizer que nao sobrou o que
+  // cobrar do comprador.
+  const hasBalanceToCharge = unit.status !== "sold" || Number(composition.balanceTotal ?? 0) > 0
 
   return (
     <div className={styles.integrationPanel}>
@@ -5672,16 +6215,22 @@ function UnitCommissionsPanel({
           <div>
             <strong>Sinal (comissão do corretor)</strong>
             <p className={styles.metricHint}>
-              O sinal é pago pelo comprador direto ao corretor, então não vira conta a receber da
-              construtora. Marcado como <strong>&quot;compõe o valor da venda&quot;</strong>, ele faz parte do
-              preço: quando pago, reduz o saldo que o comprador ainda deve. Desmarcado, é cobrança por
-              fora e o saldo não muda.
+              O sinal é pago pelo comprador direto ao corretor, então não passa pelo caixa da
+              construtora e não vira conta a receber. Ele <strong>sempre compõe o valor da venda</strong>:
+              ao ser lançado, já reduz o saldo que o comprador ainda deve.
             </p>
           </div>
-          <button type="button" className={styles.primaryButton} onClick={onCreate}>
-            <Plus size={16} />
-            Incluir sinal
-          </button>
+          <span title={hasBalanceToCharge ? undefined : NOTHING_LEFT_TO_CHARGE}>
+            <button
+              type="button"
+              className={styles.primaryButton}
+              disabled={!hasBalanceToCharge}
+              onClick={onCreate}
+            >
+              <Plus size={16} />
+              Incluir sinal
+            </button>
+          </span>
         </div>
         {commissions.length ? (
           <div className={styles.tableWrapper}>
@@ -5692,7 +6241,6 @@ function UnitCommissionsPanel({
                   <th>Favorecido</th>
                   <th>Vencimento</th>
                   <th>Valor</th>
-                  <th>Composição</th>
                   <th>Pagamento</th>
                   <th aria-label="Ações" />
                 </tr>
@@ -5711,7 +6259,6 @@ function UnitCommissionsPanel({
                     </td>
                     <td>{formatDate(commission.dueDate)}</td>
                     <td>{formatMoney(commission.amount)}</td>
-                    <td>{commission.composesSalePrice ? "Compõe a venda" : "Cobrado por fora"}</td>
                     <td>
                       {commission.paymentDate ? formatDate(commission.paymentDate) : "Em aberto"}
                     </td>
@@ -5836,20 +6383,6 @@ function CommissionModal({
                 onChange={(event) => onChange("notes", event.target.value)}
               />
             </label>
-            <label className={`${styles.checkboxControl} ${styles.spanTwoColumns}`}>
-              <input
-                type="checkbox"
-                checked={commissionForm.composesSalePrice}
-                onChange={(event) => onChange("composesSalePrice", event.target.checked)}
-              />
-              <span>
-                Compõe o valor da venda
-                <small className={styles.fieldHint}>
-                  Marcado, o sinal faz parte do preço: quando pago, reduz o saldo que o comprador deve à
-                  construtora. Desmarcado, é cobrança por fora e o saldo não muda.
-                </small>
-              </span>
-            </label>
           </div>
 
           <footer className={styles.modalFooter}>
@@ -5857,7 +6390,7 @@ function CommissionModal({
               Cancelar
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Lançando..." : "Lançar sinal"}
+              {loading ? "Incluindo..." : "Incluir sinal"}
             </button>
           </footer>
         </form>
@@ -5873,11 +6406,11 @@ function AdjustmentModal({ unit, adjustmentForm, onClose, onChange, onSubmit, lo
         className={styles.modalCard}
         role="dialog"
         aria-modal="true"
-        aria-label="Lançar aditivo"
+        aria-label="Incluir aditivo"
         onClick={(event) => event.stopPropagation()}
       >
         <header className={styles.modalHeader}>
-          <h3>Lançar aditivo{unit ? ` - unidade ${unit.code}` : ""}</h3>
+          <h3>Incluir aditivo{unit ? ` - unidade ${unit.code}` : ""}</h3>
           <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
             Fechar
           </button>
@@ -5936,7 +6469,7 @@ function AdjustmentModal({ unit, adjustmentForm, onClose, onChange, onSubmit, lo
               Cancelar
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Lançando..." : "Lançar aditivo"}
+              {loading ? "Incluindo..." : "Incluir aditivo"}
             </button>
           </footer>
         </form>
@@ -7668,6 +8201,7 @@ function SaleUnitModal({
   documentationTypes,
   loadingDocumentationTypes,
   loading,
+  composition = { status: "ready", receivableTotal: null },
 }) {
   const isEditing = unit?.status === "sold"
   const grossSalePrice = parseCurrencyFormValue(saleForm.salePrice)
@@ -7695,22 +8229,48 @@ function SaleUnitModal({
   const documentationRows = saleForm.documentations ?? []
   const documentationTotal = sumSaleDocumentations(buildSaleDocumentationsFromForm(saleForm))
 
-  // SALDO = preço + documentação - desconto - entrada - financiamento - FGTS - subsídio.
-  // É a conta do legado (Dwelling/Resume.cshtml), e é o saldo que vira parcela.
-  // A documentação é repasse cobrado do comprador: não vira parcela própria,
-  // dilui no saldo.
+  // SALDO = preço + documentação - desconto - entrada - financiamento - FGTS
+  //         - subsídio - sinal.
+  // É a conta do legado (Dwelling/Resume.cshtml). A documentação é repasse
+  // cobrado do comprador: não vira parcela própria, dilui no saldo. O sinal
+  // faltava aqui: o backend já o abatia e a tela não, então uma venda com
+  // sinal lançado exibia saldo devedor que não existia mais.
+  const commissionOffset = Number(composition.commissionOffset ?? 0)
   const balance =
-    grossSalePrice + documentationTotal - discountAmount - downPaymentTotal - settlementTotal
+    grossSalePrice
+    + documentationTotal
+    - discountAmount
+    - downPaymentTotal
+    - settlementTotal
+    - commissionOffset
   const balanceInstallments = Math.max(Number(saleForm.installments || 1), 1)
   const balanceInstallmentAmount = balance > 0 ? balance / balanceInstallments : 0
 
-  const receivableTotal = downPaymentTotal + Math.max(balance, 0)
+  const downPaymentSummaryInstallments = installmentSources
+    .filter((source) => source.amountValue > 0)
+    .reduce((total, source) => total + source.installments, 0)
+
+  // Tudo que o comprador deve pela unidade. O sinal entra porque e dinheiro que
+  // ele paga pela venda -- so nao passa pelo contas a receber, por ser pago
+  // direto ao corretor.
+  const receivableTotal = downPaymentTotal + commissionOffset + Math.max(balance, 0)
   const installmentCount =
     installmentSources
       .filter((source) => source.amountValue > 0)
       .reduce((total, source) => total + source.installments, 0) +
     (balance > 0 ? balanceInstallments : 0)
   const exceedsPrice = grossSalePrice > 0 && balance < -0.01
+
+  const compositionFailed = isEditing && composition.status === "failed"
+  const compositionLoading = isEditing && composition.status === "loading"
+  // Venda e contas a receber podem ter saído de sincronia (venda gravada antes
+  // das fontes serem persistidas, parcela removida à mão). Salvar realinha os
+  // dois, e um salto de valor aqui não pode passar sem o usuário ver.
+  const divergesFromReceivable =
+    isEditing &&
+    composition.status === "ready" &&
+    composition.receivableTotal != null &&
+    Math.abs(Number(composition.receivableTotal) - receivableTotal) > 0.01
 
   const changeDocumentationRow = (key, changes) => {
     onChange(
@@ -7752,6 +8312,20 @@ function SaleUnitModal({
             <p className={styles.metricHint}>
               Salvar reescreve o contrato e refaz as parcelas <strong>em aberto</strong> desta unidade. As
               parcelas já pagas são preservadas e o que restar é redistribuído.
+            </p>
+          ) : null}
+          {compositionFailed ? (
+            <p className={styles.metricHint}>
+              <strong>A composição atual da venda não foi carregada.</strong> Feche e abra novamente: salvar
+              agora refaria as parcelas em aberto com dados incompletos.
+            </p>
+          ) : null}
+          {divergesFromReceivable ? (
+            <p className={styles.metricHint}>
+              <strong>Atenção:</strong> o contas a receber desta unidade está em{" "}
+              {formatMoney(composition.receivableTotal)} e a composição acima soma{" "}
+              {formatMoney(receivableTotal)}. Salvar vai ajustar o total para{" "}
+              {formatMoney(receivableTotal)} e refazer as parcelas em aberto. Confira antes de continuar.
             </p>
           ) : null}
           <div className={styles.formGrid}>
@@ -7871,7 +8445,7 @@ function SaleUnitModal({
             <div className={styles.formGrid}>
               <div className={styles.filterControl}>
                 <span>&nbsp;</span>
-                <button type="button" className={styles.secondaryButton} onClick={addDocumentationRow}>
+                <button type="button" className={styles.primaryButton} onClick={addDocumentationRow}>
                   <Plus size={16} />
                   Incluir documentação
                 </button>
@@ -7925,6 +8499,43 @@ function SaleUnitModal({
             ))}
           </div>
 
+          {isEditing ? (
+            <div className={styles.card}>
+              <div className={styles.scopeMeta}>
+                <strong>Cobrado do comprador</strong>
+                <span className={styles.metricHint}>
+                  Definido quando a venda foi confirmada e mantido como está ao salvar. Para alterar entrada,
+                  quantidade de parcelas ou vencimento, use <strong>Refazer plano de pagamento</strong> na aba
+                  Parcelas.
+                </span>
+              </div>
+              <div className={styles.formGrid}>
+                <div className={styles.filterControl}>
+                  <span>Entrada</span>
+                  <strong className={styles.installmentPreview}>
+                    {downPaymentTotal > 0
+                      ? `${formatMoney(downPaymentTotal)} em ${downPaymentSummaryInstallments}x`
+                      : "-"}
+                  </strong>
+                </div>
+                <div className={styles.filterControl}>
+                  <span>Saldo devedor</span>
+                  <strong className={styles.installmentPreview}>
+                    {balance > 0 ? `${balanceInstallments} x ${formatMoney(balanceInstallmentAmount)}` : "-"}
+                  </strong>
+                  <span className={styles.rowSecondaryText}>
+                    preço + documentação - desconto - entrada - liberações do banco - sinal
+                  </span>
+                </div>
+                <div className={styles.filterControl}>
+                  <span>1o vencimento do saldo</span>
+                  <strong className={styles.installmentPreview}>
+                    {saleForm.firstDueDate ? formatDate(saleForm.firstDueDate) : "não definido"}
+                  </strong>
+                </div>
+              </div>
+            </div>
+          ) : (
           <div className={styles.card}>
             <div className={styles.scopeMeta}>
               <strong>Cobrado do comprador</strong>
@@ -7984,35 +8595,22 @@ function SaleUnitModal({
                   {grossSalePrice > 0 ? formatMoney(Math.max(balance, 0)) : "-"}
                 </strong>
                 <span className={styles.rowSecondaryText}>
-                  preço + documentação - desconto - entrada - liberações do banco
+                  preço + documentação - desconto - entrada - liberações do banco - sinal
                 </span>
               </div>
-              <label className={styles.filterControl}>
-                <span>Parcelas</span>
-                <input
-                  type="number"
-                  min="1"
-                  max="120"
-                  value={saleForm.installments}
-                  onChange={(event) => onChange("installments", event.target.value)}
-                />
-              </label>
-              <label className={styles.filterControl}>
-                <span>1o vencimento</span>
-                <input
-                  type="date"
-                  value={saleForm.firstDueDate}
-                  onChange={(event) => onChange("firstDueDate", event.target.value)}
-                />
-              </label>
               <div className={styles.filterControl}>
-                <span>Fica</span>
+                <span>Parcelamento do saldo</span>
                 <strong className={styles.installmentPreview}>
                   {balance > 0 ? `${balanceInstallments} x ${formatMoney(balanceInstallmentAmount)}` : "-"}
                 </strong>
+                <span className={styles.rowSecondaryText}>
+                  o saldo nasce em parcela única; para dividir, use Refazer plano de pagamento na aba
+                  Parcelas
+                </span>
               </div>
             </div>
           </div>
+          )}
 
           <label className={styles.filterControl}>
             <span>Observação</span>
@@ -8051,8 +8649,15 @@ function SaleUnitModal({
                   </tr>
                   <tr>
                     <td>
+                      Sinal
+                      <div className={styles.rowSecondaryText}>pago ao corretor, fora do contas a receber</div>
+                    </td>
+                    <td className={styles.textRight}>- {formatMoney(commissionOffset)}</td>
+                  </tr>
+                  <tr>
+                    <td>
                       <strong>Saldo devedor</strong>
-                      <div className={styles.rowSecondaryText}>o que sobra e vira parcela</div>
+                      <div className={styles.rowSecondaryText}>ainda sem cobrança lançada</div>
                     </td>
                     <td className={styles.textRight}>
                       <strong>{formatMoney(Math.max(balance, 0))}</strong>
@@ -8060,7 +8665,7 @@ function SaleUnitModal({
                   </tr>
                   <tr>
                     <td>
-                      <strong>Cobrado do comprador (entrada + saldo)</strong>
+                      <strong>Total devido pelo comprador (entrada + sinal + saldo)</strong>
                       <div className={styles.rowSecondaryText}>
                         {installmentCount ? `${installmentCount} parcela(s) no total` : "nenhuma parcela"}
                       </div>
@@ -8085,14 +8690,20 @@ function SaleUnitModal({
             <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
               Cancelar
             </button>
-            <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading
-                ? isEditing
-                  ? "Salvando..."
-                  : "Confirmando..."
-                : isEditing
-                  ? "Salvar venda"
-                  : "Confirmar venda"}
+            <button
+              type="submit"
+              className={styles.primaryButton}
+              disabled={loading || compositionLoading || compositionFailed}
+            >
+              {compositionLoading
+                ? "Carregando composição..."
+                : loading
+                  ? isEditing
+                    ? "Salvando..."
+                    : "Confirmando..."
+                  : isEditing
+                    ? "Salvar venda"
+                    : "Confirmar venda"}
             </button>
           </footer>
         </form>
