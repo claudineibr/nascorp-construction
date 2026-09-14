@@ -121,9 +121,13 @@ async def test_the_paid_commission_that_composes_lowers_what_the_buyer_still_owe
                 date(2026, 4, 10),
             ]
             assert composition["commission_total"] == Decimal("10000.00")
-            assert composition["commission_offset"] == Decimal("5000.00")
-            assert composition["installment_total"] == Decimal("245000.00")
-            assert erp_client.events[-1].payload["receivable_amount"] == "245000.00"
+            # Os dois sinais compoem a venda e abatem o saldo ja no lancamento,
+            # pagos ou nao: 250.000 - 10.000 = 240.000.
+            assert composition["commission_offset"] == Decimal("10000.00")
+            # O saldo nao vira parcela: sem entrada nao ha nada a parcelar.
+            assert composition["installment_total"] == Decimal("0")
+            assert composition["balance_total"] == Decimal("240000.00")
+            assert erp_client.events[-1].payload["receivable_amount"] == "0.00"
         finally:
             await clean_up(session, project_id=project_id, unit_id=unit_id)
 
