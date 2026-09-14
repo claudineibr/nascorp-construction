@@ -48,6 +48,7 @@ from app.schemas.construction import (
     ConstructionUnitInstallmentPaymentRequest,
     ConstructionProjectUpdate,
     ConstructionUnitCreate,
+    ConstructionUnitCommissionCreate,
     ConstructionUnitSaleConfirmRequest,
 )
 
@@ -1337,11 +1338,243 @@ async def test_confirm_unit_sale_keeps_one_contract_and_reemits_on_edit() -> Non
             "source_type": "balance",
             "amount": "450000.00",
             "due_date": "2026-06-10",
-            "installments": 12,
-            "generates_installments": True,
+            "installments": 1,
+            "generates_installments": False,
         }
     ]
-    assert erp_client.events[0].payload["receivable_amount"] == "450000.00"
+    # Venda so com saldo: nada vira parcela, e o contas a receber nasce vazio.
+    assert erp_client.events[0].payload["receivable_amount"] == "0.00"
+
+
+@pytest.mark.asyncio
+async def test_charging_more_is_refused_when_the_balance_is_already_zero() -> None:
+    """Saldo zerado nao aceita cobranca nova.
+
+    Zerado, tudo que o comprador deve ja esta lancado. Uma parcela, um sinal ou
+    um aditivo a mais cobraria um valor que a venda nao tem -- para cobrar mais,
+    o caminho e aumentar o preco ou lancar documentacao.
+    """
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    erp_client = FakeErpMeasurementClient()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-093",
+        name="Balance fully covered",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    unit = ConstructionUnit(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        code="C-606",
+        unit_type="apartment",
+        sale_price=Decimal("100000.00"),
+        analytic_cost_center_id=uuid4(),
+        status="available",
+    )
+    repository.projects[(company_id, project.id)] = project
+    repository.units[(company_id, unit.id)] = unit
+    service = ConstructionProjectService(repository=repository, erp_client=erp_client)
+
+    # Entrada cobre o preco inteiro: nao sobra saldo.
+    await service.confirm_unit_sale(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitSaleConfirmRequest(
+            buyer_person_id=uuid4(),
+            sale_price=Decimal("100000.00"),
+            first_due_date=date(2026, 6, 10),
+            installments=1,
+            payment_sources=[
+                {
+                    "source_type": "down_payment",
+                    "amount": Decimal("100000.00"),
+                    "due_date": date(2026, 6, 10),
+                    "installments": 10,
+                },
+            ],
+        ),
+    )
+
+    composition = await service.build_unit_sale_composition(company_id=company_id, unit_id=unit.id)
+    assert composition["balance_total"] == Decimal("0")
+
+    with pytest.raises(ConstructionInvalidValueError):
+        await service.create_unit_commissions(
+            company_id=company_id,
+            unit_id=unit.id,
+            request=ConstructionUnitCommissionCreate(
+                beneficiary_person_id=uuid4(),
+                amount=Decimal("500.00"),
+                due_date=date(2026, 7, 10),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_balance_never_becomes_an_installment() -> None:
+    """O saldo compoe a venda mas nao vira cobranca.
+
+    Enquanto ele gerava parcela sozinho, o resto de uma venda com sinal
+    pendente era cobrado duas vezes: uma como sinal e outra como parcela
+    "Saldo devedor". Quem decide como cobrar o saldo e o usuario, pelo sinal
+    ou por aditivo.
+    """
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    erp_client = FakeErpMeasurementClient()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-090",
+        name="Balance is never charged",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    unit = ConstructionUnit(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        code="C-303",
+        unit_type="apartment",
+        sale_price=Decimal("100000.00"),
+        analytic_cost_center_id=uuid4(),
+        status="available",
+    )
+    repository.projects[(company_id, project.id)] = project
+    repository.units[(company_id, unit.id)] = unit
+    service = ConstructionProjectService(repository=repository, erp_client=erp_client)
+
+    await service.confirm_unit_sale(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitSaleConfirmRequest(
+            buyer_person_id=uuid4(),
+            sale_price=Decimal("100000.00"),
+            first_due_date=date(2026, 6, 10),
+            installments=1,
+            payment_sources=[
+                {
+                    "source_type": "down_payment",
+                    "amount": Decimal("30000.00"),
+                    "due_date": date(2026, 6, 10),
+                    "installments": 3,
+                },
+            ],
+        ),
+    )
+
+    payload = erp_client.events[-1].payload
+    balance = next(
+        source for source in payload["payment_sources"] if source["source_type"] == "balance"
+    )
+    assert balance["amount"] == "70000.00"
+    assert balance["generates_installments"] is False
+    assert balance["installments"] == 1
+    # So a entrada e cobrada: 30.000. Os 70.000 de saldo ficam de fora.
+    assert payload["receivable_amount"] == "30000.00"
+
+
+@pytest.mark.asyncio
+async def test_a_sale_without_entry_is_confirmed_with_nothing_to_charge_yet() -> None:
+    """Sem entrada nao ha parcela, e isso nao impede a venda.
+
+    Antes a confirmacao era recusada. A venda 100% financiada e legitima: o
+    contrato existe e o usuario lanca depois o que cobrar.
+    """
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    erp_client = FakeErpMeasurementClient()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-091",
+        name="Sale without entry",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    unit = ConstructionUnit(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        code="C-404",
+        unit_type="apartment",
+        sale_price=Decimal("100000.00"),
+        analytic_cost_center_id=uuid4(),
+        status="available",
+    )
+    repository.projects[(company_id, project.id)] = project
+    repository.units[(company_id, unit.id)] = unit
+    service = ConstructionProjectService(repository=repository, erp_client=erp_client)
+
+    result = await service.confirm_unit_sale(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitSaleConfirmRequest(
+            buyer_person_id=uuid4(),
+            sale_price=Decimal("100000.00"),
+            first_due_date=date(2026, 6, 10),
+            installments=1,
+        ),
+    )
+
+    assert result.status == "sold"
+    assert erp_client.events[-1].payload["receivable_amount"] == "0.00"
+
+
+@pytest.mark.asyncio
+async def test_a_sale_the_bank_pays_in_full_is_still_refused() -> None:
+    """Nada sobrando para o comprador continua sendo erro.
+
+    Diferente de "sem entrada": aqui o banco e o desconto cobrem o preco
+    inteiro, entao nao ha divida nenhuma -- nem parcela, nem saldo.
+    """
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    erp_client = FakeErpMeasurementClient()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-092",
+        name="Bank pays everything",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    unit = ConstructionUnit(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        code="C-505",
+        unit_type="apartment",
+        sale_price=Decimal("100000.00"),
+        analytic_cost_center_id=uuid4(),
+        status="available",
+    )
+    repository.projects[(company_id, project.id)] = project
+    repository.units[(company_id, unit.id)] = unit
+    service = ConstructionProjectService(repository=repository, erp_client=erp_client)
+
+    with pytest.raises(ConstructionInvalidValueError):
+        await service.confirm_unit_sale(
+            company_id=company_id,
+            unit_id=unit.id,
+            request=ConstructionUnitSaleConfirmRequest(
+                buyer_person_id=uuid4(),
+                sale_price=Decimal("100000.00"),
+                first_due_date=date(2026, 6, 10),
+                installments=1,
+                payment_sources=[
+                    {
+                        "source_type": "financing",
+                        "amount": Decimal("100000.00"),
+                        "due_date": date(2026, 6, 10),
+                    },
+                ],
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -1429,11 +1662,12 @@ async def test_confirm_unit_sale_dispatches_composed_payment_sources() -> None:
             "source_type": "balance",
             "amount": "150000.00",
             "due_date": "2026-06-10",
-            "installments": 12,
-            "generates_installments": True,
+            "installments": 1,
+            "generates_installments": False,
         },
     ]
-    assert erp_client.events[0].payload["receivable_amount"] == "200000.00"
+    # So a entrada e parcelada; os 150.000 de saldo ficam para sinal ou aditivo.
+    assert erp_client.events[0].payload["receivable_amount"] == "50000.00"
 
 
 async def _build_measurement_scenario(*, measured_amount: Decimal = Decimal("10000.00")):
@@ -1878,14 +2112,14 @@ async def test_confirm_unit_sale_composition_matches_price_net_of_discount() -> 
     assert result.net_sale_price == Decimal("360000.00")
     assert erp_client.events[0].payload["discount_amount"] == "40000.00"
     assert erp_client.events[0].payload["net_sale_price"] == "360000.00"
-    # 60.000 de entrada + 300.000 de saldo (400.000 - 40.000 de desconto - 60.000).
-    assert erp_client.events[0].payload["receivable_amount"] == "360000.00"
+    # 60.000 de entrada: o saldo de 300.000 compoe a venda mas nao vira parcela.
+    assert erp_client.events[0].payload["receivable_amount"] == "60000.00"
     assert erp_client.events[0].payload["payment_sources"][-1] == {
         "source_type": "balance",
         "amount": "300000.00",
         "due_date": "2026-06-10",
-        "installments": 12,
-        "generates_installments": True,
+        "installments": 1,
+        "generates_installments": False,
     }
 
 
@@ -2093,8 +2327,8 @@ async def test_confirm_unit_sale_without_composition_charges_price_net_of_discou
             "source_type": "balance",
             "amount": "180000.00",
             "due_date": "2026-06-10",
-            "installments": 10,
-            "generates_installments": True,
+            "installments": 1,
+            "generates_installments": False,
         }
     ]
 
@@ -2348,14 +2582,14 @@ async def test_confirm_unit_sale_edit_changes_buyer_and_composition() -> None:
 
     ultimo_evento = erp_client.events[-1].payload
     assert ultimo_evento["buyer_person_id"] == str(second_buyer)
-    # 320.000 - 20.000 de desconto - 200.000 financiados = 100.000 de saldo.
-    assert ultimo_evento["receivable_amount"] == "100000.00"
+    # 100.000 de saldo e nenhuma entrada: nada a parcelar.
+    assert ultimo_evento["receivable_amount"] == "0.00"
     assert ultimo_evento["payment_sources"][-1] == {
         "source_type": "balance",
         "amount": "100000.00",
         "due_date": "2026-07-10",
-        "installments": 6,
-        "generates_installments": True,
+        "installments": 1,
+        "generates_installments": False,
     }
 
 
@@ -2514,7 +2748,7 @@ async def test_documentation_is_diluted_into_the_balance_the_buyer_still_owes() 
         source for source in payload["payment_sources"] if source["source_type"] == "balance"
     )
     assert balance["amount"] == "105000.00"
-    assert payload["receivable_amount"] == "105000.00"
+    assert payload["receivable_amount"] == "0.00"
     assert payload["documentation_total"] == "5000.00"
     assert payload["documentations"] == [
         {
@@ -2657,7 +2891,7 @@ async def test_editing_the_sale_without_documentation_clears_what_was_there() ->
 
     assert await repository.list_unit_documentations(company_id=company_id, unit_id=unit.id) == []
     assert erp_client.events[-1].payload["documentation_total"] == "0.00"
-    assert erp_client.events[-1].payload["receivable_amount"] == "300000.00"
+    assert erp_client.events[-1].payload["receivable_amount"] == "0.00"
 
 
 async def test_sale_composition_exposes_the_documentation_and_the_total_charged() -> None:
@@ -2704,7 +2938,7 @@ async def test_documentation_larger_than_the_sale_still_has_a_balance_to_charge(
 
     await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=request)
 
-    assert erp_client.events[0].payload["receivable_amount"] == "2521.40"
+    assert erp_client.events[0].payload["receivable_amount"] == "0.00"
 
 
 async def test_the_erp_refusal_reaches_the_user_instead_of_a_generic_gateway_error() -> None:

@@ -365,11 +365,15 @@ class ConstructionUnitCommissionCreate(BaseModel):
     vencimento mensal a partir de ``due_date``, cada uma com sua numeracao.
     """
 
+    #: O sinal sempre compoe o valor da venda -- e dinheiro que o comprador
+    #: paga pela unidade, pago direto ao corretor. O que ele nao faz e entrar no
+    #: contas a receber, porque nao passa pelo caixa da empresa. Nao ha campo
+    #: para escolher: era uma decisao que a tela pedia e que nao existe no
+    #: negocio.
     beneficiary_person_id: UUID
     amount: Decimal = Field(..., gt=0)
     due_date: date
     installments: int = Field(default=1, ge=1, le=120)
-    composes_sale_price: bool = False
     document_number: str | None = Field(default=None, max_length=100)
     notes: str | None = None
 
@@ -378,7 +382,6 @@ class ConstructionUnitCommissionUpdate(BaseModel):
     beneficiary_person_id: UUID | None = None
     amount: Decimal | None = Field(default=None, gt=0)
     due_date: date | None = None
-    composes_sale_price: bool | None = None
     document_number: str | None = Field(default=None, max_length=100)
     notes: str | None = None
 

@@ -64,7 +64,17 @@ class ConstructionUnitPaymentSource:
     #: Fontes que o usuario informa na confirmacao da venda.
     INFORMED_SOURCES = {DOWN_PAYMENT, GOVERNMENT_SUBSIDY, FGTS, FINANCING}
 
-    INSTALLMENT_SOURCES = {DOWN_PAYMENT, BALANCE, DIRECT_BUILDER}
+    #: So a entrada vira parcela. O saldo e o que ainda falta compor a venda --
+    #: sinal a lancar, aditivo a emitir -- e quem decide como cobra-lo e o
+    #: usuario, nao o sistema. Enquanto ele gerava parcela sozinho, o resto de
+    #: uma venda com sinal pendente era cobrado duas vezes: uma como sinal e
+    #: outra como parcela "Saldo devedor".
+    INSTALLMENT_SOURCES = {DOWN_PAYMENT}
+
+    #: Tudo que o comprador deve: o que virou parcela mais o saldo que ainda
+    #: falta compor. E este o valor do contrato; o contas a receber cobre so a
+    #: parte parcelada.
+    BUYER_CHARGED_SOURCES = {DOWN_PAYMENT, BALANCE, DIRECT_BUILDER}
 
     SETTLEMENT_SOURCES = {GOVERNMENT_SUBSIDY, FGTS, FINANCING}
 

@@ -1,4 +1,5 @@
 import calendar
+import logging
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, ClassVar, Protocol
@@ -110,6 +111,8 @@ def _describe_erp_failure(error: Exception) -> str:
 
     return "Não foi possível consultar o financeiro no ERP agora."
 
+
+_logger = logging.getLogger(__name__)
 
 class ErpMeasurementClient(Protocol):
     async def list_person_summaries(
@@ -642,7 +645,7 @@ class ConstructionProjectService:
         net_sale_price = sale_price - discount_amount
         documentations = await self._resolve_sale_documentations(unit=unit, request=request)
         documentation_total = self._sum_documentations(documentations=documentations)
-        commission_offset = self._sum_composing_paid_commissions(
+        commission_offset = self._sum_composing_commissions(
             await self.repository.list_unit_commissions(company_id=company_id, unit_id=unit_id)
         )
         payment_sources = self._build_sale_payment_sources(
@@ -652,8 +655,14 @@ class ConstructionProjectService:
             documentation_total=documentation_total,
             commission_offset=commission_offset,
         )
+        # Sem entrada nao ha parcela para gerar, e isso deixou de ser erro: o
+        # contrato e criado assim mesmo e o usuario lanca o que cobrar pelo
+        # sinal ou por aditivo. O que continua sendo recusado e a venda em que
+        # nada sobra para o comprador -- banco e desconto cobrindo o preco
+        # inteiro --, porque ai nao existe venda a cobrar.
         receivable_amount = self._sum_installment_sources(payment_sources=payment_sources)
-        if receivable_amount <= Decimal("0"):
+        buyer_charged_amount = self._sum_buyer_charged_sources(payment_sources=payment_sources)
+        if buyer_charged_amount <= Decimal("0"):
             raise ConstructionInvalidValueError(
                 message=(
                     "The sale has nothing left to charge the buyer: entry plus bank sources and discount "
@@ -1927,6 +1936,22 @@ class ConstructionProjectService:
             Decimal("0"),
         ).quantize(Decimal("0.01"))
 
+    @staticmethod
+    def _sum_buyer_charged_sources(*, payment_sources: list[dict[str, Any]]) -> Decimal:
+        """Tudo que o comprador deve: o que virou parcela mais o saldo.
+
+        O saldo nao gera parcela, mas continua sendo divida do comprador -- e
+        por isso que ele entra aqui e nao em _sum_installment_sources.
+        """
+        return sum(
+            (
+                Decimal(str(payment_source["amount"]))
+                for payment_source in payment_sources
+                if str(payment_source["source_type"]) in ConstructionUnitPaymentSource.BUYER_CHARGED_SOURCES
+            ),
+            Decimal("0"),
+        ).quantize(Decimal("0.01"))
+
     async def _replace_unit_payment_sources(
         self,
         *,
@@ -2255,6 +2280,35 @@ class ConstructionProjectService:
                 fallback_message="Não foi possível editar a parcela no ERP.",
             ) from request_error
 
+    async def _refuse_when_nothing_left_to_charge(self, *, company_id: UUID, unit_id: UUID) -> None:
+        """Recusa cobranca nova quando o saldo devedor ja esta zerado.
+
+        O saldo e o que ainda falta compor a venda. Zerado, tudo que o comprador
+        deve ja esta lancado -- em parcela, sinal ou aditivo -- e uma cobranca a
+        mais nao teria de onde sair: cobraria do comprador um valor que a venda
+        nao tem.
+
+        So vale para unidade vendida. Antes da venda nao existe composicao, e o
+        saldo zero ali significa "ainda nao ha venda", nao "nao ha o que cobrar"
+        -- o sinal costuma ser lancado justamente nessa fase.
+        """
+        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        if unit.status != ConstructionUnitStatus.SOLD:
+            return
+
+        composition = await self.build_unit_sale_composition(company_id=company_id, unit_id=unit_id)
+        balance = Decimal(str(composition.get("balance_total") or 0))
+        if balance > Decimal("0"):
+            return
+
+        raise ConstructionInvalidValueError(
+            message=(
+                "O saldo devedor desta unidade está zerado: não há valor a cobrar do comprador. "
+                "Para cobrar a mais, aumente o preço da venda ou lance uma documentação."
+            ),
+            error_code="CONSTRUCTION_UNIT_WITHOUT_BALANCE_TO_CHARGE",
+        )
+
     async def create_unit_installments(
         self,
         *,
@@ -2270,6 +2324,7 @@ class ConstructionProjectService:
         reescreve o que esta em aberto. Cobranca que precisa sobreviver a isso
         e aditivo, que tem documento proprio.
         """
+        await self._refuse_when_nothing_left_to_charge(company_id=company_id, unit_id=unit_id)
         unit, target_receivable_id = await self._resolve_unit_receivable_target(
             company_id=company_id,
             unit_id=unit_id,
@@ -2465,6 +2520,7 @@ class ConstructionProjectService:
         agora, e nao lido dela na emissao: trocar o modelo da obra depois nao
         pode reescrever o que ja foi lancado.
         """
+        await self._refuse_when_nothing_left_to_charge(company_id=company_id, unit_id=unit_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
         project = await self.repository.get_project(company_id=company_id, project_id=unit.project_id)
         receipt_template_id = project.commission_receipt_template_id if project is not None else None
@@ -2484,7 +2540,7 @@ class ConstructionProjectService:
                 sequence_number=sequence_number + index,
                 amount=amount,
                 due_date=self._add_months(value=request.due_date, months=index),
-                composes_sale_price=request.composes_sale_price,
+                composes_sale_price=True,
                 receipt_template_id=receipt_template_id,
                 document_number=(request.document_number or "").strip() or None,
                 notes=(request.notes or "").strip() or None,
@@ -2508,28 +2564,13 @@ class ConstructionProjectService:
         commission = await self._get_unit_commission(company_id=company_id, commission_id=commission_id)
         updates = request.model_dump(exclude_unset=True)
 
-        # Trocar "compoe o valor da venda" depois da baixa mudaria um saldo que
-        # ja foi abatido. Para corrigir, estorna a baixa primeiro.
-        composes_sale_price = updates.get("composes_sale_price")
-        if (
-            composes_sale_price is not None
-            and composes_sale_price != commission.composes_sale_price
-            and commission.payment_date is not None
-        ):
-            raise ConstructionInvalidValueError(
-                message=(
-                    "O sinal já foi baixado: estorne o pagamento antes de mudar se ele compõe o valor da venda."
-                ),
-                error_code="CONSTRUCTION_UNIT_COMMISSION_SETTLED",
-            )
-
         # `_apply_updates` e um setattr cru, e `exclude_unset` so diz que a chave
         # veio -- nao que veio preenchida. A tela manda as seis chaves sempre
         # (`updateConstructionUnitCommission`), entao limpar um campo obrigatorio
         # no formulario chegava aqui como `None` e ia direto para uma coluna
         # NOT NULL: IntegrityError, 500 generico, e o usuario sem saber o que
         # deu errado.
-        for field_name in ("beneficiary_person_id", "amount", "due_date", "composes_sale_price"):
+        for field_name in ("beneficiary_person_id", "amount", "due_date"):
             if field_name in updates and updates[field_name] is None:
                 raise ConstructionInvalidValueError(
                     message=f"O campo '{field_name}' do sinal não pode ficar em branco.",
@@ -2570,6 +2611,16 @@ class ConstructionProjectService:
 
     async def delete_unit_commission(self, *, company_id: UUID, commission_id: UUID) -> None:
         commission = await self._get_unit_commission(company_id=company_id, commission_id=commission_id)
+        # Sinal apagado nao tem de onde ser recuperado, e ja houve sumico sem
+        # causa identificada: o rastro fica aqui para a proxima vez.
+        _logger.info(
+            "construction.commission.deleted unit_id=%s commission_id=%s sequence=%s amount=%s composes=%s",
+            commission.unit_id,
+            commission.id,
+            commission.sequence_number,
+            commission.amount,
+            commission.composes_sale_price,
+        )
         await self.repository.delete(commission)
         await self.repository.commit()
 
@@ -2587,6 +2638,7 @@ class ConstructionProjectService:
         ``replace_open_installments``, que refaz as parcelas em aberto e
         destruiria o aditivo.
         """
+        await self._refuse_when_nothing_left_to_charge(company_id=company_id, unit_id=unit_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
 
         if unit.external_contract_id is None:
@@ -2636,19 +2688,20 @@ class ConstructionProjectService:
         return commission
 
     @staticmethod
-    def _sum_composing_paid_commissions(commissions: list[ConstructionUnitCommissionModel]) -> Decimal:
-        """O sinal que abate o saldo devedor: compoe a venda E ja foi pago.
+    def _sum_composing_commissions(commissions: list[ConstructionUnitCommissionModel]) -> Decimal:
+        """O sinal abate o saldo devedor desde o lancamento.
 
-        E a leitura do ``TotalPaidValue`` do legado, onde a comissao paga entra
-        no que o comprador ja quitou. Sinal nao pago nao abate nada, e sinal
-        cobrado por fora nunca abate.
+        Antes so o sinal pago abatia, e o efeito era o saldo cobrar de novo o
+        que o sinal ja estava cobrando: lancado o sinal, o mesmo dinheiro
+        aparecia nos dois lugares ate a baixa. Lancar o sinal ja e registrar a
+        cobranca, entao e no lancamento que ele sai do saldo.
+
+        Todo sinal novo compoe a venda -- nao ha mais como lancar um que nao
+        componha. O filtro continua aqui apenas pelos registros gravados quando
+        a tela ainda oferecia essa escolha.
         """
         return sum(
-            (
-                commission.amount
-                for commission in commissions
-                if commission.composes_sale_price and commission.payment_date is not None
-            ),
+            (commission.amount for commission in commissions if commission.composes_sale_price),
             Decimal("0"),
         ).quantize(Decimal("0.01"))
 
@@ -2676,8 +2729,40 @@ class ConstructionProjectService:
             (source.amount for source in payment_sources if source.generates_installments),
             Decimal("0"),
         )
+        # O saldo tambem nao gera parcela, mas nao e liberacao de banco: e
+        # divida do comprador esperando virar sinal ou aditivo. Somar os dois no
+        # mesmo total faria a tela dizer que o banco cobre o que o comprador
+        # ainda deve.
+        #
+        # E recalculado, nao lido da linha gravada: a fonte guarda o saldo de
+        # quando a venda foi confirmada, e um sinal lancado depois nao reescreve
+        # essa linha. Lendo o valor gravado, uma venda ja quitada por sinal
+        # continuava anunciando saldo a cobrar.
+        commission_offset = self._sum_composing_commissions(commissions)
+        informed_total = sum(
+            (
+                source.amount
+                for source in payment_sources
+                if source.source_type in ConstructionUnitPaymentSource.INFORMED_SOURCES
+            ),
+            Decimal("0"),
+        )
+        balance_total = max(
+            (
+                sale_price
+                + documentation_total
+                - discount_amount
+                - informed_total
+                - commission_offset
+            ).quantize(Decimal("0.01")),
+            Decimal("0"),
+        )
         settlement_total = sum(
-            (source.amount for source in payment_sources if not source.generates_installments),
+            (
+                source.amount
+                for source in payment_sources
+                if source.source_type in ConstructionUnitPaymentSource.SETTLEMENT_SOURCES
+            ),
             Decimal("0"),
         )
         commission_total = sum((commission.amount for commission in commissions), Decimal("0"))
@@ -2685,7 +2770,6 @@ class ConstructionProjectService:
             (commission.amount for commission in commissions if commission.payment_date is not None),
             Decimal("0"),
         )
-        commission_offset = self._sum_composing_paid_commissions(commissions)
         return {
             "construction_unit_id": unit.id,
             "unit_code": unit.code,
@@ -2697,6 +2781,7 @@ class ConstructionProjectService:
             # e a soma dos dois.
             "total_charged": sale_price - discount_amount + documentation_total,
             "installment_total": installment_total,
+            "balance_total": balance_total,
             "settlement_total": settlement_total,
             "commission_total": commission_total,
             "commission_paid_total": commission_paid_total,
@@ -3248,13 +3333,15 @@ class ConstructionProjectService:
             )
 
         if balance > Decimal("0"):
+            # O saldo entra na composicao para o usuario ver o que ainda falta,
+            # mas nao gera parcela: quem cobra o resto e o sinal ou o aditivo.
             payment_sources.append(
                 {
                     "source_type": ConstructionUnitPaymentSource.BALANCE,
                     "amount": ConstructionProjectService._format_event_decimal(value=balance),
                     "due_date": ConstructionProjectService._format_event_date(value=request.first_due_date),
-                    "installments": request.installments,
-                    "generates_installments": True,
+                    "installments": 1,
+                    "generates_installments": False,
                 }
             )
 

@@ -116,6 +116,21 @@ async def test_commission_numbering_of_one_unit_does_not_collide_with_another() 
     assert [commission.sequence_number for commission in second] == [1, 2]
 
 
+def _balance_amount(payload) -> str:
+    """O saldo devedor do payload da venda.
+
+    Antes estes testes liam ``receivable_amount``, que valia o mesmo numero
+    porque o saldo virava parcela. Hoje o saldo nao vira parcela, entao ele so
+    aparece na propria fonte -- e e nela que o abatimento do sinal se observa.
+    """
+    balance = next(
+        source
+        for source in payload["payment_sources"]
+        if source["source_type"] == "balance"
+    )
+    return str(balance["amount"])
+
+
 async def test_paid_commission_that_composes_reduces_the_balance_the_buyer_owes() -> None:
     company_id = uuid4()
     repository = FakeConstructionRepository()
@@ -129,7 +144,6 @@ async def test_paid_commission_that_composes_reduces_the_balance_the_buyer_owes(
             beneficiary_person_id=uuid4(),
             amount=Decimal("5000.00"),
             due_date=date(2026, 3, 10),
-            composes_sale_price=True,
         ),
     )
     await service.settle_unit_commission(
@@ -150,11 +164,16 @@ async def test_paid_commission_that_composes_reduces_the_balance_the_buyer_owes(
     )
 
     sale_event = erp_client.events[-1]
-    assert sale_event.payload["receivable_amount"] == "245000.00"
+    assert _balance_amount(sale_event.payload) == "245000.00"
     assert sale_event.payload["commission_offset"] == "5000.00"
 
 
-async def test_unpaid_commission_that_composes_does_not_reduce_the_balance() -> None:
+async def test_commission_that_composes_reduces_the_balance_before_being_paid() -> None:
+    """Lancar o sinal ja tira o valor do saldo, sem esperar a baixa.
+
+    Enquanto so o sinal pago abatia, o mesmo dinheiro ficava em dois lugares
+    ate alguem dar baixa: cobrado no sinal e ainda somado no saldo devedor.
+    """
     company_id = uuid4()
     repository = FakeConstructionRepository()
     erp_client = FakeErpMeasurementClient()
@@ -167,7 +186,6 @@ async def test_unpaid_commission_that_composes_does_not_reduce_the_balance() -> 
             beneficiary_person_id=uuid4(),
             amount=Decimal("5000.00"),
             due_date=date(2026, 3, 10),
-            composes_sale_price=True,
         ),
     )
 
@@ -183,11 +201,18 @@ async def test_unpaid_commission_that_composes_does_not_reduce_the_balance() -> 
     )
 
     sale_event = erp_client.events[-1]
-    assert sale_event.payload["receivable_amount"] == "250000.00"
-    assert "commission_offset" not in sale_event.payload
+    assert _balance_amount(sale_event.payload) == "245000.00"
+    assert sale_event.payload["commission_offset"] == "5000.00"
 
 
-async def test_paid_commission_charged_outside_the_sale_never_reduces_the_balance() -> None:
+async def test_every_commission_composes_the_sale_even_if_the_request_says_otherwise() -> None:
+    """Nao existe mais sinal "cobrado por fora".
+
+    O sinal e dinheiro que o comprador paga pela unidade: ele sempre compoe a
+    venda. O que ele nao faz e entrar no contas a receber, porque e pago direto
+    ao corretor e nao passa pelo caixa da empresa. A escolha saiu da tela e do
+    schema, e um request antigo que ainda mande a chave nao reabre a excecao.
+    """
     company_id = uuid4()
     repository = FakeConstructionRepository()
     erp_client = FakeErpMeasurementClient()
@@ -196,18 +221,17 @@ async def test_paid_commission_charged_outside_the_sale_never_reduces_the_balanc
     commissions = await service.create_unit_commissions(
         company_id=company_id,
         unit_id=unit.id,
-        request=ConstructionUnitCommissionCreate(
-            beneficiary_person_id=uuid4(),
-            amount=Decimal("5000.00"),
-            due_date=date(2026, 3, 10),
-            composes_sale_price=False,
+        request=ConstructionUnitCommissionCreate.model_validate(
+            {
+                "beneficiary_person_id": str(uuid4()),
+                "amount": "5000.00",
+                "due_date": "2026-03-10",
+                "composes_sale_price": False,
+            }
         ),
     )
-    await service.settle_unit_commission(
-        company_id=company_id,
-        commission_id=commissions[0].id,
-        payment_date=date(2026, 3, 12),
-    )
+
+    assert commissions[0].composes_sale_price is True
 
     await service.confirm_unit_sale(
         company_id=company_id,
@@ -220,7 +244,7 @@ async def test_paid_commission_charged_outside_the_sale_never_reduces_the_balanc
         ),
     )
 
-    assert erp_client.events[-1].payload["receivable_amount"] == "250000.00"
+    assert _balance_amount(erp_client.events[-1].payload) == "245000.00"
 
 
 async def test_settling_a_commission_does_not_reemit_the_sale_event() -> None:
@@ -260,35 +284,6 @@ async def test_settling_a_commission_does_not_reemit_the_sale_event() -> None:
     assert len(erp_client.events) == events_after_sale
 
 
-async def test_changing_composes_sale_price_after_settlement_is_refused() -> None:
-    company_id = uuid4()
-    repository = FakeConstructionRepository()
-    _, unit = seed_project_and_unit(repository, company_id=company_id)
-    service = ConstructionProjectService(repository=repository)
-    commissions = await service.create_unit_commissions(
-        company_id=company_id,
-        unit_id=unit.id,
-        request=ConstructionUnitCommissionCreate(
-            beneficiary_person_id=uuid4(),
-            amount=Decimal("5000.00"),
-            due_date=date(2026, 3, 10),
-            composes_sale_price=True,
-        ),
-    )
-    await service.settle_unit_commission(
-        company_id=company_id,
-        commission_id=commissions[0].id,
-        payment_date=date(2026, 3, 12),
-    )
-
-    with pytest.raises(ConstructionInvalidValueError):
-        await service.update_unit_commission(
-            company_id=company_id,
-            commission_id=commissions[0].id,
-            request=ConstructionUnitCommissionUpdate(composes_sale_price=False),
-        )
-
-
 async def test_clearing_a_required_field_is_refused_instead_of_breaking_the_row() -> None:
     """A tela manda as seis chaves sempre, inclusive as vazias.
 
@@ -307,11 +302,10 @@ async def test_clearing_a_required_field_is_refused_instead_of_breaking_the_row(
             beneficiary_person_id=uuid4(),
             amount=Decimal("5000.00"),
             due_date=date(2026, 3, 10),
-            composes_sale_price=True,
         ),
     )
 
-    for field_name in ("beneficiary_person_id", "amount", "due_date", "composes_sale_price"):
+    for field_name in ("beneficiary_person_id", "amount", "due_date"):
         with pytest.raises(ConstructionInvalidValueError) as error:
             await service.update_unit_commission(
                 company_id=company_id,
@@ -394,7 +388,6 @@ async def test_sale_composition_exposes_the_commission_totals() -> None:
             beneficiary_person_id=uuid4(),
             amount=Decimal("5000.00"),
             due_date=date(2026, 3, 10),
-            composes_sale_price=True,
         ),
     )
     await service.create_unit_commissions(
@@ -404,7 +397,6 @@ async def test_sale_composition_exposes_the_commission_totals() -> None:
             beneficiary_person_id=uuid4(),
             amount=Decimal("1000.00"),
             due_date=date(2026, 4, 10),
-            composes_sale_price=False,
         ),
     )
     await service.settle_unit_commission(
@@ -416,8 +408,10 @@ async def test_sale_composition_exposes_the_commission_totals() -> None:
     composition = await service.build_unit_sale_composition(company_id=company_id, unit_id=unit.id)
 
     assert composition["commission_total"] == Decimal("6000.00")
+    # Baixado so o primeiro: "pago" e "abatido do saldo" sao numeros diferentes
+    # desde que o sinal passou a abater no lancamento, e nao na baixa.
     assert composition["commission_paid_total"] == Decimal("5000.00")
-    assert composition["commission_offset"] == Decimal("5000.00")
+    assert composition["commission_offset"] == Decimal("6000.00")
     assert len(composition["commissions"]) == 2
 
 
