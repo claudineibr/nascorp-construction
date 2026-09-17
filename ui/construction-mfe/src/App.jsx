@@ -7299,6 +7299,7 @@ function ProcurementModal({ mode, procurementForm, people, onClose, onChange, on
               value={procurementForm.supplierPersonId}
               onChange={(value) => onChange("supplierPersonId", value)}
               people={people}
+              warnUnqualified
             />
             <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
               <span>Descrição</span>
@@ -7466,6 +7467,7 @@ function MeasurementModal({
               value={measurementForm.supplierPersonId}
               onChange={(value) => onChange("supplierPersonId", value)}
               people={people}
+              warnUnqualified
             />
             <label className={styles.filterControl}>
               <span>Vencimento*</span>
@@ -7585,6 +7587,12 @@ function RejectMeasurementModal({ measurement, rejectForm, onClose, onChange, on
   )
 }
 
+const QUALIFICATION_WARNINGS = {
+  none: "Este fornecedor nunca foi qualificado. A obra pode seguir, mas a auditoria da Caixa pede a avaliacao registrada.",
+  expired: "A qualificacao deste fornecedor venceu. Registre uma nova avaliacao no cadastro da pessoa.",
+  rejected: "Este fornecedor foi REPROVADO na qualificacao. Confirme com o responsavel antes de seguir.",
+}
+
 function PersonIdInput({
   label,
   value,
@@ -7594,8 +7602,18 @@ function PersonIdInput({
   loading = false,
   error = null,
   emptyLabel = "Selecione uma pessoa",
+  warnUnqualified = false,
 }) {
   const hasSelectedPerson = people.some((person) => person.id === value)
+  const selectedPerson = people.find((person) => person.id === value) ?? null
+
+  // Avisa, nao bloqueia: no legado 69 fornecedores compraram sem qualificacao
+  // nenhuma, em 359 pedidos. Barrar de saida trancaria a operacao.
+  // O aviso so aparece com fornecedor escolhido -- nao a cada salvamento.
+  const qualificationWarning =
+    warnUnqualified && selectedPerson
+      ? QUALIFICATION_WARNINGS[selectedPerson.qualificationStatus ?? "none"] ?? null
+      : null
 
   return (
     <label className={styles.filterControl}>
@@ -7614,6 +7632,11 @@ function PersonIdInput({
           </option>
         ))}
       </select>
+      {qualificationWarning ? (
+        <small className={styles.qualificationWarning} data-testid="qualification-warning">
+          {qualificationWarning}
+        </small>
+      ) : null}
       {error ? <small className={styles.formError}>{error}</small> : null}
     </label>
   )

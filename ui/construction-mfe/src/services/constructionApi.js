@@ -223,6 +223,13 @@ const toPersonSummaryView = (person) => ({
   primaryPhone: person.primary_phone ?? null,
   primaryEmail: person.primary_email ?? null,
   isActive: person.is_active !== false,
+  // Campo opcional de proposito: um core que ainda nao o devolve deixa a tela
+  // tratar como "none" em vez de quebrar. E a ordem de deploy e ERP primeiro.
+  qualificationStatus: person.qualification_status ?? "none",
+  qualificationExpiresAt: person.qualification_expires_at ?? null,
+  qualificationCriterion: person.qualification_criterion ?? null,
+  qualifiedAt: person.qualified_at ?? null,
+  businessRoles: person.business_roles ?? [],
 })
 
 const toAddressView = (address) => ({

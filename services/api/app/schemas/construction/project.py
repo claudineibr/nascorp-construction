@@ -534,6 +534,7 @@ class ConstructionMeasurementResponse(BaseModel):
     measured_amount: Decimal
     due_date: date
     supplier_person_id: UUID | None = None
+    supplier_qualification_status: str = "none"
     status: str
     rejection_reason: str | None = None
     created_by_user_id: UUID | None = None
@@ -781,6 +782,7 @@ class ConstructionProcurementRequestResponse(BaseModel):
     estimated_amount: Decimal
     needed_by_date: date | None = None
     supplier_person_id: UUID | None = None
+    supplier_qualification_status: str = "none"
     status: str
     rejection_reason: str | None = None
     approved_by_user_id: UUID | None = None

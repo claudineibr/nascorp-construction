@@ -281,6 +281,11 @@ class ConstructionMeasurement(Base):
     measured_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     due_date: Mapped[date] = mapped_column(Date, nullable=False)
     supplier_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    # Status QUE VALIA quando a medicao foi criada, nao o de hoje: a
+    # qualificacao pode vencer depois, e isso nao pode reescrever o passado.
+    supplier_qualification_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="none", default="none"
+    )
     status: Mapped[str] = mapped_column(String(30), nullable=False, default=ConstructionMeasurementStatus.DRAFT)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
@@ -706,6 +711,9 @@ class ConstructionProcurementRequest(Base):
     estimated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     needed_by_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     supplier_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    supplier_qualification_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="none", default="none"
+    )
     status: Mapped[str] = mapped_column(String(30), nullable=False, default=ConstructionProcurementStatus.DRAFT)
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     approved_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)

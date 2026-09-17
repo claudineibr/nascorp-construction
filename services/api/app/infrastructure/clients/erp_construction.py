@@ -47,6 +47,7 @@ class ErpConstructionClient:
         search: str | None,
         page: int,
         page_size: int,
+        person_id: UUID | None = None,
     ) -> dict[str, object]:
         if not settings.erp_service_key:
             raise RuntimeError("ERP service key is not configured for Construction person lookup integration.")
@@ -64,6 +65,8 @@ class ErpConstructionClient:
         }
         if search:
             params["search"] = search
+        if person_id is not None:
+            params["person_id"] = str(person_id)
 
         async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
             response = await client.get(
@@ -73,6 +76,38 @@ class ErpConstructionClient:
             )
             response.raise_for_status()
             return response.json()
+
+    async def get_person_qualification_status(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        person_id: UUID,
+    ) -> str:
+        """Status de qualificacao do fornecedor, direto do core.
+
+        Degrada para `none` em qualquer falha -- ERP fora do ar, chave de
+        servico ausente, versao do core que ainda nao devolve o campo. O aviso
+        e informativo e nao pode ser o motivo de a requisicao nao ser salva; se
+        isso levantasse excecao, a decisao D7 ("avisa, nao bloqueia") viraria
+        bloqueio pela porta dos fundos.
+        """
+        try:
+            payload = await self.list_person_summaries(
+                company_id=company_id,
+                user_id=user_id,
+                search=None,
+                page=1,
+                page_size=1,
+                person_id=person_id,
+            )
+        except Exception:
+            return "none"
+
+        items = payload.get("items") or []
+        if not items:
+            return "none"
+        return str(items[0].get("qualification_status") or "none")
 
     async def get_unit_payment_plan(
         self,

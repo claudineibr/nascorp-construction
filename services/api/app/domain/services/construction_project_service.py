@@ -123,7 +123,17 @@ class ErpMeasurementClient(Protocol):
         search: str | None,
         page: int,
         page_size: int,
+        person_id: UUID | None = None,
     ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    async def get_person_qualification_status(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        person_id: UUID,
+    ) -> str:
         raise NotImplementedError
 
     async def create_accounts_payable_from_measurement(self, *, event: EventEnvelope) -> EventEnvelope:
@@ -309,6 +319,29 @@ class ConstructionProjectService:
             search=search,
             page=page,
             page_size=page_size,
+        )
+
+    async def _resolve_supplier_qualification_status(
+        self,
+        *,
+        company_id: UUID,
+        actor_user_id: UUID | None,
+        supplier_person_id: UUID | None,
+    ) -> str:
+        """Status de qualificacao no MOMENTO da gravacao.
+
+        Resolvido no servidor, nunca aceito do navegador: o campo e material de
+        auditoria da Caixa, e quem grava o registro tem de ser quem consultou.
+        Sem fornecedor, ou com o ERP indisponivel, fica `none` -- o aviso some,
+        a gravacao segue (decisao D7: avisa, nao bloqueia).
+        """
+        if supplier_person_id is None or self.erp_client is None:
+            return "none"
+
+        return await self.erp_client.get_person_qualification_status(
+            company_id=company_id,
+            user_id=actor_user_id,
+            person_id=supplier_person_id,
         )
 
     async def list_person_summaries(
@@ -747,6 +780,7 @@ class ConstructionProjectService:
         company_id: UUID,
         project_id: UUID,
         request: ConstructionProcurementRequestCreate,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionProcurementRequest:
         await self.get_project(company_id=company_id, project_id=project_id)
         procurement_code = (request.code or "").strip()
@@ -773,6 +807,11 @@ class ConstructionProjectService:
             estimated_amount=request.estimated_amount,
             needed_by_date=request.needed_by_date,
             supplier_person_id=request.supplier_person_id,
+            supplier_qualification_status=await self._resolve_supplier_qualification_status(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                supplier_person_id=request.supplier_person_id,
+            ),
             status=ConstructionProcurementStatus.DRAFT,
             rejection_reason=None,
         )
@@ -1026,6 +1065,11 @@ class ConstructionProjectService:
             measured_amount=net_amount,
             due_date=request.due_date,
             supplier_person_id=request.supplier_person_id,
+            supplier_qualification_status=await self._resolve_supplier_qualification_status(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                supplier_person_id=request.supplier_person_id,
+            ),
             status=ConstructionMeasurementStatus.DRAFT,
             created_by_user_id=actor_user_id,
         )

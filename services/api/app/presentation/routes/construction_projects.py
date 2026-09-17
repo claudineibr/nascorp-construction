@@ -1207,6 +1207,7 @@ async def create_procurement_request(
             company_id=ctx.company_id,
             project_id=project_id,
             request=request_data,
+            actor_user_id=ctx.user_id,
         )
         return ConstructionProcurementRequestResponse.model_validate(procurement_request)
     except ConstructionDomainError as exc:
