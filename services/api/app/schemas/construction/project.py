@@ -547,6 +547,7 @@ class ConstructionMeasurementResponse(BaseModel):
     items_total_amount: Decimal | None = None
     items_count: int | None = None
     pending_inspections_count: int | None = None
+    non_compliant_inspections_count: int | None = None
     open_occurrences_count: int | None = None
     external_accounts_payable_id: UUID | None = None
     external_accounts_payable_status: str | None = None
@@ -559,7 +560,10 @@ class ConstructionMeasurementListResponse(BaseModel):
     total: int
 
 
-ConstructionInspectionStatusLiteral = Literal["pending", "compliant", "non_compliant"]
+ConstructionInspectionStatusLiteral = Literal["pending", "compliant", "non_compliant", "waived"]
+#: O que uma RODADA aceita. `pending` fora de propósito: pendente é a
+#: ausência de rodada, não um veredito que alguém registra.
+ConstructionInspectionRoundStatusLiteral = Literal["compliant", "non_compliant", "waived"]
 
 ConstructionOccurrenceStatusLiteral = Literal["open", "resolved", "cancelled"]
 
@@ -569,9 +573,22 @@ class ConstructionServiceTemplateItemResponse(BaseModel):
 
     id: UUID
     service_template_id: UUID
+    section_id: UUID
     sequence_number: int
     description: str
     verification_method: str
+    requires_comment: bool = False
+    requires_photo: bool = False
+
+
+class ConstructionServiceTemplateSectionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    service_template_id: UUID
+    sequence_number: int
+    name: str
+    items: list[ConstructionServiceTemplateItemResponse] = []
 
 
 class ConstructionServiceTemplateResponse(BaseModel):
@@ -583,14 +600,107 @@ class ConstructionServiceTemplateResponse(BaseModel):
     product_id: UUID | None = None
     source_file_name: str | None = None
     is_active: bool
+    created_by_user_id: UUID | None = None
+    updated_by_user_id: UUID | None = None
+    deleted_at: datetime | None = None
+    deleted_by_user_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
+    sections: list[ConstructionServiceTemplateSectionResponse] = []
     items: list[ConstructionServiceTemplateItemResponse] = []
+
+    @classmethod
+    def from_model(cls, template: object) -> "ConstructionServiceTemplateResponse":
+        """Builds the response flattening items in section -> item order.
+
+        The flat `items` exists because the frontend already consumes it.
+        Letting the ORM fill that field would return items ordered by
+        sequence_number alone, which restarts on every section -- the checklist
+        would arrive shuffled (1, 2, 1, 2, 3).
+        """
+        sections = [
+            ConstructionServiceTemplateSectionResponse.model_validate(section)
+            for section in template.sections
+        ]
+        return cls(
+            id=template.id,
+            company_id=template.company_id,
+            name=template.name,
+            product_id=template.product_id,
+            source_file_name=template.source_file_name,
+            is_active=template.is_active,
+            created_by_user_id=template.created_by_user_id,
+            updated_by_user_id=template.updated_by_user_id,
+            deleted_at=template.deleted_at,
+            deleted_by_user_id=template.deleted_by_user_id,
+            created_at=template.created_at,
+            updated_at=template.updated_at,
+            sections=sections,
+            items=[item for section in sections for item in section.items],
+        )
 
 
 class ConstructionServiceTemplateListResponse(BaseModel):
     items: list[ConstructionServiceTemplateResponse]
     total: int
+
+
+class ConstructionServiceTemplateAuditResponse(BaseModel):
+    """Um evento do historico do servico.
+
+    ``actor_name`` e o nome NA EPOCA do evento, gravado junto: a pessoa e
+    renomeada, sai da empresa, e o historico continua tendo de ser legivel.
+    Vazio quando o ERP nao respondeu na hora da gravacao -- o ``actor_user_id``
+    permanece e e ele que identifica o autor.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    service_template_id: UUID
+    service_template_name: str
+    sequence_number: int
+    event: Literal["created", "updated", "replaced", "activated", "deactivated", "deleted"]
+    source: str = "manual"
+    actor_user_id: UUID | None = None
+    actor_person_id: UUID | None = None
+    actor_name: str | None = None
+    summary: str | None = None
+    snapshot: dict | None = None
+    created_at: datetime
+
+
+class ConstructionServiceTemplateAuditListResponse(BaseModel):
+    items: list[ConstructionServiceTemplateAuditResponse]
+    total: int
+
+
+class ConstructionServiceTemplateItemInput(BaseModel):
+    sequence_number: int | None = Field(default=None, ge=1)
+    description: str = Field(..., min_length=1, max_length=2000)
+    verification_method: str = Field(..., min_length=1, max_length=2000)
+    requires_comment: bool = False
+    requires_photo: bool = False
+
+
+class ConstructionServiceTemplateSectionInput(BaseModel):
+    sequence_number: int | None = Field(default=None, ge=1)
+    name: str = Field(..., min_length=1, max_length=255)
+    items: list[ConstructionServiceTemplateItemInput] = []
+
+
+class ConstructionServiceTemplateCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    product_id: UUID | None = None
+    is_active: bool = True
+    sections: list[ConstructionServiceTemplateSectionInput] = []
+
+
+class ConstructionServiceTemplateReplace(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    product_id: UUID | None = None
+    is_active: bool = True
+    sections: list[ConstructionServiceTemplateSectionInput] = []
 
 
 class ConstructionServiceTemplateUpdate(BaseModel):
@@ -605,6 +715,7 @@ class ConstructionServiceTemplateImportResult(BaseModel):
     service_template_id: UUID | None = None
     service_name: str | None = None
     items_count: int = 0
+    sections_count: int = 0
     message: str | None = None
 
 
@@ -636,7 +747,8 @@ class ConstructionMeasurementItemUpdate(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     inspector_person_id: UUID | None = None
-    inspection_status: ConstructionInspectionStatusLiteral | None = None
+    # `inspection_status` saiu de propósito: é derivado das linhas da FVS, e
+    # deixar o cliente escrevê-lo anularia o bloqueio de fechamento inteiro.
 
 
 class ConstructionMeasurementItemInspectionCreate(BaseModel):
@@ -657,8 +769,51 @@ class ConstructionMeasurementItemInspectionUpdate(BaseModel):
 
 
 class ConstructionMeasurementInspectionVerifyRequest(BaseModel):
-    check_number: Literal[1, 2]
-    status: ConstructionInspectionStatusLiteral
+    """Uma rodada de verificação da linha: a primeira ou uma reinspeção.
+
+    `check_number` é aceito e **ignorado**, deprecated. O número da rodada é do
+    servidor; o campo sobrevive um release só para que a ordem de deploy entre a
+    API e o MFE deixe de importar.
+    """
+
+    status: ConstructionInspectionRoundStatusLiteral
+    comment: str | None = Field(default=None, max_length=2000)
+    inspector_person_id: UUID | None = None
+    inspected_on: date | None = None
+    #: Atalho: abre também uma ocorrência com o mesmo motivo. Desmarcado por
+    #: padrão -- a rodada reprovada com motivo já é o registro da não
+    #: conformidade, e dois ciclos de vida do mesmo fato divergem.
+    open_occurrence: bool = False
+    check_number: int | None = Field(default=None, deprecated=True)
+
+
+class ConstructionInspectionRoundResponse(BaseModel):
+    """Uma verificação registrada. `inspector_name` e `recorded_by_name` são os
+    nomes **na época**: a pessoa é renomeada e sai da empresa, e a ficha continua
+    tendo de ser legível. Vazios quando o ERP não respondeu na hora da gravação.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    inspection_id: UUID
+    sequence_number: int
+    status: str
+    verified_at: datetime
+    inspected_on: date | None = None
+    inspector_person_id: UUID | None = None
+    inspector_name: str | None = None
+    recorded_by_user_id: UUID | None = None
+    recorded_by_name: str | None = None
+    comment: str | None = None
+    source: str = "manual"
+    is_inferred: bool = False
+    created_at: datetime
+
+
+class ConstructionInspectionRoundListResponse(BaseModel):
+    items: list[ConstructionInspectionRoundResponse]
+    total: int
 
 
 class ConstructionMeasurementItemInspectionResponse(BaseModel):
@@ -668,11 +823,22 @@ class ConstructionMeasurementItemInspectionResponse(BaseModel):
     company_id: UUID
     measurement_item_id: UUID
     sequence_number: int
+    section_name: str | None = None
     description: str
     verification_method: str | None = None
+    requires_comment: bool = False
+    requires_photo: bool = False
     start_date: date | None = None
     end_date: date | None = None
     inspector_person_id: UUID | None = None
+    status: str
+    rounds_count: int = 0
+    last_verified_at: datetime | None = None
+    approved_after_reinspection: bool = False
+    rounds: list[ConstructionInspectionRoundResponse] = []
+    # Deprecated: o formato da dupla conferência, derivado das rodadas para o
+    # MFE em voo não quebrar entre o restart da API e o build do front. Sai no
+    # release seguinte.
     first_status: str
     first_status_at: datetime | None = None
     first_status_by_user_id: UUID | None = None
@@ -707,6 +873,7 @@ class ConstructionMeasurementItemOccurrenceResponse(BaseModel):
     id: UUID
     company_id: UUID
     measurement_item_id: UUID
+    inspection_id: UUID | None = None
     sequence_number: int
     problem: str
     solution: str | None = None

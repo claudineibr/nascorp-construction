@@ -85,6 +85,29 @@ const toUnitView = (unit) => ({
   updatedAt: unit.updated_at ?? null,
 })
 
+const toServiceTemplateItemView = (item) => ({
+  id: item.id,
+  sectionId: item.section_id ?? null,
+  sequenceNumber: item.sequence_number,
+  description: item.description,
+  verificationMethod: item.verification_method,
+  requiresComment: item.requires_comment ?? false,
+  requiresPhoto: item.requires_photo ?? false,
+})
+
+const toServiceTemplateAuditView = (audit) => ({
+  id: audit.id,
+  sequenceNumber: audit.sequence_number,
+  event: audit.event,
+  source: audit.source ?? "manual",
+  actorUserId: audit.actor_user_id ?? null,
+  actorName: audit.actor_name ?? "",
+  serviceName: audit.service_template_name ?? "",
+  summary: audit.summary ?? "",
+  snapshot: audit.snapshot ?? null,
+  createdAt: audit.created_at,
+})
+
 const toServiceTemplateView = (template) => ({
   id: template.id,
   companyId: template.company_id,
@@ -92,11 +115,32 @@ const toServiceTemplateView = (template) => ({
   productId: template.product_id ?? null,
   sourceFileName: template.source_file_name ?? "",
   isActive: template.is_active,
-  items: (template.items ?? []).map((item) => ({
-    id: item.id,
-    sequenceNumber: item.sequence_number,
-    description: item.description,
-    verificationMethod: item.verification_method,
+  createdByUserId: template.created_by_user_id ?? null,
+  updatedByUserId: template.updated_by_user_id ?? null,
+  deletedAt: template.deleted_at ?? null,
+  sections: (template.sections ?? []).map((section) => ({
+    id: section.id,
+    sequenceNumber: section.sequence_number,
+    name: section.name,
+    items: (section.items ?? []).map(toServiceTemplateItemView),
+  })),
+  items: (template.items ?? []).map(toServiceTemplateItemView),
+})
+
+const toServiceTemplatePayload = (templateData) => ({
+  name: toNullableString(templateData.name),
+  product_id: templateData.productId || null,
+  is_active: templateData.isActive ?? true,
+  sections: (templateData.sections ?? []).map((section, sectionIndex) => ({
+    sequence_number: sectionIndex + 1,
+    name: section.name,
+    items: (section.items ?? []).map((item, itemIndex) => ({
+      sequence_number: itemIndex + 1,
+      description: item.description,
+      verification_method: item.verificationMethod,
+      requires_comment: item.requiresComment ?? false,
+      requires_photo: item.requiresPhoto ?? false,
+    })),
   })),
 })
 
@@ -127,27 +171,82 @@ const toMeasurementItemView = (item) => ({
   occurrences: (item.occurrences ?? []).map(toMeasurementOccurrenceView),
 })
 
-const toMeasurementInspectionView = (inspection) => ({
-  id: inspection.id,
-  measurementItemId: inspection.measurement_item_id,
-  sequenceNumber: inspection.sequence_number,
-  description: inspection.description,
-  verificationMethod: inspection.verification_method ?? "",
-  startDate: inspection.start_date ?? null,
-  endDate: inspection.end_date ?? null,
-  inspectorPersonId: inspection.inspector_person_id ?? null,
-  firstStatus: inspection.first_status,
-  firstStatusAt: inspection.first_status_at ?? null,
-  firstStatusByUserId: inspection.first_status_by_user_id ?? null,
-  secondStatus: inspection.second_status,
-  secondStatusAt: inspection.second_status_at ?? null,
-  secondStatusByUserId: inspection.second_status_by_user_id ?? null,
-  isDoubleChecked: inspection.is_double_checked ?? false,
+const toInspectionRoundView = (round) => ({
+  id: round.id,
+  inspectionId: round.inspection_id,
+  sequenceNumber: round.sequence_number,
+  status: round.status,
+  verifiedAt: round.verified_at,
+  inspectedOn: round.inspected_on ?? null,
+  inspectorPersonId: round.inspector_person_id ?? null,
+  inspectorName: round.inspector_name ?? "",
+  recordedByUserId: round.recorded_by_user_id ?? null,
+  recordedByName: round.recorded_by_name ?? "",
+  comment: round.comment ?? "",
+  source: round.source ?? "manual",
+  isInferred: round.is_inferred ?? false,
 })
+
+// Ponte para uma API que ainda nao conhece rodadas: entre o restart da API e o
+// build do MFE, `rounds` vem undefined e a ficha inteira apareceria como
+// pendente. Reconstroi as rodadas a partir da dupla conferencia antiga.
+const roundsFromLegacyChecks = (inspection) => {
+  const rounds = []
+  if (inspection.first_status && inspection.first_status !== "pending") {
+    rounds.push({
+      id: `${inspection.id}-1`,
+      inspection_id: inspection.id,
+      sequence_number: 1,
+      status: inspection.first_status,
+      verified_at: inspection.first_status_at,
+      recorded_by_user_id: inspection.first_status_by_user_id,
+    })
+  }
+
+  if (inspection.second_status && inspection.second_status !== "pending") {
+    rounds.push({
+      id: `${inspection.id}-2`,
+      inspection_id: inspection.id,
+      sequence_number: 2,
+      status: inspection.second_status,
+      verified_at: inspection.second_status_at,
+      recorded_by_user_id: inspection.second_status_by_user_id,
+    })
+  }
+
+  return rounds
+}
+
+const toMeasurementInspectionView = (inspection) => {
+  const rawRounds = inspection.rounds ?? roundsFromLegacyChecks(inspection)
+  const rounds = rawRounds.map(toInspectionRoundView)
+  const lastRound = rounds.length ? rounds[rounds.length - 1] : null
+
+  return {
+    id: inspection.id,
+    measurementItemId: inspection.measurement_item_id,
+    sequenceNumber: inspection.sequence_number,
+    description: inspection.description,
+    verificationMethod: inspection.verification_method ?? "",
+    startDate: inspection.start_date ?? null,
+    endDate: inspection.end_date ?? null,
+    inspectorPersonId: inspection.inspector_person_id ?? null,
+    requiresComment: inspection.requires_comment ?? false,
+    requiresPhoto: inspection.requires_photo ?? false,
+    status: inspection.status ?? lastRound?.status ?? "pending",
+    roundsCount: inspection.rounds_count ?? rounds.length,
+    lastVerifiedAt: inspection.last_verified_at ?? lastRound?.verifiedAt ?? null,
+    approvedAfterReinspection:
+      inspection.approved_after_reinspection ?? (lastRound?.status === "compliant" && rounds.length > 1),
+    rounds,
+    lastRound,
+  }
+}
 
 const toMeasurementOccurrenceView = (occurrence) => ({
   id: occurrence.id,
   measurementItemId: occurrence.measurement_item_id,
+  inspectionId: occurrence.inspection_id ?? null,
   sequenceNumber: occurrence.sequence_number,
   problem: occurrence.problem,
   solution: occurrence.solution ?? "",
@@ -1160,13 +1259,19 @@ export async function listConstructionDocumentationTypes({ bridge, search = null
   }
 }
 
-export async function listConstructionServiceTemplates({ bridge, search = null, onlyActive = true } = {}) {
+export async function listConstructionServiceTemplates({
+  bridge,
+  search = null,
+  onlyActive = true,
+  onlyDeleted = false,
+} = {}) {
   const params = new URLSearchParams()
   if (search) {
     params.set("search", search)
   }
 
   params.set("only_active", onlyActive ? "true" : "false")
+  params.set("only_deleted", onlyDeleted ? "true" : "false")
 
   const payload = await requestJson({
     bridge,
@@ -1179,6 +1284,40 @@ export async function listConstructionServiceTemplates({ bridge, search = null, 
   }
 }
 
+export async function listConstructionServiceTemplateAudits({ bridge, serviceTemplateId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/service-templates/${serviceTemplateId}/audits`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toServiceTemplateAuditView),
+    total: payload.total ?? 0,
+  }
+}
+
+export async function createConstructionServiceTemplate({ bridge, templateData }) {
+  const payload = await requestJson({
+    bridge,
+    path: "/v1/construction/service-templates",
+    method: "POST",
+    body: toServiceTemplatePayload(templateData),
+  })
+
+  return toServiceTemplateView(payload)
+}
+
+export async function replaceConstructionServiceTemplate({ bridge, serviceTemplateId, templateData }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/service-templates/${serviceTemplateId}`,
+    method: "PUT",
+    body: toServiceTemplatePayload(templateData),
+  })
+
+  return toServiceTemplateView(payload)
+}
+
 export async function updateConstructionServiceTemplate({ bridge, serviceTemplateId, templateData }) {
   const payload = await requestJson({
     bridge,
@@ -1186,11 +1325,37 @@ export async function updateConstructionServiceTemplate({ bridge, serviceTemplat
     method: "PATCH",
     body: {
       name: toNullableString(templateData.name),
+      product_id: templateData.productId || null,
       is_active: templateData.isActive,
     },
   })
 
   return toServiceTemplateView(payload)
+}
+
+export async function deleteConstructionServiceTemplate({ bridge, serviceTemplateId }) {
+  await requestJson({
+    bridge,
+    path: `/v1/construction/service-templates/${serviceTemplateId}`,
+    method: "DELETE",
+  })
+}
+
+export async function downloadConstructionServiceTemplateExample({ bridge }) {
+  const apiBaseUrl = bridge?.constructionApiBaseUrl || DEFAULT_CONSTRUCTION_API_URL
+  const headers = { ...(bridge?.getAuthHeaders?.() ?? {}) }
+
+  if (!headers.Authorization || !headers["X-Company-ID"]) {
+    throw new Error("Contexto autenticado da empresa indisponível.")
+  }
+
+  const response = await fetch(`${apiBaseUrl}/v1/construction/service-templates/example`, { headers })
+
+  if (!response.ok) {
+    throw new Error("Não foi possível baixar o modelo da planilha.")
+  }
+
+  return response.blob()
 }
 
 export async function importConstructionServiceTemplates({ bridge, files }) {
@@ -1232,6 +1397,7 @@ export async function importConstructionServiceTemplates({ bridge, files }) {
       serviceTemplateId: result.service_template_id ?? null,
       serviceName: result.service_name ?? "",
       itemsCount: result.items_count ?? 0,
+      sectionsCount: result.sections_count ?? 0,
       message: result.message ?? "",
     })),
     created: payload.created ?? 0,
@@ -1311,18 +1477,41 @@ export async function createConstructionMeasurementInspection({ bridge, itemId, 
   return toMeasurementInspectionView(payload)
 }
 
-export async function verifyConstructionMeasurementInspection({ bridge, inspectionId, checkNumber, status }) {
+export async function verifyConstructionMeasurementInspection({
+  bridge,
+  inspectionId,
+  status,
+  comment = "",
+  inspectorPersonId = null,
+  inspectedOn = null,
+  openOccurrence = false,
+}) {
   const payload = await requestJson({
     bridge,
     path: `/v1/construction/measurement-inspections/${inspectionId}/verify`,
     method: "POST",
     body: {
-      check_number: checkNumber,
       status,
+      comment: comment || null,
+      inspector_person_id: inspectorPersonId || null,
+      inspected_on: inspectedOn || null,
+      open_occurrence: openOccurrence,
     },
   })
 
   return toMeasurementInspectionView(payload)
+}
+
+export async function listConstructionInspectionRounds({ bridge, inspectionId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurement-inspections/${inspectionId}/rounds`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toInspectionRoundView),
+    total: payload.total ?? 0,
+  }
 }
 
 export async function deleteConstructionMeasurementInspection({ bridge, inspectionId }) {

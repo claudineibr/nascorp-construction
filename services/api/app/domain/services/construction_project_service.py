@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import httpx
 
 from app.domain.constants import (
+    ConstructionInspectionRoundSource,
     BLOCK_STATUSES,
     ConstructionUnitPaymentSource,
     ConstructionDocumentationType,
@@ -29,6 +30,7 @@ from app.domain.exceptions import (
     ConstructionInvalidStatusTransitionError,
     ConstructionInvalidValueError,
     ConstructionNotFoundError,
+    ConstructionResourceInUseError,
 )
 from app.domain.events.constants import (
     ConstructionAggregateType,
@@ -45,8 +47,11 @@ from app.infrastructure.database.models import (
     ConstructionDocumentationType as ConstructionDocumentationTypeModel,
     ConstructionMeasurement,
     ConstructionMeasurementItem,
+    ConstructionInspectionRound,
     ConstructionServiceTemplate,
+    ConstructionServiceTemplateAudit,
     ConstructionServiceTemplateItem,
+    ConstructionServiceTemplateSection,
     ConstructionUnitCommission as ConstructionUnitCommissionModel,
     ConstructionUnitDocumentation as ConstructionUnitDocumentationModel,
     ConstructionUnitPaymentSource as ConstructionUnitPaymentSourceModel,
@@ -78,6 +83,9 @@ from app.schemas.construction import (
     ConstructionMeasurementCreate,
     ConstructionMeasurementUpdate,
     ConstructionSchedulePhaseCreate,
+    ConstructionServiceTemplateCreate,
+    ConstructionServiceTemplateReplace,
+    ConstructionServiceTemplateSectionInput,
     ConstructionServiceTemplateUpdate,
     ConstructionSchedulePhaseUpdate,
     ConstructionUnitAdjustmentCreate,
@@ -170,6 +178,17 @@ class ConstructionEventDispatcher(Protocol):
         raise NotImplementedError
 
 
+#: Mensagem de "ainda nao verificado". Constante porque aparece em dois caminhos
+#: -- a criacao do item com template e o preenchimento da data de fim -- e o
+#: texto duplicado literalmente ja divergiu uma vez.
+INSPECTIONS_PENDING_MESSAGE = (
+    "A data de fim só pode ser preenchida depois que todos os itens de inspeção forem verificados."
+)
+REINSPECTION_REQUIRED_MESSAGE = (
+    "Há itens reprovados na FVS. Registre a reinspeção aprovada antes de continuar."
+)
+
+
 class ConstructionProjectService:
     #: Empresas cujo catalogo de documentacao ja foi semeado neste processo.
     #: O seed e idempotente; isto so evita repetir a consulta a cada tecla do
@@ -200,7 +219,7 @@ class ConstructionProjectService:
         self._ensure_known_value(value=request.project_type, allowed_values=PROJECT_TYPES, field_name="project_type")
         existing_project = await self.repository.get_project_by_code(company_id=company_id, code=request.code)
         if existing_project:
-            raise ConstructionDuplicateCodeError(resource_name="Construction project", code=request.code)
+            raise ConstructionDuplicateCodeError(resource_name="a obra", code=request.code)
 
         project = ConstructionProject(
             id=uuid4(),
@@ -232,7 +251,7 @@ class ConstructionProjectService:
     async def apply_cost_center_created_event(self, *, event: EventEnvelope) -> ConstructionProject:
         if event.event_type != ErpEventType.COST_CENTER_CREATED:
             raise ConstructionInvalidValueError(
-                message="Unsupported ERP event type for cost center confirmation.",
+                message="Tipo de evento do ERP não suportado para confirmação de centro de custo.",
                 error_code="CONSTRUCTION_UNSUPPORTED_ERP_EVENT",
             )
 
@@ -270,7 +289,7 @@ class ConstructionProjectService:
     def _apply_cost_center_snapshot_from_event(*, project: ConstructionProject, event: EventEnvelope) -> None:
         if event.event_type != ErpEventType.COST_CENTER_CREATED:
             raise ConstructionInvalidValueError(
-                message="Unsupported ERP event type for cost center confirmation.",
+                message="Tipo de evento do ERP não suportado para confirmação de centro de custo.",
                 error_code="CONSTRUCTION_UNSUPPORTED_ERP_EVENT",
             )
 
@@ -280,7 +299,7 @@ class ConstructionProjectService:
         )
         if project_id != project.id:
             raise ConstructionInvalidValueError(
-                message="Cost center confirmation does not belong to the created construction project.",
+                message="A confirmação de centro de custo não pertence à obra criada.",
                 error_code="CONSTRUCTION_COST_CENTER_PROJECT_MISMATCH",
             )
 
@@ -355,7 +374,7 @@ class ConstructionProjectService:
     ) -> dict[str, Any]:
         if self.erp_client is None:
             raise ConstructionInvalidValueError(
-                message="ERP integration client is unavailable for person lookup.",
+                message="A integração com o ERP está indisponível para consultar pessoas.",
                 error_code="CONSTRUCTION_ERP_INTEGRATION_UNAVAILABLE",
             )
 
@@ -370,7 +389,7 @@ class ConstructionProjectService:
     async def get_project(self, *, company_id: UUID, project_id: UUID) -> ConstructionProject:
         project = await self.repository.get_project(company_id=company_id, project_id=project_id)
         if not project:
-            raise ConstructionNotFoundError(resource_name="Construction project")
+            raise ConstructionNotFoundError(resource_name="a obra")
 
         return project
 
@@ -399,7 +418,7 @@ class ConstructionProjectService:
         if next_code is not None and next_code != project.code:
             existing_project = await self.repository.get_project_by_code(company_id=company_id, code=next_code)
             if existing_project and existing_project.id != project.id:
-                raise ConstructionDuplicateCodeError(resource_name="Construction project", code=next_code)
+                raise ConstructionDuplicateCodeError(resource_name="a obra", code=next_code)
 
         self._apply_updates(entity=project, updates=updates)
         await self.repository.commit()
@@ -426,7 +445,7 @@ class ConstructionProjectService:
             code=request.code,
         )
         if existing_block:
-            raise ConstructionDuplicateCodeError(resource_name="Construction block", code=request.code)
+            raise ConstructionDuplicateCodeError(resource_name="o bloco", code=request.code)
 
         block = ConstructionBlock(
             company_id=company_id,
@@ -469,7 +488,7 @@ class ConstructionProjectService:
                 code=next_code,
             )
             if existing_block and existing_block.id != block.id:
-                raise ConstructionDuplicateCodeError(resource_name="Construction block", code=next_code)
+                raise ConstructionDuplicateCodeError(resource_name="o bloco", code=next_code)
 
         self._apply_updates(entity=block, updates=updates)
         await self.repository.commit()
@@ -492,7 +511,7 @@ class ConstructionProjectService:
         project = await self.get_project(company_id=company_id, project_id=project_id)
         if not project.synthetic_cost_center_id:
             raise ConstructionInvalidValueError(
-                message="Project must have a synthetic cost center before creating construction units.",
+                message="A obra precisa de um centro de custo sintético antes de cadastrar unidades.",
                 error_code="CONSTRUCTION_PROJECT_COST_CENTER_REQUIRED",
             )
 
@@ -508,7 +527,7 @@ class ConstructionProjectService:
             code=request.code,
         )
         if existing_unit:
-            raise ConstructionDuplicateCodeError(resource_name="Construction unit", code=request.code)
+            raise ConstructionDuplicateCodeError(resource_name="a unidade", code=request.code)
 
         unit = ConstructionUnit(
             id=uuid4(),
@@ -575,7 +594,7 @@ class ConstructionProjectService:
                 code=next_code,
             )
             if existing_unit and existing_unit.id != unit.id:
-                raise ConstructionDuplicateCodeError(resource_name="Construction unit", code=next_code)
+                raise ConstructionDuplicateCodeError(resource_name="a unidade", code=next_code)
 
         self._apply_updates(entity=unit, updates=updates)
         await self.repository.commit()
@@ -597,7 +616,7 @@ class ConstructionProjectService:
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
         if unit.status != ConstructionUnitStatus.AVAILABLE:
             raise ConstructionInvalidValueError(
-                message="Only available units can be reserved.",
+                message="Só é possível reservar unidade disponível.",
                 error_code="CONSTRUCTION_UNIT_INVALID_STATUS",
             )
 
@@ -613,7 +632,7 @@ class ConstructionProjectService:
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
         if unit.status != ConstructionUnitStatus.RESERVED:
             raise ConstructionInvalidValueError(
-                message="Only reserved units can have reservation released.",
+                message="Só é possível liberar a reserva de uma unidade reservada.",
                 error_code="CONSTRUCTION_UNIT_INVALID_STATUS",
             )
 
@@ -645,33 +664,33 @@ class ConstructionProjectService:
             ConstructionUnitStatus.SOLD,
         }:
             raise ConstructionInvalidValueError(
-                message="Unit status does not allow sale confirmation.",
+                message="A situação da unidade não permite confirmar a venda.",
                 error_code="CONSTRUCTION_UNIT_INVALID_STATUS",
             )
 
         sale_price = request.sale_price or unit.sale_price
         if sale_price is None or sale_price <= Decimal("0"):
             raise ConstructionInvalidValueError(
-                message="Unit sale price is required to confirm sale.",
+                message="Informe o preço de venda da unidade para confirmar a venda.",
                 error_code="CONSTRUCTION_UNIT_SALE_PRICE_REQUIRED",
             )
 
         if not unit.analytic_cost_center_id:
             raise ConstructionInvalidValueError(
-                message="Unit must have an analytic cost center before confirming sale.",
+                message="A unidade precisa de um centro de custo analítico antes de confirmar a venda.",
                 error_code="CONSTRUCTION_UNIT_COST_CENTER_REQUIRED",
             )
 
         discount_amount = (request.discount_amount or unit.discount_amount or Decimal("0")).quantize(Decimal("0.01"))
         if discount_amount >= sale_price:
             raise ConstructionInvalidValueError(
-                message="Unit sale discount must be lower than the sale price.",
+                message="O desconto da venda precisa ser menor que o preço de venda.",
                 error_code="CONSTRUCTION_UNIT_DISCOUNT_EXCEEDS_SALE_PRICE",
             )
 
         if request.secondary_buyer_person_id is not None and request.secondary_buyer_person_id == request.buyer_person_id:
             raise ConstructionInvalidValueError(
-                message="Secondary buyer must be different from the main buyer.",
+                message="O segundo comprador precisa ser diferente do comprador principal.",
                 error_code="CONSTRUCTION_UNIT_DUPLICATE_BUYER",
             )
 
@@ -748,7 +767,7 @@ class ConstructionProjectService:
     async def apply_contract_status_updated_event(self, *, event: EventEnvelope) -> ConstructionUnit:
         if event.event_type not in {ErpEventType.CONTRACT_RECEIVABLE_CREATED, ErpEventType.CONTRACT_STATUS_UPDATED}:
             raise ConstructionInvalidValueError(
-                message="Unsupported ERP event type for unit contract sync.",
+                message="Tipo de evento do ERP não suportado para sincronizar o contrato da unidade.",
                 error_code="CONSTRUCTION_UNSUPPORTED_ERP_EVENT",
             )
 
@@ -792,7 +811,7 @@ class ConstructionProjectService:
             )
             if existing_request:
                 raise ConstructionDuplicateCodeError(
-                    resource_name="Construction procurement request",
+                    resource_name="a requisição de compra",
                     code=procurement_code,
                 )
         else:
@@ -840,7 +859,7 @@ class ConstructionProjectService:
             procurement_request_id=procurement_request_id,
         )
         if not procurement_request:
-            raise ConstructionNotFoundError(resource_name="Construction procurement request")
+            raise ConstructionNotFoundError(resource_name="a requisição de compra")
 
         return procurement_request
 
@@ -860,7 +879,7 @@ class ConstructionProjectService:
             ConstructionProcurementStatus.REJECTED,
         }:
             raise ConstructionInvalidValueError(
-                message="Only draft or rejected procurement requests can be edited.",
+                message="Só é possível alterar requisição em rascunho ou rejeitada.",
                 error_code="CONSTRUCTION_PROCUREMENT_LOCKED",
             )
 
@@ -870,7 +889,7 @@ class ConstructionProjectService:
             next_code = next_code.strip()
             if not next_code:
                 raise ConstructionInvalidValueError(
-                    message="Procurement request code cannot be empty.",
+                    message="Informe o código da requisição.",
                     error_code="CONSTRUCTION_PROCUREMENT_INVALID_CODE",
                 )
 
@@ -882,7 +901,7 @@ class ConstructionProjectService:
                 )
                 if existing_request and existing_request.id != procurement_request.id:
                     raise ConstructionDuplicateCodeError(
-                        resource_name="Construction procurement request",
+                        resource_name="a requisição de compra",
                         code=next_code,
                     )
 
@@ -909,7 +928,7 @@ class ConstructionProjectService:
             ConstructionProcurementStatus.REJECTED,
         }:
             raise ConstructionInvalidValueError(
-                message="Procurement request cannot be submitted from current status.",
+                message="A requisição não pode ser enviada na situação atual.",
                 error_code="CONSTRUCTION_PROCUREMENT_INVALID_STATUS",
             )
 
@@ -944,7 +963,7 @@ class ConstructionProjectService:
         )
         if procurement_request.status != ConstructionProcurementStatus.PENDING_APPROVAL:
             raise ConstructionInvalidValueError(
-                message="Only pending approval procurement requests can be approved.",
+                message="Só é possível aprovar requisição que está aguardando aprovação.",
                 error_code="CONSTRUCTION_PROCUREMENT_INVALID_STATUS",
             )
 
@@ -987,7 +1006,7 @@ class ConstructionProjectService:
             ConstructionProcurementStatus.REJECTED,
         }:
             raise ConstructionInvalidValueError(
-                message="Only draft or rejected procurement requests can be deleted.",
+                message="Só é possível excluir requisição em rascunho ou rejeitada.",
                 error_code="CONSTRUCTION_PROCUREMENT_LOCKED",
             )
 
@@ -1006,14 +1025,14 @@ class ConstructionProjectService:
         unit = await self._get_unit(company_id=company_id, unit_id=request.unit_id)
         if unit.project_id != project_id:
             raise ConstructionInvalidValueError(
-                message="Unit does not belong to the informed construction project.",
+                message="A unidade não pertence à obra informada.",
                 error_code="CONSTRUCTION_UNIT_PROJECT_MISMATCH",
             )
 
         schedule_phase = await self._get_schedule_phase(company_id=company_id, phase_id=request.schedule_phase_id)
         if schedule_phase.project_id != project_id:
             raise ConstructionInvalidValueError(
-                message="Schedule phase does not belong to the informed construction project.",
+                message="A fase do cronograma não pertence à obra informada.",
                 error_code="CONSTRUCTION_SCHEDULE_PROJECT_MISMATCH",
             )
 
@@ -1023,7 +1042,7 @@ class ConstructionProjectService:
             code=request.code,
         )
         if existing_measurement:
-            raise ConstructionDuplicateCodeError(resource_name="Construction measurement", code=request.code)
+            raise ConstructionDuplicateCodeError(resource_name="a medição", code=request.code)
 
         sequence_number = request.sequence_number
         if sequence_number is None:
@@ -1035,7 +1054,7 @@ class ConstructionProjectService:
         gross_amount = request.gross_amount or request.measured_amount
         if gross_amount is None or gross_amount <= Decimal("0"):
             raise ConstructionInvalidValueError(
-                message="Measurement gross amount is required.",
+                message="Informe o valor bruto da medição.",
                 error_code="CONSTRUCTION_MEASUREMENT_GROSS_REQUIRED",
             )
 
@@ -1043,7 +1062,7 @@ class ConstructionProjectService:
         net_amount = request.net_amount or request.measured_amount or (gross_amount - retentions_amount)
         if net_amount <= Decimal("0"):
             raise ConstructionInvalidValueError(
-                message="Measurement net amount must be greater than zero.",
+                message="O valor líquido da medição precisa ser maior que zero.",
                 error_code="CONSTRUCTION_MEASUREMENT_NET_INVALID",
             )
 
@@ -1085,7 +1104,7 @@ class ConstructionProjectService:
     async def get_measurement(self, *, company_id: UUID, measurement_id: UUID) -> ConstructionMeasurement:
         measurement = await self.repository.get_measurement(company_id=company_id, measurement_id=measurement_id)
         if not measurement:
-            raise ConstructionNotFoundError(resource_name="Construction measurement")
+            raise ConstructionNotFoundError(resource_name="a medição")
 
         return measurement
 
@@ -1099,7 +1118,7 @@ class ConstructionProjectService:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
         if measurement.status == ConstructionMeasurementStatus.APPROVED:
             raise ConstructionInvalidValueError(
-                message="Approved measurements cannot be edited.",
+                message="Medição aprovada não pode ser alterada.",
                 error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
             )
 
@@ -1108,7 +1127,7 @@ class ConstructionProjectService:
             unit = await self._get_unit(company_id=company_id, unit_id=updates["unit_id"])
             if unit.project_id != measurement.project_id:
                 raise ConstructionInvalidValueError(
-                    message="Unit does not belong to the measurement construction project.",
+                    message="A unidade não pertence à obra da medição.",
                     error_code="CONSTRUCTION_UNIT_PROJECT_MISMATCH",
                 )
 
@@ -1116,7 +1135,7 @@ class ConstructionProjectService:
             schedule_phase = await self._get_schedule_phase(company_id=company_id, phase_id=updates["schedule_phase_id"])
             if schedule_phase.project_id != measurement.project_id:
                 raise ConstructionInvalidValueError(
-                    message="Schedule phase does not belong to the measurement construction project.",
+                    message="A fase do cronograma não pertence à obra da medição.",
                     error_code="CONSTRUCTION_SCHEDULE_PROJECT_MISMATCH",
                 )
 
@@ -1128,7 +1147,7 @@ class ConstructionProjectService:
                 code=next_code,
             )
             if existing_measurement and existing_measurement.id != measurement.id:
-                raise ConstructionDuplicateCodeError(resource_name="Construction measurement", code=next_code)
+                raise ConstructionDuplicateCodeError(resource_name="a medição", code=next_code)
 
         gross_amount = updates.get("gross_amount", measurement.gross_amount)
         retentions_amount = updates.get("retentions_amount", measurement.retentions_amount)
@@ -1149,7 +1168,7 @@ class ConstructionProjectService:
 
         if net_amount is None or net_amount <= Decimal("0"):
             raise ConstructionInvalidValueError(
-                message="Measurement net amount must be greater than zero.",
+                message="O valor líquido da medição precisa ser maior que zero.",
                 error_code="CONSTRUCTION_MEASUREMENT_NET_INVALID",
             )
 
@@ -1173,10 +1192,15 @@ class ConstructionProjectService:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
         if measurement.status == ConstructionMeasurementStatus.APPROVED:
             raise ConstructionInvalidValueError(
-                message="Approved measurements cannot be submitted again.",
+                message="Medição aprovada não pode ser enviada de novo.",
                 error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
             )
 
+        await self._assert_measurement_inspections_are_approved(
+            company_id=company_id,
+            measurement_id=measurement_id,
+            action_label="enviar",
+        )
         await self._sync_measurement_amounts_from_items(measurement=measurement)
         measurement.status = ConstructionMeasurementStatus.SUBMITTED
         measurement.rejection_reason = None
@@ -1199,7 +1223,7 @@ class ConstructionProjectService:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
         if measurement.status == ConstructionMeasurementStatus.APPROVED:
             raise ConstructionInvalidValueError(
-                message="Approved measurements cannot be rejected.",
+                message="Medição aprovada não pode ser rejeitada.",
                 error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
             )
 
@@ -1225,28 +1249,36 @@ class ConstructionProjectService:
         ):
             return measurement
 
+        # Antes das travas de unidade e fase de propósito: quem aprova precisa
+        # ver o problema da FVS antes de ouvir sobre centro de custo.
+        await self._assert_measurement_inspections_are_approved(
+            company_id=company_id,
+            measurement_id=measurement_id,
+            action_label="aprovar",
+        )
+
         if not measurement.unit_id:
             raise ConstructionInvalidValueError(
-                message="Measurement must be linked to a construction unit before approval.",
+                message="Vincule a medição a uma unidade antes de aprovar.",
                 error_code="CONSTRUCTION_MEASUREMENT_UNIT_REQUIRED",
             )
 
         if not measurement.schedule_phase_id:
             raise ConstructionInvalidValueError(
-                message="Measurement must be linked to a schedule phase before approval.",
+                message="Vincule a medição a uma fase do cronograma antes de aprovar.",
                 error_code="CONSTRUCTION_MEASUREMENT_PHASE_REQUIRED",
             )
 
         unit = await self._get_unit(company_id=company_id, unit_id=measurement.unit_id)
         if not unit.analytic_cost_center_id:
             raise ConstructionInvalidValueError(
-                message="Unit must have an analytic cost center before approving measurements.",
+                message="A unidade precisa de um centro de custo analítico antes de aprovar medições.",
                 error_code="CONSTRUCTION_UNIT_COST_CENTER_REQUIRED",
             )
 
         if actor_user_id is not None and measurement.submitted_by_user_id == actor_user_id:
             raise ConstructionInvalidValueError(
-                message="Measurement must be approved by a user other than the one who submitted it.",
+                message="A medição precisa ser aprovada por um usuário diferente de quem a enviou.",
                 error_code="CONSTRUCTION_MEASUREMENT_SELF_APPROVAL",
             )
 
@@ -1289,7 +1321,7 @@ class ConstructionProjectService:
     async def get_measurement_item(self, *, company_id: UUID, item_id: UUID) -> ConstructionMeasurementItem:
         item = await self.repository.get_measurement_item(company_id=company_id, item_id=item_id)
         if not item:
-            raise ConstructionNotFoundError(resource_name="Construction measurement item")
+            raise ConstructionNotFoundError(resource_name="o item da medição")
 
         return item
 
@@ -1310,7 +1342,7 @@ class ConstructionProjectService:
                 service_template_id=request.service_template_id,
             )
             if service_template is None:
-                raise ConstructionNotFoundError(resource_name="Construction service template")
+                raise ConstructionNotFoundError(resource_name="o serviço do catálogo")
 
         description = (request.description or "").strip()
         if not description and service_template is not None:
@@ -1318,7 +1350,7 @@ class ConstructionProjectService:
 
         if not description:
             raise ConstructionInvalidValueError(
-                message="Measurement item requires a description or a service template.",
+                message="O item da medição precisa de uma descrição ou de um serviço do catálogo.",
                 error_code="CONSTRUCTION_MEASUREMENT_ITEM_DESCRIPTION_REQUIRED",
             )
 
@@ -1332,7 +1364,7 @@ class ConstructionProjectService:
             )
             if same_template or existing_item.description.casefold() == description.casefold():
                 raise ConstructionInvalidValueError(
-                    message=f"Service {description} is already part of this measurement.",
+                    message=f"O serviço {description} já faz parte desta medição.",
                     error_code="CONSTRUCTION_MEASUREMENT_ITEM_DUPLICATE_SERVICE",
                 )
 
@@ -1360,9 +1392,12 @@ class ConstructionProjectService:
         )
         self._validate_item_period(start_date=item.start_date, end_date=item.end_date)
         self._validate_not_in_the_future(start_date=item.start_date, end_date=item.end_date)
-        if item.end_date is not None and service_template is not None and service_template.items:
+        template_has_items = service_template is not None and any(
+            section.items for section in service_template.sections
+        )
+        if item.end_date is not None and template_has_items:
             raise ConstructionInvalidValueError(
-                message="End date can only be set after every inspection item is verified.",
+                message=INSPECTIONS_PENDING_MESSAGE,
                 error_code="CONSTRUCTION_MEASUREMENT_ITEM_END_DATE_BLOCKED",
             )
 
@@ -1371,19 +1406,25 @@ class ConstructionProjectService:
         await self.repository.refresh(item)
 
         if service_template is not None:
-            for template_item in service_template.items:
-                await self.repository.add(
-                    ConstructionMeasurementItemInspection(
-                        company_id=company_id,
-                        measurement_item_id=item.id,
-                        sequence_number=template_item.sequence_number,
-                        description=template_item.description,
-                        verification_method=template_item.verification_method,
-                        inspector_person_id=item.inspector_person_id,
-                        first_status=ConstructionInspectionStatus.PENDING,
-                        second_status=ConstructionInspectionStatus.PENDING,
+            inspection_sequence = 0
+            for section in service_template.sections:
+                for template_item in section.items:
+                    inspection_sequence += 1
+                    await self.repository.add(
+                        ConstructionMeasurementItemInspection(
+                            company_id=company_id,
+                            measurement_item_id=item.id,
+                            sequence_number=inspection_sequence,
+                            section_name=section.name,
+                            description=template_item.description,
+                            verification_method=template_item.verification_method,
+                            requires_comment=template_item.requires_comment,
+                            requires_photo=template_item.requires_photo,
+                            inspector_person_id=item.inspector_person_id,
+                            status=ConstructionInspectionStatus.PENDING,
+                            rounds_count=0,
+                        )
                     )
-                )
             await self.repository.commit()
 
         await self._sync_measurement_amounts_from_items(measurement=measurement)
@@ -1417,7 +1458,7 @@ class ConstructionProjectService:
         self._validate_item_period(start_date=item.start_date, end_date=item.end_date)
         self._validate_not_in_the_future(start_date=item.start_date, end_date=item.end_date)
         if "end_date" in updates and item.end_date is not None:
-            await self._assert_every_inspection_is_verified(item=item)
+            await self._assert_every_inspection_is_approved(item=item)
 
         await self._sync_measurement_amounts_from_items(measurement=measurement)
         await self.repository.commit()
@@ -1460,8 +1501,8 @@ class ConstructionProjectService:
             start_date=request.start_date,
             end_date=request.end_date,
             inspector_person_id=request.inspector_person_id or item.inspector_person_id,
-            first_status=ConstructionInspectionStatus.PENDING,
-            second_status=ConstructionInspectionStatus.PENDING,
+            status=ConstructionInspectionStatus.PENDING,
+            rounds_count=0,
         )
         self._validate_item_period(start_date=inspection.start_date, end_date=inspection.end_date)
         await self.repository.add(inspection)
@@ -1500,51 +1541,181 @@ class ConstructionProjectService:
         inspection_id: UUID,
         request: ConstructionMeasurementInspectionVerifyRequest,
         actor_user_id: UUID | None = None,
+        actor_person_id: UUID | None = None,
+        actor_can_waive: bool = False,
     ) -> ConstructionMeasurementItemInspection:
+        """Records one verification round: the first one or a reinspection.
+
+        The round number comes from the server, never from the client: with N
+        rounds the caller has no way of knowing it, and letting it choose is the
+        race that the advisory lock exists to close.
+        """
         inspection = await self._get_inspection(company_id=company_id, inspection_id=inspection_id)
         item = await self.get_measurement_item(company_id=company_id, item_id=inspection.measurement_item_id)
         measurement = await self.get_measurement(company_id=company_id, measurement_id=item.measurement_id)
         if measurement.status == ConstructionMeasurementStatus.APPROVED:
             raise ConstructionInvalidValueError(
-                message="Approved measurements cannot have inspections verified.",
+                message="Medição aprovada não aceita novas verificações.",
                 error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
             )
 
-        if request.check_number == 2 and inspection.first_status == ConstructionInspectionStatus.PENDING:
+        if request.status == ConstructionInspectionStatus.WAIVED and not actor_can_waive:
             raise ConstructionInvalidValueError(
-                message="First verification must be recorded before the second one.",
-                error_code="CONSTRUCTION_INSPECTION_FIRST_CHECK_REQUIRED",
+                message="Dispensar a reinspeção exige permissão de exclusão em Medições.",
+                error_code="CONSTRUCTION_INSPECTION_WAIVE_NOT_ALLOWED",
             )
 
+        # Em rascunho, reverificar e' correcao de clique errado e as duas rodadas
+        # ficam no historico. Depois de enviada, nao: reabrir uma linha aprovada
+        # numa medicao em aprovacao e' materia de ocorrencia.
         if (
-            request.check_number == 2
-            and actor_user_id is not None
-            and inspection.first_status_by_user_id == actor_user_id
+            inspection.status == ConstructionInspectionStatus.COMPLIANT
+            and measurement.status != ConstructionMeasurementStatus.DRAFT
         ):
             raise ConstructionInvalidValueError(
-                message="Second verification must be recorded by a different user.",
-                error_code="CONSTRUCTION_INSPECTION_SAME_VERIFIER",
+                message=(
+                    "Esta linha da FVS já foi aprovada e a medição já foi enviada. "
+                    "Registre uma ocorrência para reabri-la."
+                ),
+                error_code="CONSTRUCTION_INSPECTION_ALREADY_APPROVED",
+            )
+
+        comment = (request.comment or "").strip()
+        needs_comment = request.status != ConstructionInspectionStatus.COMPLIANT or inspection.requires_comment
+        if needs_comment and not comment:
+            raise ConstructionInvalidValueError(
+                message="Descreva o que foi encontrado: esta verificação exige comentário.",
+                error_code="CONSTRUCTION_INSPECTION_COMMENT_REQUIRED",
+            )
+
+        sequence_number = await self.repository.get_next_inspection_round_sequence(
+            company_id=company_id,
+            inspection_id=inspection.id,
+        )
+        inspector_person_id = (
+            request.inspector_person_id or inspection.inspector_person_id or item.inspector_person_id
+        )
+        inspector_name = await self._resolve_actor_name(
+            company_id=company_id,
+            actor_user_id=actor_user_id,
+            actor_person_id=inspector_person_id,
+        )
+        # Quem inspecionou e quem lancou costumam ser a mesma pessoa; resolver o
+        # nome duas vezes seria uma ida ao ERP a mais por rodada.
+        if actor_person_id == inspector_person_id:
+            recorded_by_name = inspector_name
+        else:
+            recorded_by_name = await self._resolve_actor_name(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                actor_person_id=actor_person_id,
             )
 
         verified_at = datetime.now(tz=UTC)
-        if request.check_number == 1:
-            inspection.first_status = request.status
-            inspection.first_status_at = verified_at
-            inspection.first_status_by_user_id = actor_user_id
-        else:
-            inspection.second_status = request.status
-            inspection.second_status_at = verified_at
-            inspection.second_status_by_user_id = actor_user_id
+        await self.repository.add(
+            ConstructionInspectionRound(
+                company_id=company_id,
+                inspection_id=inspection.id,
+                measurement_item_id=item.id,
+                sequence_number=sequence_number,
+                status=request.status,
+                verified_at=verified_at,
+                inspected_on=request.inspected_on,
+                inspector_person_id=inspector_person_id,
+                inspector_name=inspector_name,
+                recorded_by_user_id=actor_user_id,
+                recorded_by_name=recorded_by_name,
+                comment=comment or None,
+                source=ConstructionInspectionRoundSource.MANUAL,
+            )
+        )
+        inspection.status = request.status
+        inspection.rounds_count = (inspection.rounds_count or 0) + 1
+        inspection.last_verified_at = verified_at
+
+        if request.open_occurrence and request.status == ConstructionInspectionStatus.NON_COMPLIANT:
+            await self._open_occurrence_for_failed_round(
+                company_id=company_id,
+                item=item,
+                inspection=inspection,
+                problem=comment,
+                inspector_person_id=inspector_person_id,
+                actor_user_id=actor_user_id,
+                opened_on=request.inspected_on,
+            )
 
         item.inspection_status = await self._resolve_item_inspection_status(item=item)
         await self.repository.commit()
-        await self.repository.refresh(inspection)
-        return inspection
+        # Rele em vez de refresh: refresh atualiza colunas, mas a colecao de
+        # rodadas ja carregada nao seria sobrescrita (expire_on_commit=False).
+        return await self._get_inspection(company_id=company_id, inspection_id=inspection_id)
+
+    async def _open_occurrence_for_failed_round(
+        self,
+        *,
+        company_id: UUID,
+        item: ConstructionMeasurementItem,
+        inspection: ConstructionMeasurementItemInspection,
+        problem: str,
+        inspector_person_id: UUID | None,
+        actor_user_id: UUID | None,
+        opened_on: date | None,
+    ) -> None:
+        """Atalho opcional: abre a ocorrencia junto com a reprovacao.
+
+        Idempotente por inspecao: uma linha reprovada tres vezes nao vira tres
+        ocorrencias abertas. Fechar continua sendo gesto humano -- uma rodada
+        aprovada depois NAO resolve a ocorrencia, porque resolver exige uma
+        solucao escrita que so uma pessoa tem.
+        """
+        already_open = any(
+            occurrence.inspection_id == inspection.id
+            and occurrence.status == ConstructionOccurrenceStatus.OPEN
+            for occurrence in (item.occurrences or [])
+        )
+        if already_open:
+            return
+
+        sequence_number = await self.repository.get_next_occurrence_sequence(
+            company_id=company_id,
+            measurement_item_id=item.id,
+        )
+        await self.repository.add(
+            ConstructionMeasurementItemOccurrence(
+                company_id=company_id,
+                measurement_item_id=item.id,
+                inspection_id=inspection.id,
+                sequence_number=sequence_number,
+                problem=problem or f"Reprovado na verificação: {inspection.description}",
+                status=ConstructionOccurrenceStatus.OPEN,
+                opened_at=opened_on or datetime.now(tz=UTC).date(),
+                inspector_person_id=inspector_person_id,
+                registered_by_user_id=actor_user_id,
+            )
+        )
+
+    async def list_inspection_rounds(
+        self,
+        *,
+        company_id: UUID,
+        inspection_id: UUID,
+    ) -> list[ConstructionInspectionRound]:
+        await self._get_inspection(company_id=company_id, inspection_id=inspection_id)
+        return await self.repository.list_inspection_rounds(
+            company_id=company_id,
+            inspection_id=inspection_id,
+        )
 
     async def delete_measurement_item_inspection(self, *, company_id: UUID, inspection_id: UUID) -> None:
         inspection = await self._get_inspection(company_id=company_id, inspection_id=inspection_id)
         item = await self.get_measurement_item(company_id=company_id, item_id=inspection.measurement_item_id)
         await self._get_editable_measurement(company_id=company_id, measurement_id=item.measurement_id)
+        if inspection.rounds_count:
+            raise ConstructionResourceInUseError(
+                message="Esta linha da FVS já foi verificada e não pode ser excluída.",
+                error_code="CONSTRUCTION_INSPECTION_HAS_HISTORY",
+            )
+
         await self.repository.delete(inspection)
         await self.repository.commit()
 
@@ -1603,7 +1774,7 @@ class ConstructionProjectService:
             solution = updates.get("solution", occurrence.solution)
             if not solution:
                 raise ConstructionInvalidValueError(
-                    message="Occurrence solution is required to resolve it.",
+                    message="Descreva a solução para resolver a ocorrência.",
                     error_code="CONSTRUCTION_OCCURRENCE_SOLUTION_REQUIRED",
                 )
 
@@ -1625,9 +1796,11 @@ class ConstructionProjectService:
 
     async def build_measurement_items_summary(self, *, company_id: UUID, measurement_id: UUID) -> dict[str, Any]:
         items = await self.repository.list_measurement_items(company_id=company_id, measurement_id=measurement_id)
-        pending_inspections = await self.repository.count_pending_measurement_inspections(
-            company_id=company_id,
-            measurement_id=measurement_id,
+        pending_inspections, non_compliant_inspections = (
+            await self.repository.summarize_measurement_inspection_blockers(
+                company_id=company_id,
+                measurement_id=measurement_id,
+            )
         )
         open_occurrences = await self.repository.count_open_measurement_occurrences(
             company_id=company_id,
@@ -1637,6 +1810,7 @@ class ConstructionProjectService:
             "items_total_amount": sum((item.amount for item in items), Decimal("0")),
             "items_count": len(items),
             "pending_inspections_count": pending_inspections,
+            "non_compliant_inspections_count": non_compliant_inspections,
             "open_occurrences_count": open_occurrences,
         }
 
@@ -1646,11 +1820,13 @@ class ConstructionProjectService:
         company_id: UUID,
         only_active: bool = True,
         search: str | None = None,
+        only_deleted: bool = False,
     ) -> list[ConstructionServiceTemplate]:
         return await self.repository.list_service_templates(
             company_id=company_id,
             only_active=only_active,
             search=search,
+            only_deleted=only_deleted,
         )
 
     async def get_service_template(
@@ -1658,15 +1834,130 @@ class ConstructionProjectService:
         *,
         company_id: UUID,
         service_template_id: UUID,
+        include_deleted: bool = False,
     ) -> ConstructionServiceTemplate:
         service_template = await self.repository.get_service_template(
             company_id=company_id,
             service_template_id=service_template_id,
+            include_deleted=include_deleted,
         )
         if service_template is None:
-            raise ConstructionNotFoundError(resource_name="Construction service template")
+            raise ConstructionNotFoundError(resource_name="o serviço do catálogo")
 
         return service_template
+
+    async def list_service_template_audits(
+        self,
+        *,
+        company_id: UUID,
+        service_template_id: UUID,
+    ) -> list[ConstructionServiceTemplateAudit]:
+        """Historico do servico, do mais recente para o mais antigo.
+
+        Le o servico com ``include_deleted`` porque o historico de um servico
+        excluido e justamente o que responde quem o excluiu.
+        """
+        await self.get_service_template(
+            company_id=company_id,
+            service_template_id=service_template_id,
+            include_deleted=True,
+        )
+        return await self.repository.list_service_template_audits(
+            company_id=company_id,
+            service_template_id=service_template_id,
+        )
+
+    @staticmethod
+    def _build_service_template_snapshot(
+        service_template: ConstructionServiceTemplate,
+    ) -> dict[str, Any]:
+        """Estrutura completa do servico no momento do evento.
+
+        Guardada inteira, e nao como diferenca: e o snapshot que permite dizer
+        anos depois como a ficha estava quando a medicao foi feita, sem ter de
+        reconstruir a cadeia toda de alteracoes.
+        """
+        return {
+            "name": service_template.name,
+            "product_id": str(service_template.product_id) if service_template.product_id else None,
+            "source_file_name": service_template.source_file_name,
+            "is_active": bool(service_template.is_active),
+            "sections": [
+                {
+                    "sequence_number": section.sequence_number,
+                    "name": section.name,
+                    "items": [
+                        {
+                            "sequence_number": item.sequence_number,
+                            "description": item.description,
+                            "verification_method": item.verification_method,
+                            "requires_comment": bool(item.requires_comment),
+                            "requires_photo": bool(item.requires_photo),
+                        }
+                        for item in section.items
+                    ],
+                }
+                for section in service_template.sections
+            ],
+        }
+
+    async def _resolve_actor_name(
+        self,
+        *,
+        company_id: UUID,
+        actor_user_id: UUID | None,
+        actor_person_id: UUID | None,
+    ) -> str | None:
+        if actor_person_id is None or self.erp_client is None:
+            return None
+
+        return await self.erp_client.get_person_name(
+            company_id=company_id,
+            user_id=actor_user_id,
+            person_id=actor_person_id,
+        )
+
+    async def _record_service_template_audit(
+        self,
+        *,
+        company_id: UUID,
+        service_template: ConstructionServiceTemplate,
+        event: str,
+        summary: str | None = None,
+        source: str = "manual",
+        actor_user_id: UUID | None = None,
+        actor_person_id: UUID | None = None,
+    ) -> None:
+        """Acrescenta uma linha ao historico do servico. Nao commita.
+
+        Fica na mesma transacao da alteracao de proposito: se a gravacao voltar
+        atras, o historico nao pode ficar afirmando que ela aconteceu.
+        """
+        actor_name = await self._resolve_actor_name(
+            company_id=company_id,
+            actor_user_id=actor_user_id,
+            actor_person_id=actor_person_id,
+        )
+        sequence_number = await self.repository.get_next_service_template_audit_sequence(
+            company_id=company_id,
+            service_template_id=service_template.id,
+        )
+        await self.repository.add(
+            ConstructionServiceTemplateAudit(
+                company_id=company_id,
+                service_template_id=service_template.id,
+                service_template_name=service_template.name,
+                sequence_number=sequence_number,
+                event=event,
+                source=source,
+                actor_user_id=actor_user_id,
+                actor_person_id=actor_person_id,
+                actor_name=actor_name,
+                summary=summary,
+                snapshot=self._build_service_template_snapshot(service_template),
+                created_at=datetime.now(UTC),
+            )
+        )
 
     async def update_service_template(
         self,
@@ -1674,12 +1965,17 @@ class ConstructionProjectService:
         company_id: UUID,
         service_template_id: UUID,
         request: ConstructionServiceTemplateUpdate,
+        actor_user_id: UUID | None = None,
+        actor_person_id: UUID | None = None,
     ) -> ConstructionServiceTemplate:
         service_template = await self.get_service_template(
             company_id=company_id,
             service_template_id=service_template_id,
         )
         updates = request.model_dump(exclude_unset=True)
+        previous_name = service_template.name
+        previous_is_active = bool(service_template.is_active)
+
         if "name" in updates and updates["name"]:
             next_name = updates["name"].strip().upper()
             if next_name != service_template.name:
@@ -1689,18 +1985,310 @@ class ConstructionProjectService:
                 )
                 if duplicated is not None:
                     raise ConstructionDuplicateCodeError(
-                        resource_name="Construction service template",
+                        resource_name="o serviço do catálogo",
                         code=next_name,
                     )
 
             updates["name"] = next_name
 
         self._apply_updates(entity=service_template, updates=updates)
+        service_template.updated_by_user_id = actor_user_id
+
+        # Activating and deactivating get their own event: taking a service out
+        # of circulation is how the catalog is really curated, and reading
+        # "changed" in the trail would not answer who deactivated it.
+        next_is_active = bool(service_template.is_active)
+        if next_is_active != previous_is_active:
+            event = "activated" if next_is_active else "deactivated"
+            summary = "Serviço reativado." if next_is_active else "Serviço desativado."
+        else:
+            event = "updated"
+            summary = (
+                f"Nome alterado de '{previous_name}' para '{service_template.name}'."
+                if service_template.name != previous_name
+                else "Cabeçalho do serviço alterado."
+            )
+
+        await self._record_service_template_audit(
+            company_id=company_id,
+            service_template=service_template,
+            event=event,
+            summary=summary,
+            actor_user_id=actor_user_id,
+            actor_person_id=actor_person_id,
+        )
         await self.repository.commit()
         return await self.get_service_template(
             company_id=company_id,
             service_template_id=service_template.id,
         )
+
+    @staticmethod
+    def _normalize_section_inputs(
+        sections: list[ConstructionServiceTemplateSectionInput],
+    ) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        seen_section_names: set[str] = set()
+
+        for section_position, section in enumerate(sections, start=1):
+            section_name = " ".join(section.name.split()).strip().upper()
+            if not section_name:
+                raise ConstructionInvalidValueError(
+                    message="Informe o nome da seção.",
+                    error_code="CONSTRUCTION_TEMPLATE_SECTION_NAME_REQUIRED",
+                )
+
+            if section_name in seen_section_names:
+                raise ConstructionInvalidValueError(
+                    message=f"A seção '{section_name}' aparece mais de uma vez neste serviço.",
+                    error_code="CONSTRUCTION_TEMPLATE_DUPLICATE_SECTION",
+                )
+
+            seen_section_names.add(section_name)
+            seen_descriptions: set[str] = set()
+            items: list[dict[str, Any]] = []
+
+            for item_position, item in enumerate(section.items, start=1):
+                description = " ".join(item.description.split()).strip().upper()
+                verification_method = " ".join(item.verification_method.split()).strip().upper()
+                if not description or not verification_method:
+                    raise ConstructionInvalidValueError(
+                        message="Todo item de inspeção precisa de descrição e método de verificação.",
+                        error_code="CONSTRUCTION_TEMPLATE_ITEM_INCOMPLETE",
+                    )
+
+                if description in seen_descriptions:
+                    raise ConstructionInvalidValueError(
+                        message=f"O item '{description}' aparece mais de uma vez na seção '{section_name}'.",
+                        error_code="CONSTRUCTION_TEMPLATE_DUPLICATE_ITEM",
+                    )
+
+                seen_descriptions.add(description)
+                items.append(
+                    {
+                        "sequence_number": item.sequence_number or item_position,
+                        "description": description,
+                        "verification_method": verification_method,
+                        "requires_comment": item.requires_comment,
+                        "requires_photo": item.requires_photo,
+                    }
+                )
+
+            normalized.append(
+                {
+                    "sequence_number": section.sequence_number or section_position,
+                    "name": section_name,
+                    "items": items,
+                }
+            )
+
+        return normalized
+
+    @staticmethod
+    def _build_sections(
+        *,
+        company_id: UUID,
+        service_template_id: UUID,
+        normalized_sections: list[dict[str, Any]],
+    ) -> list[ConstructionServiceTemplateSection]:
+        sections: list[ConstructionServiceTemplateSection] = []
+        for normalized in normalized_sections:
+            section = ConstructionServiceTemplateSection(
+                company_id=company_id,
+                service_template_id=service_template_id,
+                sequence_number=normalized["sequence_number"],
+                name=normalized["name"],
+            )
+            section.items = [
+                ConstructionServiceTemplateItem(
+                    company_id=company_id,
+                    service_template_id=service_template_id,
+                    sequence_number=item["sequence_number"],
+                    description=item["description"],
+                    verification_method=item["verification_method"],
+                    requires_comment=item["requires_comment"],
+                    requires_photo=item["requires_photo"],
+                )
+                for item in normalized["items"]
+            ]
+            sections.append(section)
+
+        return sections
+
+    async def create_service_template(
+        self,
+        *,
+        company_id: UUID,
+        request: ConstructionServiceTemplateCreate,
+        actor_user_id: UUID | None = None,
+        actor_person_id: UUID | None = None,
+    ) -> ConstructionServiceTemplate:
+        name = " ".join(request.name.split()).strip().upper()
+        duplicated = await self.repository.get_service_template_by_name(company_id=company_id, name=name)
+        if duplicated is not None:
+            raise ConstructionDuplicateCodeError(resource_name="o serviço do catálogo", code=name)
+
+        normalized_sections = self._normalize_section_inputs(request.sections)
+
+        service_template = ConstructionServiceTemplate(
+            company_id=company_id,
+            name=name,
+            product_id=request.product_id,
+            is_active=request.is_active,
+            created_by_user_id=actor_user_id,
+            updated_by_user_id=actor_user_id,
+        )
+        await self.repository.add(service_template)
+        await self.repository.commit()
+        await self.repository.refresh(service_template)
+
+        for section in self._build_sections(
+            company_id=company_id,
+            service_template_id=service_template.id,
+            normalized_sections=normalized_sections,
+        ):
+            await self.repository.add(section)
+
+        await self.repository.commit()
+        created = await self.get_service_template(
+            company_id=company_id,
+            service_template_id=service_template.id,
+        )
+        # Recorded after the sections are committed so the snapshot carries the
+        # real structure instead of an empty header.
+        await self._record_service_template_audit(
+            company_id=company_id,
+            service_template=created,
+            event="created",
+            summary=self._describe_service_template_structure(created),
+            actor_user_id=actor_user_id,
+            actor_person_id=actor_person_id,
+        )
+        await self.repository.commit()
+        return created
+
+    @staticmethod
+    def _describe_service_template_structure(service_template: ConstructionServiceTemplate) -> str:
+        sections_count = len(service_template.sections)
+        items_count = sum(len(section.items) for section in service_template.sections)
+        sections_label = "seção" if sections_count == 1 else "seções"
+        items_label = "item" if items_count == 1 else "itens"
+        return f"{sections_count} {sections_label}, {items_count} {items_label}."
+
+    async def replace_service_template(
+        self,
+        *,
+        company_id: UUID,
+        service_template_id: UUID,
+        request: ConstructionServiceTemplateReplace,
+        actor_user_id: UUID | None = None,
+        actor_person_id: UUID | None = None,
+    ) -> ConstructionServiceTemplate:
+        """Replaces the header and the whole structure of the service.
+
+        Allowed even when a measurement already uses it: measurement inspection
+        items are a copy, not a reference, so revising the sheet never rewrites
+        what was already checked on site.
+        """
+        service_template = await self.get_service_template(
+            company_id=company_id,
+            service_template_id=service_template_id,
+        )
+
+        name = " ".join(request.name.split()).strip().upper()
+        if name != service_template.name:
+            duplicated = await self.repository.get_service_template_by_name(company_id=company_id, name=name)
+            if duplicated is not None:
+                raise ConstructionDuplicateCodeError(resource_name="o serviço do catálogo", code=name)
+
+        normalized_sections = self._normalize_section_inputs(request.sections)
+
+        self._apply_updates(
+            entity=service_template,
+            updates={
+                "name": name,
+                "product_id": request.product_id,
+                "is_active": request.is_active,
+            },
+        )
+        service_template.updated_by_user_id = actor_user_id
+        await self.repository.replace_service_template_sections(
+            company_id=company_id,
+            service_template_id=service_template.id,
+            sections=self._build_sections(
+                company_id=company_id,
+                service_template_id=service_template.id,
+                normalized_sections=normalized_sections,
+            ),
+        )
+        await self.repository.commit()
+        replaced = await self.get_service_template(
+            company_id=company_id,
+            service_template_id=service_template.id,
+        )
+        await self._record_service_template_audit(
+            company_id=company_id,
+            service_template=replaced,
+            event="replaced",
+            summary=self._describe_service_template_structure(replaced),
+            actor_user_id=actor_user_id,
+            actor_person_id=actor_person_id,
+        )
+        await self.repository.commit()
+        return replaced
+
+    async def delete_service_template(
+        self,
+        *,
+        company_id: UUID,
+        service_template_id: UUID,
+        actor_user_id: UUID | None = None,
+        actor_person_id: UUID | None = None,
+    ) -> None:
+        """Takes the service out of the catalog, unless a measurement used it.
+
+        The delete is SOFT: the row stays with deleted_at filled in and stops
+        answering every query. A physical delete would take the audit trail with
+        it -- both this service's own history and, through the measurement FK
+        with ondelete SET NULL, the link back to the sheet that originated the
+        inspection, which is precisely what the FVS exists to prove.
+
+        A service already used in a measurement is still refused. That is now a
+        catalog rule, not a data-integrity one: what the operation depends on is
+        taken out of circulation by deactivating it, which keeps it readable in
+        the measurements that reference it.
+        """
+        service_template = await self.get_service_template(
+            company_id=company_id,
+            service_template_id=service_template_id,
+        )
+        usage_count = await self.repository.count_measurement_items_by_service_template(
+            company_id=company_id,
+            service_template_id=service_template_id,
+        )
+        if usage_count:
+            raise ConstructionResourceInUseError(
+                message=(
+                    f"Este serviço já foi usado em {usage_count} item(ns) de medição. "
+                    "Desative o serviço em vez de excluir."
+                ),
+                error_code="CONSTRUCTION_TEMPLATE_IN_USE",
+            )
+
+        # Recorded BEFORE the flag is set, so the snapshot holds the sheet as it
+        # was when it left the catalog.
+        await self._record_service_template_audit(
+            company_id=company_id,
+            service_template=service_template,
+            event="deleted",
+            summary="Serviço excluído do catálogo.",
+            actor_user_id=actor_user_id,
+            actor_person_id=actor_person_id,
+        )
+        service_template.deleted_at = datetime.now(UTC)
+        service_template.deleted_by_user_id = actor_user_id
+        service_template.updated_by_user_id = actor_user_id
+        await self.repository.commit()
 
     async def list_documentation_types(
         self,
@@ -1781,7 +2369,7 @@ class ConstructionProjectService:
             documentation_type_id=documentation_type_id,
         )
         if documentation_type is None:
-            raise ConstructionNotFoundError(resource_name="Construction documentation type")
+            raise ConstructionNotFoundError(resource_name="o tipo de documentação")
 
         # exclude_none porque o cliente manda `name: null` quando so alterna o
         # is_active, e `name` e `is_active` sao NOT NULL: sem isso o PATCH de
@@ -1797,7 +2385,7 @@ class ConstructionProjectService:
                 )
                 if duplicated is not None and duplicated.id != documentation_type.id:
                     raise ConstructionDuplicateCodeError(
-                        resource_name="Construction documentation type",
+                        resource_name="o tipo de documentação",
                         code=next_name,
                     )
 
@@ -1856,10 +2444,12 @@ class ConstructionProjectService:
         *,
         company_id: UUID,
         files: list[tuple[str, bytes]],
+        actor_user_id: UUID | None = None,
+        actor_person_id: UUID | None = None,
     ) -> list[dict[str, Any]]:
         if not files:
             raise ConstructionInvalidValueError(
-                message="No spreadsheet was sent for import.",
+                message="Nenhuma planilha foi enviada para importação.",
                 error_code="CONSTRUCTION_TEMPLATE_NO_FILE",
             )
 
@@ -1882,32 +2472,35 @@ class ConstructionProjectService:
                 name=parsed.name,
             )
             if existing_template is not None:
-                if existing_template.items:
+                if any(section.items for section in existing_template.sections):
                     results.append(
                         {
                             "file_name": file_name,
                             "status": "skipped",
                             "service_template_id": existing_template.id,
                             "service_name": existing_template.name,
-                            "items_count": len(existing_template.items),
-                            "message": "Service already has inspection items.",
+                            "items_count": sum(len(section.items) for section in existing_template.sections),
+                            "sections_count": len(existing_template.sections),
+                            "message": "O serviço já tem itens de inspeção.",
                         }
                     )
                     continue
 
                 existing_template.source_file_name = file_name
-                for parsed_item in parsed.items:
-                    await self.repository.add(
-                        ConstructionServiceTemplateItem(
-                            company_id=company_id,
-                            service_template_id=existing_template.id,
-                            sequence_number=parsed_item.sequence_number,
-                            description=parsed_item.description,
-                            verification_method=parsed_item.verification_method,
-                        )
-                    )
-
-                await self.repository.commit()
+                existing_template.updated_by_user_id = actor_user_id
+                await self._persist_parsed_sections(
+                    company_id=company_id,
+                    service_template_id=existing_template.id,
+                    parsed=parsed,
+                )
+                await self._record_import_audit(
+                    company_id=company_id,
+                    service_template_id=existing_template.id,
+                    event="replaced",
+                    file_name=file_name,
+                    actor_user_id=actor_user_id,
+                    actor_person_id=actor_person_id,
+                )
                 results.append(
                     {
                         "file_name": file_name,
@@ -1915,6 +2508,7 @@ class ConstructionProjectService:
                         "service_template_id": existing_template.id,
                         "service_name": existing_template.name,
                         "items_count": len(parsed.items),
+                        "sections_count": len(parsed.sections),
                     }
                 )
                 continue
@@ -1924,23 +2518,26 @@ class ConstructionProjectService:
                 name=parsed.name,
                 source_file_name=file_name,
                 is_active=True,
+                created_by_user_id=actor_user_id,
+                updated_by_user_id=actor_user_id,
             )
             await self.repository.add(service_template)
             await self.repository.commit()
             await self.repository.refresh(service_template)
 
-            for parsed_item in parsed.items:
-                await self.repository.add(
-                    ConstructionServiceTemplateItem(
-                        company_id=company_id,
-                        service_template_id=service_template.id,
-                        sequence_number=parsed_item.sequence_number,
-                        description=parsed_item.description,
-                        verification_method=parsed_item.verification_method,
-                    )
-                )
-
-            await self.repository.commit()
+            await self._persist_parsed_sections(
+                company_id=company_id,
+                service_template_id=service_template.id,
+                parsed=parsed,
+            )
+            await self._record_import_audit(
+                company_id=company_id,
+                service_template_id=service_template.id,
+                event="created",
+                file_name=file_name,
+                actor_user_id=actor_user_id,
+                actor_person_id=actor_person_id,
+            )
             results.append(
                 {
                     "file_name": file_name,
@@ -1948,25 +2545,124 @@ class ConstructionProjectService:
                     "service_template_id": service_template.id,
                     "service_name": service_template.name,
                     "items_count": len(parsed.items),
+                    "sections_count": len(parsed.sections),
                 }
             )
 
         return results
 
-    async def _assert_every_inspection_is_verified(self, *, item: ConstructionMeasurementItem) -> None:
+    async def _record_import_audit(
+        self,
+        *,
+        company_id: UUID,
+        service_template_id: UUID,
+        event: str,
+        file_name: str,
+        actor_user_id: UUID | None,
+        actor_person_id: UUID | None,
+    ) -> None:
+        """Registra no historico o servico que acabou de vir de uma planilha.
+
+        Rele o servico antes de gravar porque o snapshot tem de sair com as
+        secoes recem-inseridas -- a instancia que o import tem em maos ainda
+        carrega a estrutura anterior.
+        """
+        imported = await self.get_service_template(
+            company_id=company_id,
+            service_template_id=service_template_id,
+        )
+        await self._record_service_template_audit(
+            company_id=company_id,
+            service_template=imported,
+            event=event,
+            source="import",
+            summary=f"Importado de '{file_name}'. {self._describe_service_template_structure(imported)}",
+            actor_user_id=actor_user_id,
+            actor_person_id=actor_person_id,
+        )
+        await self.repository.commit()
+
+    async def _persist_parsed_sections(
+        self,
+        *,
+        company_id: UUID,
+        service_template_id: UUID,
+        parsed: Any,
+    ) -> None:
+        for parsed_section in parsed.sections:
+            section = ConstructionServiceTemplateSection(
+                company_id=company_id,
+                service_template_id=service_template_id,
+                sequence_number=parsed_section.sequence_number,
+                name=parsed_section.name,
+            )
+            section.items = [
+                ConstructionServiceTemplateItem(
+                    company_id=company_id,
+                    service_template_id=service_template_id,
+                    sequence_number=parsed_item.sequence_number,
+                    description=parsed_item.description,
+                    verification_method=parsed_item.verification_method,
+                    requires_comment=False,
+                    requires_photo=False,
+                )
+                for parsed_item in parsed_section.items
+            ]
+            await self.repository.add(section)
+
+        await self.repository.commit()
+
+    async def _assert_every_inspection_is_approved(self, *, item: ConstructionMeasurementItem) -> None:
+        """Toda linha da FVS precisa estar aprovada (ou dispensada) para fechar.
+
+        O erro acionavel vem primeiro: quem tem linha reprovada precisa saber que
+        falta a REINSPECAO, nao que "falta verificar".
+        """
         inspections = await self.repository.list_measurement_item_inspections(
             company_id=item.company_id,
             measurement_item_id=item.id,
         )
-        pending = [
-            inspection
-            for inspection in inspections
-            if ConstructionInspectionStatus.PENDING in {inspection.first_status, inspection.second_status}
-        ]
+        if any(
+            inspection.status == ConstructionInspectionStatus.NON_COMPLIANT for inspection in inspections
+        ):
+            raise ConstructionInvalidValueError(
+                message=REINSPECTION_REQUIRED_MESSAGE,
+                error_code="CONSTRUCTION_INSPECTION_REINSPECTION_REQUIRED",
+            )
+
+        if any(inspection.status == ConstructionInspectionStatus.PENDING for inspection in inspections):
+            raise ConstructionInvalidValueError(
+                message=INSPECTIONS_PENDING_MESSAGE,
+                error_code="CONSTRUCTION_MEASUREMENT_ITEM_END_DATE_BLOCKED",
+            )
+
+    async def _assert_measurement_inspections_are_approved(
+        self,
+        *,
+        company_id: UUID,
+        measurement_id: UUID,
+        action_label: str,
+    ) -> None:
+        pending, non_compliant = await self.repository.summarize_measurement_inspection_blockers(
+            company_id=company_id,
+            measurement_id=measurement_id,
+        )
+        if non_compliant:
+            raise ConstructionInvalidValueError(
+                message=(
+                    f"A medição tem {non_compliant} item(ns) reprovado(s) na FVS. "
+                    f"Registre a reinspeção aprovada antes de {action_label}."
+                ),
+                error_code="CONSTRUCTION_MEASUREMENT_REINSPECTION_REQUIRED",
+            )
+
         if pending:
             raise ConstructionInvalidValueError(
-                message="End date can only be set after every inspection item is verified.",
-                error_code="CONSTRUCTION_MEASUREMENT_ITEM_END_DATE_BLOCKED",
+                message=(
+                    f"A medição tem {pending} item(ns) de FVS ainda não verificado(s). "
+                    f"Conclua a verificação antes de {action_label}."
+                ),
+                error_code="CONSTRUCTION_MEASUREMENT_INSPECTIONS_PENDING",
             )
 
     @staticmethod
@@ -2057,7 +2753,7 @@ class ConstructionProjectService:
                     documentation_type_id=item.documentation_type_id,
                 )
                 if documentation_type is None:
-                    raise ConstructionNotFoundError(resource_name="Construction documentation type")
+                    raise ConstructionNotFoundError(resource_name="o tipo de documentação")
             else:
                 documentation_type = await self._get_or_create_documentation_type(
                     company_id=unit.company_id,
@@ -2727,7 +3423,7 @@ class ConstructionProjectService:
             commission_id=commission_id,
         )
         if commission is None:
-            raise ConstructionNotFoundError(resource_name="Construction unit commission")
+            raise ConstructionNotFoundError(resource_name="o sinal da unidade")
 
         return commission
 
@@ -2876,13 +3572,13 @@ class ConstructionProjectService:
         today = datetime.now(tz=UTC).date()
         if start_date is not None and start_date > today:
             raise ConstructionInvalidValueError(
-                message="Start date cannot be in the future.",
+                message="A data de início não pode ser futura.",
                 error_code="CONSTRUCTION_INVALID_PERIOD",
             )
 
         if end_date is not None and end_date > today:
             raise ConstructionInvalidValueError(
-                message="End date cannot be in the future.",
+                message="A data de fim não pode ser futura.",
                 error_code="CONSTRUCTION_INVALID_PERIOD",
             )
 
@@ -2895,7 +3591,7 @@ class ConstructionProjectService:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
         if measurement.status == ConstructionMeasurementStatus.APPROVED:
             raise ConstructionInvalidValueError(
-                message="Approved measurements cannot be edited.",
+                message="Medição aprovada não pode ser alterada.",
                 error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
             )
 
@@ -2912,7 +3608,7 @@ class ConstructionProjectService:
             inspection_id=inspection_id,
         )
         if not inspection:
-            raise ConstructionNotFoundError(resource_name="Construction measurement inspection")
+            raise ConstructionNotFoundError(resource_name="o item de inspeção")
 
         return inspection
 
@@ -2927,7 +3623,7 @@ class ConstructionProjectService:
             occurrence_id=occurrence_id,
         )
         if not occurrence:
-            raise ConstructionNotFoundError(resource_name="Construction measurement occurrence")
+            raise ConstructionNotFoundError(resource_name="a ocorrência da medição")
 
         return occurrence
 
@@ -2943,7 +3639,7 @@ class ConstructionProjectService:
         net_amount = items_amount - retentions_amount
         if net_amount <= Decimal("0"):
             raise ConstructionInvalidValueError(
-                message="Measurement retentions cannot be greater than the sum of its items.",
+                message="As retenções da medição não podem passar da soma dos itens.",
                 error_code="CONSTRUCTION_MEASUREMENT_RETENTIONS_INVALID",
             )
 
@@ -2959,24 +3655,22 @@ class ConstructionProjectService:
         if not inspections:
             return ConstructionInspectionStatus.PENDING
 
-        statuses = [
-            status
-            for inspection in inspections
-            for status in (inspection.first_status, inspection.second_status)
-        ]
+        statuses = [inspection.status for inspection in inspections]
         if any(status == ConstructionInspectionStatus.NON_COMPLIANT for status in statuses):
             return ConstructionInspectionStatus.NON_COMPLIANT
 
-        if all(status == ConstructionInspectionStatus.COMPLIANT for status in statuses):
-            return ConstructionInspectionStatus.COMPLIANT
+        if any(status == ConstructionInspectionStatus.PENDING for status in statuses):
+            return ConstructionInspectionStatus.PENDING
 
-        return ConstructionInspectionStatus.PENDING
+        # Sobram `compliant` e `waived`: linha dispensada fecha o item sem
+        # apagar a reprovacao, que continua no historico de rodadas.
+        return ConstructionInspectionStatus.COMPLIANT
 
     @staticmethod
     def _validate_item_period(*, start_date, end_date) -> None:
         if start_date is not None and end_date is not None and end_date < start_date:
             raise ConstructionInvalidValueError(
-                message="End date cannot be earlier than start date.",
+                message="A data de fim não pode ser anterior à data de início.",
                 error_code="CONSTRUCTION_INVALID_PERIOD",
             )
 
@@ -2984,7 +3678,7 @@ class ConstructionProjectService:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
         if measurement.status == ConstructionMeasurementStatus.APPROVED:
             raise ConstructionInvalidValueError(
-                message="Approved measurements cannot be deleted.",
+                message="Medição aprovada não pode ser excluída.",
                 error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
             )
 
@@ -2994,7 +3688,7 @@ class ConstructionProjectService:
     async def apply_accounts_payable_updated_event(self, *, event: EventEnvelope) -> ConstructionMeasurement:
         if event.event_type not in {ErpEventType.ACCOUNTS_PAYABLE_CREATED, ErpEventType.ACCOUNTS_PAYABLE_UPDATED}:
             raise ConstructionInvalidValueError(
-                message="Unsupported ERP event type for measurement accounts payable sync.",
+                message="Tipo de evento do ERP não suportado para sincronizar o contas a pagar da medição.",
                 error_code="CONSTRUCTION_UNSUPPORTED_ERP_EVENT",
             )
 
@@ -3032,7 +3726,7 @@ class ConstructionProjectService:
             sequence_order=request.sequence_order,
         )
         if existing_phase:
-            raise ConstructionDuplicateCodeError(resource_name="Construction schedule phase", code=str(request.sequence_order))
+            raise ConstructionDuplicateCodeError(resource_name="a etapa do cronograma", code=str(request.sequence_order))
 
         phase = ConstructionSchedulePhase(
             company_id=company_id,
@@ -3080,7 +3774,7 @@ class ConstructionProjectService:
             )
             if existing_phase and existing_phase.id != phase.id:
                 raise ConstructionDuplicateCodeError(
-                    resource_name="Construction schedule phase",
+                    resource_name="a etapa do cronograma",
                     code=str(next_sequence_order),
                 )
 
@@ -3097,21 +3791,21 @@ class ConstructionProjectService:
     async def _get_block(self, *, company_id: UUID, block_id: UUID) -> ConstructionBlock:
         block = await self.repository.get_block(company_id=company_id, block_id=block_id)
         if not block:
-            raise ConstructionNotFoundError(resource_name="Construction block")
+            raise ConstructionNotFoundError(resource_name="o bloco")
 
         return block
 
     async def _get_unit(self, *, company_id: UUID, unit_id: UUID) -> ConstructionUnit:
         unit = await self.repository.get_unit(company_id=company_id, unit_id=unit_id)
         if not unit:
-            raise ConstructionNotFoundError(resource_name="Construction unit")
+            raise ConstructionNotFoundError(resource_name="a unidade")
 
         return unit
 
     async def _get_schedule_phase(self, *, company_id: UUID, phase_id: UUID) -> ConstructionSchedulePhase:
         phase = await self.repository.get_schedule_phase(company_id=company_id, phase_id=phase_id)
         if not phase:
-            raise ConstructionNotFoundError(resource_name="Construction schedule phase")
+            raise ConstructionNotFoundError(resource_name="a etapa do cronograma")
 
         return phase
 
@@ -3128,7 +3822,7 @@ class ConstructionProjectService:
         block = await self._get_block(company_id=company_id, block_id=block_id)
         if block.project_id != project_id:
             raise ConstructionInvalidValueError(
-                message="Block does not belong to the informed construction project.",
+                message="O bloco não pertence à obra informada.",
                 error_code="CONSTRUCTION_BLOCK_PROJECT_MISMATCH",
             )
 
@@ -3137,7 +3831,7 @@ class ConstructionProjectService:
         if value not in allowed_values:
             allowed_values_text = ", ".join(sorted(allowed_values))
             raise ConstructionInvalidValueError(
-                message=f"Invalid {field_name}. Allowed values: {allowed_values_text}.",
+                message=f"{field_name} inválido. Valores aceitos: {allowed_values_text}.",
                 error_code="CONSTRUCTION_INVALID_ENUM_VALUE",
             )
 
@@ -3265,7 +3959,7 @@ class ConstructionProjectService:
     def _apply_unit_cost_center_snapshot_from_event(*, unit: ConstructionUnit, event: EventEnvelope) -> None:
         if event.event_type != ErpEventType.COST_CENTER_CREATED:
             raise ConstructionInvalidValueError(
-                message="Unsupported ERP event type for unit cost center confirmation.",
+                message="Tipo de evento do ERP não suportado para confirmação do centro de custo da unidade.",
                 error_code="CONSTRUCTION_UNSUPPORTED_ERP_EVENT",
             )
 
@@ -3275,7 +3969,7 @@ class ConstructionProjectService:
         )
         if unit_id != unit.id:
             raise ConstructionInvalidValueError(
-                message="Cost center confirmation does not belong to the created construction unit.",
+                message="A confirmação de centro de custo não pertence à unidade criada.",
                 error_code="CONSTRUCTION_COST_CENTER_UNIT_MISMATCH",
             )
 
@@ -3338,7 +4032,7 @@ class ConstructionProjectService:
         for payment_source in request.payment_sources or []:
             if payment_source.source_type in ConstructionUnitPaymentSource.COMPUTED_SOURCES:
                 raise ConstructionInvalidValueError(
-                    message="The sale balance is calculated from the other sources and cannot be informed.",
+                    message="O saldo da venda é calculado a partir das outras origens e não pode ser informado.",
                     error_code="CONSTRUCTION_UNIT_BALANCE_IS_COMPUTED",
                 )
 
@@ -3372,7 +4066,7 @@ class ConstructionProjectService:
 
         if balance < Decimal("0"):
             raise ConstructionInvalidValueError(
-                message="Payment sources plus discount exceed the unit sale price plus documentation.",
+                message="As origens de pagamento mais o desconto passam do preço de venda da unidade mais a documentação.",
                 error_code="CONSTRUCTION_UNIT_PAYMENT_SOURCES_TOTAL_MISMATCH",
             )
 
@@ -3626,7 +4320,7 @@ class ConstructionProjectService:
         value = payload.get(field_name)
         if value is None:
             raise ConstructionInvalidValueError(
-                message=f"ERP event payload is missing {field_name}.",
+                message=f"O evento do ERP veio sem {field_name}.",
                 error_code="CONSTRUCTION_INVALID_ERP_EVENT_PAYLOAD",
             )
 
@@ -3634,7 +4328,7 @@ class ConstructionProjectService:
             return UUID(str(value))
         except ValueError as exc:
             raise ConstructionInvalidValueError(
-                message=f"ERP event payload has an invalid {field_name}.",
+                message=f"O evento do ERP veio com {field_name} inválido.",
                 error_code="CONSTRUCTION_INVALID_ERP_EVENT_PAYLOAD",
             ) from exc
 
@@ -3644,6 +4338,6 @@ class ConstructionProjectService:
             return
 
         raise ConstructionInvalidValueError(
-            message=f"Project already has a different {field_name}.",
+            message=f"A obra já tem outro {field_name}.",
             error_code="CONSTRUCTION_EXTERNAL_ID_CONFLICT",
         )

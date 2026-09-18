@@ -10,6 +10,7 @@ from app.core.security import require_permission
 from app.domain.exceptions import ConstructionDomainError
 from app.domain.permissions import ConstructionFeature, PermissionAction
 from app.domain.services import ConstructionProjectService
+from app.domain.services.construction_service_template_parser import build_service_template_example
 from app.infrastructure.clients import ErpConstructionClient
 from app.infrastructure.database.session import get_session
 from app.infrastructure.events import create_construction_integration_dispatcher
@@ -39,6 +40,8 @@ from app.schemas.construction import (
     ConstructionProcurementRequestResponse,
     ConstructionProcurementRequestUpdate,
     ConstructionMeasurementCreate,
+    ConstructionInspectionRoundListResponse,
+    ConstructionInspectionRoundResponse,
     ConstructionMeasurementInspectionVerifyRequest,
     ConstructionMeasurementItemCreate,
     ConstructionMeasurementItemInspectionCreate,
@@ -56,9 +59,13 @@ from app.schemas.construction import (
     ConstructionMeasurementUpdate,
     ConstructionSchedulePhaseCreate,
     ConstructionSchedulePhaseListResponse,
+    ConstructionServiceTemplateCreate,
     ConstructionServiceTemplateImportResponse,
     ConstructionServiceTemplateImportResult,
+    ConstructionServiceTemplateAuditListResponse,
+    ConstructionServiceTemplateAuditResponse,
     ConstructionServiceTemplateListResponse,
+    ConstructionServiceTemplateReplace,
     ConstructionServiceTemplateResponse,
     ConstructionServiceTemplateUpdate,
     ConstructionSchedulePhaseResponse,
@@ -869,19 +876,63 @@ async def list_service_templates(
     service: ConstructionProjectService = Depends(get_project_service),
     search: str | None = Query(default=None),
     only_active: bool = Query(default=True),
+    only_deleted: bool = Query(
+        default=False,
+        description="Lista os servicos excluidos, para consultar o historico de quem os removeu.",
+    ),
 ) -> ConstructionServiceTemplateListResponse:
     try:
         templates = await service.list_service_templates(
             company_id=ctx.company_id,
             only_active=only_active,
             search=search,
+            only_deleted=only_deleted,
         )
         return ConstructionServiceTemplateListResponse(
-            items=[ConstructionServiceTemplateResponse.model_validate(template) for template in templates],
+            items=[ConstructionServiceTemplateResponse.from_model(template) for template in templates],
             total=len(templates),
         )
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
+
+
+@router.post(
+    "/service-templates",
+    response_model=ConstructionServiceTemplateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_service_template(
+    request_data: ConstructionServiceTemplateCreate,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.CREATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionServiceTemplateResponse:
+    try:
+        template = await service.create_service_template(
+            company_id=ctx.company_id,
+            request=request_data,
+            actor_user_id=ctx.user_id,
+            actor_person_id=ctx.person_id,
+        )
+        return ConstructionServiceTemplateResponse.from_model(template)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/service-templates/example")
+async def download_service_template_example(
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
+) -> Response:
+    """Serves the blank FVS spreadsheet used as a starting point for imports.
+
+    Declared before GET /service-templates/{id} on purpose: FastAPI matches in
+    declaration order, and the other way around "example" would be parsed as a
+    UUID and rejected with 422.
+    """
+    return Response(
+        content=build_service_template_example(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="modelo-fvs.xlsx"'},
+    )
 
 
 @router.get("/service-templates/{service_template_id}", response_model=ConstructionServiceTemplateResponse)
@@ -895,7 +946,27 @@ async def get_service_template(
             company_id=ctx.company_id,
             service_template_id=service_template_id,
         )
-        return ConstructionServiceTemplateResponse.model_validate(template)
+        return ConstructionServiceTemplateResponse.from_model(template)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.put("/service-templates/{service_template_id}", response_model=ConstructionServiceTemplateResponse)
+async def replace_service_template(
+    service_template_id: UUID,
+    request_data: ConstructionServiceTemplateReplace,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionServiceTemplateResponse:
+    try:
+        template = await service.replace_service_template(
+            company_id=ctx.company_id,
+            service_template_id=service_template_id,
+            request=request_data,
+            actor_user_id=ctx.user_id,
+            actor_person_id=ctx.person_id,
+        )
+        return ConstructionServiceTemplateResponse.from_model(template)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 
@@ -912,8 +983,50 @@ async def update_service_template(
             company_id=ctx.company_id,
             service_template_id=service_template_id,
             request=request_data,
+            actor_user_id=ctx.user_id,
+            actor_person_id=ctx.person_id,
         )
-        return ConstructionServiceTemplateResponse.model_validate(template)
+        return ConstructionServiceTemplateResponse.from_model(template)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.delete("/service-templates/{service_template_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_service_template(
+    service_template_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.DELETE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> None:
+    try:
+        await service.delete_service_template(
+            company_id=ctx.company_id,
+            service_template_id=service_template_id,
+            actor_user_id=ctx.user_id,
+            actor_person_id=ctx.person_id,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get(
+    "/service-templates/{service_template_id}/audits",
+    response_model=ConstructionServiceTemplateAuditListResponse,
+)
+async def list_service_template_audits(
+    service_template_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionServiceTemplateAuditListResponse:
+    """Historico de quem gravou, alterou, desativou ou excluiu o servico."""
+    try:
+        audits = await service.list_service_template_audits(
+            company_id=ctx.company_id,
+            service_template_id=service_template_id,
+        )
+        return ConstructionServiceTemplateAuditListResponse(
+            items=[ConstructionServiceTemplateAuditResponse.model_validate(audit) for audit in audits],
+            total=len(audits),
+        )
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 
@@ -927,7 +1040,7 @@ async def import_service_templates(
     if len(files) > MAX_SERVICE_TEMPLATE_FILES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Send at most {MAX_SERVICE_TEMPLATE_FILES} spreadsheets per import.",
+            detail=f"Envie no máximo {MAX_SERVICE_TEMPLATE_FILES} planilhas por importação.",
         )
 
     uploaded_files: list[tuple[str, bytes]] = []
@@ -936,13 +1049,18 @@ async def import_service_templates(
         if len(content) > MAX_SERVICE_TEMPLATE_FILE_BYTES:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"Spreadsheet {upload.filename} is larger than the 5 MB limit.",
+                detail=f"A planilha {upload.filename} passa do limite de 5 MB.",
             )
 
         uploaded_files.append((upload.filename or "planilha.xlsx", content))
 
     try:
-        results = await service.import_service_templates(company_id=ctx.company_id, files=uploaded_files)
+        results = await service.import_service_templates(
+            company_id=ctx.company_id,
+            files=uploaded_files,
+            actor_user_id=ctx.user_id,
+            actor_person_id=ctx.person_id,
+        )
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 
@@ -1102,8 +1220,41 @@ async def verify_measurement_item_inspection(
             inspection_id=inspection_id,
             request=request_data,
             actor_user_id=ctx.user_id,
+            actor_person_id=ctx.person_id,
+            # Dispensar uma reprovacao tira uma obrigacao da ficha, entao nao
+            # pode caber a quem so edita. DELETE e o unico bit acima de UPDATE e
+            # e concedido por perfil na matriz -- e um proxy assumido, nao uma
+            # permissao sob medida: feature nova custa 7 arquivos em 2 repos e
+            # derruba a API do ERP no boot se faltar num dict de seed.
+            actor_can_waive=ctx.can(
+                feature=ConstructionFeature.MEASUREMENTS,
+                action=PermissionAction.DELETE,
+            ),
         )
         return ConstructionMeasurementItemInspectionResponse.model_validate(inspection)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get(
+    "/measurement-inspections/{inspection_id}/rounds",
+    response_model=ConstructionInspectionRoundListResponse,
+)
+async def list_inspection_rounds(
+    inspection_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionInspectionRoundListResponse:
+    """Historico de verificacoes e reinspecoes de uma linha da FVS."""
+    try:
+        rounds = await service.list_inspection_rounds(
+            company_id=ctx.company_id,
+            inspection_id=inspection_id,
+        )
+        return ConstructionInspectionRoundListResponse(
+            items=[ConstructionInspectionRoundResponse.model_validate(item) for item in rounds],
+            total=len(rounds),
+        )
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 

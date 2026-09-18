@@ -22,12 +22,18 @@ import {
   ShieldCheck,
   Upload,
   ShoppingCart,
-  TriangleAlert,
   Trash2,
   Unlock,
 } from "lucide-react"
 import styles from "./App.module.css"
 import CreatableCombobox from "./components/CreatableCombobox.jsx"
+import { InspectionChecklist } from "./features/measurementInspections/InspectionChecklist"
+import {
+  countBlockingLines,
+  countPendingLines,
+  itemStatusLabel,
+} from "./features/measurementInspections/inspectionVocabulary"
+import { ServiceTemplatesPanel } from "./features/serviceTemplates/ServiceTemplatesPanel.jsx"
 import { resolveConstructionBridge } from "./bridge/constructionBridge.js"
 import {
   approveConstructionProcurementRequest,
@@ -609,12 +615,6 @@ function translateErpStatus(labels, value, fallback = "") {
   return labels[String(value).toUpperCase()] ?? value
 }
 
-const inspectionStatusLabel = {
-  pending: "Pendente",
-  compliant: "Procedente",
-  non_compliant: "Improcedente",
-}
-
 const occurrenceStatusLabel = {
   open: "Aberta",
   resolved: "Resolvida",
@@ -629,13 +629,6 @@ const defaultMeasurementItemForm = {
   startDate: "",
   endDate: "",
   inspectorPersonId: "",
-}
-
-const defaultInspectionForm = {
-  description: "",
-  verificationMethod: "",
-  startDate: "",
-  endDate: "",
 }
 
 const defaultOccurrenceForm = {
@@ -3173,21 +3166,51 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
-  const handleVerifyInspection = async (inspection, checkNumber, status) => {
+  const handleVerifyInspection = async (inspection, { status, comment, inspectorPersonId, openOccurrence }) => {
     setSavingMeasurementItem(true)
     try {
-      await verifyConstructionMeasurementInspection({
+      const updated = await verifyConstructionMeasurementInspection({
         bridge,
         inspectionId: inspection.id,
-        checkNumber,
         status,
+        comment,
+        inspectorPersonId,
+        openOccurrence,
       })
       bridge?.feedback?.success?.(
-        checkNumber === 1 ? "Primeira verificação registrada." : "Segunda verificação registrada."
+        updated.roundsCount > 1 ? "Reinspeção registrada." : "Verificação registrada."
       )
       await loadMeasurementItems(itemsTargetMeasurement.id)
     } catch (requestError) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível registrar a verificação.")
+    } finally {
+      setSavingMeasurementItem(false)
+    }
+  }
+
+  // Um unico recarregamento no fim. Recarregar a lista a cada linha faria a
+  // ficha inteira piscar por varios segundos no 3G da obra.
+  const handleVerifyAllPendingInspections = async (item, { inspectorPersonId }) => {
+    const pending = (item.inspections ?? []).filter((inspection) => !inspection.roundsCount)
+    if (pending.length === 0) {
+      return
+    }
+
+    setSavingMeasurementItem(true)
+    try {
+      for (const inspection of pending) {
+        await verifyConstructionMeasurementInspection({
+          bridge,
+          inspectionId: inspection.id,
+          status: "compliant",
+          inspectorPersonId,
+        })
+      }
+      bridge?.feedback?.success?.(`${pending.length} linha(s) marcada(s) como conforme.`)
+      await loadMeasurementItems(itemsTargetMeasurement.id)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível registrar as verificações.")
+      await loadMeasurementItems(itemsTargetMeasurement.id)
     } finally {
       setSavingMeasurementItem(false)
     }
@@ -3677,8 +3700,14 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                 <span className={styles.separator}>/</span>
                 <span className={styles.breadcrumbCurrent}>Obras</span>
               </span>
+              {viewMode === "serviceTemplates" ? (
+                <span className={styles.breadcrumbItem}>
+                  <span className={styles.separator}>/</span>
+                  <span className={styles.breadcrumbCurrent}>Catálogo de serviços</span>
+                </span>
+              ) : null}
             </nav>
-            <h1 className={styles.title}>Obras</h1>
+            <h1 className={styles.title}>{viewMode === "serviceTemplates" ? "Catálogo de serviços" : "Obras"}</h1>
           </div>
           {viewMode === "projects" ? (
             <div className={styles.heroActions}>
@@ -3686,32 +3715,57 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                 <Plus size={18} />
                 Nova obra
               </button>
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                onClick={() => setViewMode("serviceTemplates")}
+              >
+                <ListChecks size={16} />
+                Catálogo de serviços
+              </button>
               <button type="button" className={styles.secondaryButton} onClick={loadProjects} disabled={loading}>
                 <RefreshCw size={16} className={loading ? styles.spinIcon : undefined} />
                 Recarregar
               </button>
             </div>
           ) : null}
+          {viewMode === "serviceTemplates" ? (
+            <div className={styles.heroActions}>
+              <button type="button" className={styles.secondaryButton} onClick={() => setViewMode("projects")}>
+                <ChevronLeft size={16} />
+                Voltar para obras
+              </button>
+            </div>
+          ) : null}
         </div>
 
-        <div className={styles.metricsGrid}>
-          {summaryItems.map((item) => {
-            const Icon = item.icon
-            return (
-              <article className={`${styles.metricCard} ${styles[item.tone] ?? ""}`} key={item.label}>
-                <div className={styles.metricIconWrap}>
-                  <Icon size={20} />
-                </div>
-                <div className={styles.metricContent}>
-                  <p className={styles.metricLabel}>{item.label}</p>
-                  <p className={styles.metricValue}>{item.value}</p>
-                  <p className={styles.metricHint}>{item.hint}</p>
-                </div>
-              </article>
-            )
-          })}
-        </div>
+        {viewMode === "serviceTemplates" ? null : (
+          <div className={styles.metricsGrid}>
+            {summaryItems.map((item) => {
+              const Icon = item.icon
+              return (
+                <article className={`${styles.metricCard} ${styles[item.tone] ?? ""}`} key={item.label}>
+                  <div className={styles.metricIconWrap}>
+                    <Icon size={20} />
+                  </div>
+                  <div className={styles.metricContent}>
+                    <p className={styles.metricLabel}>{item.label}</p>
+                    <p className={styles.metricValue}>{item.value}</p>
+                    <p className={styles.metricHint}>{item.hint}</p>
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+        )}
       </section>
+
+      {viewMode === "serviceTemplates" ? (
+        <DomainCard
+          subtitle="Fichas de verificação usadas nas medições. Valem para todas as obras da empresa."
+          content={<ServiceTemplatesPanel bridge={bridge} />}
+        />
+      ) : null}
 
       {viewMode === "projects" ? (
         <>
@@ -4196,6 +4250,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
       {itemsTargetMeasurement ? (
         <MeasurementItemsModal
+          bridge={bridge}
           measurement={itemsTargetMeasurement}
           items={measurementItems}
           people={personSummaries}
@@ -4212,6 +4267,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           onDeleteItem={handleDeleteMeasurementItem}
           onCreateInspection={handleCreateInspection}
           onVerifyInspection={handleVerifyInspection}
+          onVerifyAllPendingInspections={handleVerifyAllPendingInspections}
           onDeleteInspection={handleDeleteInspection}
           onCreateOccurrence={handleCreateOccurrence}
           onResolveOccurrence={handleResolveOccurrence}
@@ -4287,7 +4343,7 @@ function DomainCard({ title, subtitle, content, footer = null, action = null }) 
     <div className={`${styles.card} ${styles.tableCard}`}>
       <div className={styles.tableHeaderRow}>
         <div>
-          <h2>{title}</h2>
+          {title ? <h2>{title}</h2> : null}
           {subtitle ? <p className={styles.textMuted}>{subtitle}</p> : null}
         </div>
         {action ? <div className={styles.tableHeaderActions}>{action}</div> : null}
@@ -8736,6 +8792,7 @@ function SaleUnitModal({
 }
 
 function MeasurementItemsModal({
+  bridge,
   measurement,
   items,
   people,
@@ -8752,6 +8809,7 @@ function MeasurementItemsModal({
   onDeleteItem,
   onCreateInspection,
   onVerifyInspection,
+  onVerifyAllPendingInspections,
   onDeleteInspection,
   onCreateOccurrence,
   onResolveOccurrence,
@@ -8765,11 +8823,10 @@ function MeasurementItemsModal({
 
   const isLocked = measurement.status === "approved" || measurement.status === "paid"
   const itemsTotal = items.reduce((total, item) => total + Number(item.amount ?? 0), 0)
-  const pendingChecks = items.reduce(
-    (total, item) =>
-      total + item.inspections.filter((inspection) => !inspection.isDoubleChecked).length,
-    0
-  )
+  // O que importa agora e o que BLOQUEIA o envio: linha reprovada sem
+  // reinspecao aprovada. O pendente vira o numero secundario.
+  const blockingLines = items.reduce((total, item) => total + countBlockingLines(item.inspections), 0)
+  const pendingLines = items.reduce((total, item) => total + countPendingLines(item.inspections), 0)
   const openOccurrences = items.reduce(
     (total, item) => total + item.occurrences.filter((occurrence) => occurrence.status === "open").length,
     0
@@ -8810,9 +8867,11 @@ function MeasurementItemsModal({
               <p className={styles.metricHint}>{items.length} item(ns) de serviço</p>
             </article>
             <article className={styles.integrationCard}>
-              <h3>Verificações pendentes</h3>
-              <p className={styles.metricValue}>{pendingChecks}</p>
-              <p className={styles.metricHint}>dupla verificação incompleta</p>
+              <h3>Linhas bloqueando</h3>
+              <p className={styles.metricValue}>{blockingLines}</p>
+              <p className={styles.metricHint}>
+                reprovadas sem reinspeção aprovada · {pendingLines} ainda não verificada(s)
+              </p>
             </article>
             <article className={styles.integrationCard}>
               <h3>Ocorrências abertas</h3>
@@ -8923,11 +8982,11 @@ function MeasurementItemsModal({
                   />
                 </label>
                 <PersonIdInput
-                  label="Conferente"
+                  label="Inspetor responsável"
                   value={itemForm.inspectorPersonId}
                   onChange={(value) => handleItemChange("inspectorPersonId", value)}
                   people={people}
-                  emptyLabel="Sem conferente"
+                  emptyLabel="Sem inspetor"
                 />
               </div>
               <div className={styles.filtersFooter}>
@@ -8973,6 +9032,7 @@ function MeasurementItemsModal({
                   {items.map((item) => (
                     <MeasurementItemRow
                       key={item.id}
+                      bridge={bridge}
                       item={item}
                       people={people}
                       isLocked={isLocked}
@@ -8982,6 +9042,7 @@ function MeasurementItemsModal({
                       onDeleteItem={onDeleteItem}
                       onCreateInspection={onCreateInspection}
                       onVerifyInspection={onVerifyInspection}
+                      onVerifyAllPendingInspections={onVerifyAllPendingInspections}
                       onDeleteInspection={onDeleteInspection}
                       onCreateOccurrence={onCreateOccurrence}
                       onResolveOccurrence={onResolveOccurrence}
@@ -8999,6 +9060,7 @@ function MeasurementItemsModal({
 }
 
 function MeasurementItemRow({
+  bridge,
   item,
   people,
   isLocked,
@@ -9008,12 +9070,12 @@ function MeasurementItemRow({
   onDeleteItem,
   onCreateInspection,
   onVerifyInspection,
+  onVerifyAllPendingInspections,
   onDeleteInspection,
   onCreateOccurrence,
   onResolveOccurrence,
   onDeleteOccurrence,
 }) {
-  const [inspectionForm, setInspectionForm] = useState(defaultInspectionForm)
   const [occurrenceForm, setOccurrenceForm] = useState(defaultOccurrenceForm)
   const [solutionDrafts, setSolutionDrafts] = useState({})
 
@@ -9021,14 +9083,6 @@ function MeasurementItemRow({
     () => Object.fromEntries(people.map((person) => [person.id, person.name])),
     [people]
   )
-
-  const handleInspectionSubmit = async (event) => {
-    event.preventDefault()
-    const created = await onCreateInspection(item.id, inspectionForm)
-    if (created) {
-      setInspectionForm(defaultInspectionForm)
-    }
-  }
 
   const handleOccurrenceSubmit = async (event) => {
     event.preventDefault()
@@ -9053,10 +9107,11 @@ function MeasurementItemRow({
         <td>{formatMoney(item.amount)}</td>
         <td>
           <span className={styles.statusPill}>
-            {inspectionStatusLabel[item.inspectionStatus] ?? item.inspectionStatus}
+            {itemStatusLabel[item.inspectionStatus] ?? item.inspectionStatus}
           </span>
           <div className={styles.rowSecondaryText}>
-            {item.inspections.length} verificação(oes) - {item.occurrences.filter((o) => o.status === "open").length} ocorrência(s) aberta(s)
+            {item.inspections.length} linha(s) · {countBlockingLines(item.inspections)} aguardando reinspeção ·{" "}
+            {item.occurrences.filter((o) => o.status === "open").length} ocorrência(s) aberta(s)
           </div>
         </td>
         <td>
@@ -9083,146 +9138,22 @@ function MeasurementItemRow({
         <tr>
           <td colSpan={6}>
             <div className={styles.card}>
-              <strong>Itens de inspeção</strong>
-              {item.inspections.length ? (
-                <div className={styles.tableWrapper}>
-                  <table className={styles.table}>
-                    <thead>
-                      <tr>
-                        <th>Seq.</th>
-                        <th>Verificação</th>
-                        <th>Metodo</th>
-                        <th>1a conferência</th>
-                        <th>2a conferência</th>
-                        <th>Ações</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {item.inspections.map((inspection) => (
-                        <tr key={inspection.id}>
-                          <td>{inspection.sequenceNumber}</td>
-                          <td>{inspection.description}</td>
-                          <td>{inspection.verificationMethod || "-"}</td>
-                          <td>
-                            <span className={styles.statusPill}>
-                              {inspectionStatusLabel[inspection.firstStatus] ?? inspection.firstStatus}
-                            </span>
-                            <div className={styles.rowSecondaryText}>
-                              {inspection.firstStatusAt ? formatDate(inspection.firstStatusAt) : "não conferido"}
-                            </div>
-                          </td>
-                          <td>
-                            <span className={styles.statusPill}>
-                              {inspectionStatusLabel[inspection.secondStatus] ?? inspection.secondStatus}
-                            </span>
-                            <div className={styles.rowSecondaryText}>
-                              {inspection.secondStatusAt ? formatDate(inspection.secondStatusAt) : "não conferido"}
-                            </div>
-                          </td>
-                          <td>
-                            <div className={styles.rowActions}>
-                              {isLocked ? null : (
-                                <>
-                                  {inspection.firstStatus === "pending" ? (
-                                    <>
-                                      <button
-                                        type="button"
-                                        className={styles.iconButton}
-                                        onClick={() => onVerifyInspection(inspection, 1, "compliant")}
-                                        disabled={saving}
-                                      >
-                                        <CheckCircle size={14} />
-                                        1a OK
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className={styles.iconButton}
-                                        onClick={() => onVerifyInspection(inspection, 1, "non_compliant")}
-                                        disabled={saving}
-                                      >
-                                        <TriangleAlert size={14} />
-                                        1a NOK
-                                      </button>
-                                    </>
-                                  ) : inspection.secondStatus === "pending" ? (
-                                    <>
-                                      <button
-                                        type="button"
-                                        className={styles.iconButton}
-                                        onClick={() => onVerifyInspection(inspection, 2, "compliant")}
-                                        disabled={saving}
-                                      >
-                                        <CheckCircle size={14} />
-                                        2a OK
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className={styles.iconButton}
-                                        onClick={() => onVerifyInspection(inspection, 2, "non_compliant")}
-                                        disabled={saving}
-                                      >
-                                        <TriangleAlert size={14} />
-                                        2a NOK
-                                      </button>
-                                    </>
-                                  ) : (
-                                    <span className={styles.badgeSuccess}>Dupla verificação concluída</span>
-                                  )}
-                                  <button
-                                    type="button"
-                                    className={`${styles.iconButton} ${styles.dangerButton}`}
-                                    onClick={() => onDeleteInspection(inspection)}
-                                    disabled={saving}
-                                  >
-                                    <Trash2 size={14} />
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p className={styles.metricHint}>Nenhum item de inspeção cadastrado.</p>
-              )}
-
-              {isLocked ? null : (
-                <form className={styles.formGrid} onSubmit={handleInspectionSubmit}>
-                  <label className={styles.filterControl}>
-                    <span>Nova verificação*</span>
-                    <input
-                      type="text"
-                      value={inspectionForm.description}
-                      onChange={(event) =>
-                        setInspectionForm((form) => ({ ...form, description: event.target.value }))
-                      }
-                      placeholder="Prumo e alinhamento"
-                      required
-                    />
-                  </label>
-                  <label className={styles.filterControl}>
-                    <span>Metodo</span>
-                    <input
-                      type="text"
-                      value={inspectionForm.verificationMethod}
-                      onChange={(event) =>
-                        setInspectionForm((form) => ({ ...form, verificationMethod: event.target.value }))
-                      }
-                      placeholder="Régua de 2m em 3 pontos"
-                    />
-                  </label>
-                  <label className={styles.filterControl}>
-                    <span>&nbsp;</span>
-                    <button type="submit" className={styles.primaryButton} disabled={saving}>
-                      <Plus size={16} />
-                      Adicionar verificação
-                    </button>
-                  </label>
-                </form>
-              )}
+              <strong>Ficha de verificação de serviço (FVS)</strong>
+              <InspectionChecklist
+                bridge={bridge}
+                item={item}
+                people={people}
+                saving={saving}
+                isLocked={isLocked}
+                // O MFE nao recebe as permissoes do usuario pelo bridge, entao
+                // quem barra a dispensa e a API (400 com mensagem explicita) --
+                // mesmo padrao das outras recusas de regra deste modulo.
+                canWaive
+                onVerifyInspection={onVerifyInspection}
+                onVerifyAllPending={onVerifyAllPendingInspections}
+                onDeleteInspection={onDeleteInspection}
+                onCreateInspection={(lineData) => onCreateInspection(item.id, lineData)}
+              />
 
               <strong>Ocorrências</strong>
               {item.occurrences.length ? (
@@ -9246,7 +9177,7 @@ function MeasurementItemRow({
                             <div className={styles.rowSecondaryText}>
                               {occurrence.openedAt ? formatDate(occurrence.openedAt) : "-"}
                               {occurrence.inspectorPersonId
-                                ? ` - ${inspectorNameById[occurrence.inspectorPersonId] ?? "conferente"}`
+                                ? ` - ${inspectorNameById[occurrence.inspectorPersonId] ?? "inspetor"}`
                                 : ""}
                             </div>
                           </td>
@@ -9303,6 +9234,8 @@ function MeasurementItemRow({
                                     className={`${styles.iconButton} ${styles.dangerButton}`}
                                     onClick={() => onDeleteOccurrence(occurrence)}
                                     disabled={saving}
+                                    aria-label="Excluir ocorrência"
+                                    title="Excluir ocorrência"
                                   >
                                     <Trash2 size={14} />
                                   </button>

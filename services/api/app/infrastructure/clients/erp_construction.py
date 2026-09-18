@@ -109,6 +109,40 @@ class ErpConstructionClient:
             return "none"
         return str(items[0].get("qualification_status") or "none")
 
+    async def get_person_name(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        person_id: UUID,
+    ) -> str | None:
+        """Nome da pessoa, para gravar junto do registro de auditoria.
+
+        Degrada para None em qualquer falha, no mesmo espirito de
+        `get_person_qualification_status`: o nome e conveniencia de leitura, e
+        o ERP fora do ar nao pode impedir que a alteracao seja gravada -- seria
+        perder a auditoria justamente para conseguir escreve-la. O id do usuario
+        fica no registro de qualquer jeito e e ele que identifica o autor.
+        """
+        try:
+            payload = await self.list_person_summaries(
+                company_id=company_id,
+                user_id=user_id,
+                search=None,
+                page=1,
+                page_size=1,
+                person_id=person_id,
+            )
+        except Exception:
+            return None
+
+        items = payload.get("items") or []
+        if not items:
+            return None
+
+        name = items[0].get("name")
+        return str(name) if name else None
+
     async def get_unit_payment_plan(
         self,
         *,

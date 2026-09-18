@@ -1,0 +1,588 @@
+/* The host app has no global box-sizing reset and theme.css only loads in the
+   MFE's standalone entry, so anything with width:100% plus padding overflows
+   its container when mounted through module federation. Declared locally. */
+.checklist,
+.checklist *,
+.historyOverlay,
+.historyOverlay * {
+  box-sizing: border-box;
+}
+
+.checklist {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.checklistHeader {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.checklistInspector {
+  flex: 1 1 260px;
+  max-width: 360px;
+  min-width: 0;
+}
+
+.checklistSummary {
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
+  margin: 0;
+}
+
+.emptyHint,
+.fieldHint {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  margin: 0;
+}
+
+.fieldLabel {
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.input,
+.textarea {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font: inherit;
+  padding: 0.45rem 0.6rem;
+  width: 100%;
+}
+
+.textarea {
+  min-height: 2.6rem;
+  resize: vertical;
+}
+
+.input:focus,
+.textarea:focus {
+  border-color: var(--color-primary);
+  outline: none;
+}
+
+/* Lista em grid, nao tabela: a tabela do modulo tem min-width de 760px e esta
+   lista mora dentro de um modal que ja rola -- daria rolagem em dois eixos. */
+.lineList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.lineHeader,
+.lineRow {
+  display: grid;
+  gap: 0.6rem;
+  /* A coluna de acoes tem MINIMO em pixel: os botoes nao encolhem, e com uma
+     fracao pura o texto do mais longo ("Reinspecao aprovada") vazava para fora
+     do cartao. */
+  grid-template-columns:
+    2.2rem minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1.3fr) minmax(11.5rem, 1.2fr);
+}
+
+.lineHeader {
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 0 0.6rem;
+  text-transform: uppercase;
+}
+
+.lineRow {
+  align-items: start;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 0.6rem;
+}
+
+.lineSequence {
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.lineDescription {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.lineDescription strong {
+  word-break: break-word;
+}
+
+.lineMethod {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  word-break: break-word;
+}
+
+.lineState,
+.lineLastRound,
+.lineActions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.lineActions {
+  align-items: flex-start;
+}
+
+.statePill {
+  border-radius: var(--radius-full);
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.2rem 0.55rem;
+}
+
+.statePending {
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+}
+
+.stateCompliant {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+}
+
+.stateNonCompliant {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+}
+
+.stateWaived {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+}
+
+.lineMoment,
+.lineActor,
+.lineComment {
+  color: var(--color-text-muted);
+  font-size: 0.76rem;
+  word-break: break-word;
+}
+
+.lineComment {
+  font-style: italic;
+}
+
+.lineButton,
+.secondaryButton,
+.primaryButton,
+.iconButton {
+  align-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  gap: 0.35rem;
+  justify-content: center;
+}
+
+.lineButton,
+.secondaryButton {
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.8rem;
+  padding: 0.35rem 0.6rem;
+  /* Sem nowrap: e' preferivel o rotulo quebrar em duas linhas a vazar do
+     cartao quando a coluna aperta. */
+  text-align: center;
+}
+
+.lineActions .lineButton {
+  width: 100%;
+}
+
+.lineButtonWarn:hover:not(:disabled) {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+}
+
+.primaryButton {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-primary-contrast);
+  font-size: 0.85rem;
+  padding: 0.45rem 0.9rem;
+}
+
+.iconButton {
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.75rem;
+  min-height: 1.9rem;
+  min-width: 1.9rem;
+  padding: 0 0.35rem;
+}
+
+.lineButton:hover:not(:disabled),
+.secondaryButton:hover:not(:disabled),
+.iconButton:hover:not(:disabled) {
+  border-color: var(--color-primary);
+}
+
+.lineButton:disabled,
+.secondaryButton:disabled,
+.primaryButton:disabled,
+.iconButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.dangerIconButton:hover:not(:disabled) {
+  background: var(--color-danger-bg);
+  border-color: var(--color-danger-text);
+  color: var(--color-danger-text);
+}
+
+/* O formulario ocupa a linha inteira do grid, logo abaixo da inspecao. */
+.lineForm {
+  grid-column: 1 / -1;
+}
+
+.roundForm {
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+}
+
+.roundFormTitle {
+  font-size: 0.88rem;
+}
+
+.previousComment {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  margin: 0;
+}
+
+.roundFormField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.checkboxField {
+  align-items: center;
+  display: flex;
+  font-size: 0.85rem;
+  gap: 0.45rem;
+}
+
+.roundFormActions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  justify-content: space-between;
+}
+
+.roundFormButtons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.newLineForm {
+  align-items: end;
+  border-top: 1px solid var(--color-border);
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) auto;
+  padding-top: 0.75rem;
+}
+
+/* --- seletor de inspetor --- */
+
+.inspectorField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+  position: relative;
+}
+
+.inspectorChosen,
+.inspectorSearch {
+  align-items: center;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 0.25rem 0.5rem;
+}
+
+.inspectorSearch .input {
+  border: none;
+  padding: 0.2rem 0;
+}
+
+.inspectorSearch .input:focus {
+  outline: none;
+}
+
+.inspectorName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspectorOptions {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.18);
+  left: 0;
+  list-style: none;
+  margin: 0;
+  max-height: 14rem;
+  overflow-y: auto;
+  padding: 0.25rem;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 40;
+}
+
+.inspectorOption {
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+  text-align: left;
+  width: 100%;
+}
+
+.inspectorOption:hover {
+  background: var(--color-surface-muted);
+}
+
+.inspectorHint {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  padding: 0.4rem 0.5rem;
+}
+
+/* --- modal de rodadas --- */
+
+.historyOverlay {
+  align-items: center;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 1.5rem;
+  position: fixed;
+  z-index: 60;
+}
+
+.historyCard {
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
+  max-width: 720px;
+  width: min(720px, 100%);
+}
+
+.historyHeader {
+  align-items: center;
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+}
+
+.historyHeader h3 {
+  font-size: 1rem;
+  margin: 0;
+  word-break: break-word;
+}
+
+.historyBody {
+  overflow-y: auto;
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.timelineRow {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.7rem 0.85rem;
+}
+
+.timelineHead {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.roundBadge {
+  border-radius: var(--radius-full);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0.2rem 0.6rem;
+  text-transform: uppercase;
+}
+
+.roundCompliant {
+  background: var(--color-success-bg);
+  color: var(--color-success-text);
+}
+
+.roundNonCompliant {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+}
+
+.roundWaived {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+}
+
+.timelineMoment,
+.timelineDetail {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.sourceTag {
+  align-items: center;
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-full);
+  color: var(--color-text-muted);
+  display: inline-flex;
+  font-size: 0.72rem;
+  gap: 0.25rem;
+  padding: 0.18rem 0.5rem;
+}
+
+.timelineActor {
+  font-size: 0.88rem;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.timelineComment {
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  font-style: italic;
+  word-break: break-word;
+}
+
+@media (max-width: 900px) {
+  /* A ficha mora dentro da tabela de itens, que tem `min-width: 760px` em
+     App.module.css e rola na horizontal. No celular o wrapper visivel tem ~320px,
+     entao sem isto metade da linha fica fora da tela e so aparece arrastando de
+     lado. `sticky` prende o conteudo na borda visivel do container que rola. */
+  .checklist {
+    left: 0;
+    position: sticky;
+    width: calc(100vw - 4.5rem);
+  }
+
+  .lineHeader {
+    display: none;
+  }
+
+  /* Cada linha vira cartao empilhado: e assim que a ficha e preenchida em obra. */
+  .lineRow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.35rem;
+  }
+
+  .lineSequence::after {
+    content: " ·";
+  }
+
+  .lineSequence {
+    color: var(--color-text);
+    font-weight: 700;
+  }
+
+  .lineActions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+
+  .lineButton {
+    flex: 1 1 auto;
+  }
+
+  .newLineForm {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .checklistInspector {
+    max-width: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .historyOverlay {
+    padding: 0;
+  }
+
+  .historyCard {
+    border-radius: 0;
+    height: 100dvh;
+    max-height: none;
+    max-width: none;
+  }
+
+  .roundFormActions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .roundFormButtons button {
+    flex: 1;
+  }
+}

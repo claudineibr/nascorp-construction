@@ -13,6 +13,7 @@ from app.domain.exceptions import (
     ConstructionInvalidStatusTransitionError,
     ConstructionInvalidValueError,
     ConstructionNotFoundError,
+    ConstructionResourceInUseError,
 )
 from app.domain.events.constants import ConstructionEventType, ConstructionIntegrationMode, ErpEventType
 from app.domain.events.contracts import EventEnvelope
@@ -26,8 +27,11 @@ from app.infrastructure.database.models import (
     ConstructionProcurementRequest,
     ConstructionProject,
     ConstructionSchedulePhase,
+    ConstructionInspectionRound,
     ConstructionServiceTemplate,
+    ConstructionServiceTemplateAudit,
     ConstructionServiceTemplateItem,
+    ConstructionServiceTemplateSection,
     ConstructionUnit,
     ConstructionUnitCommission,
     ConstructionUnitDocumentation,
@@ -42,6 +46,7 @@ from app.schemas.construction import (
     ConstructionMeasurementItemInspectionCreate,
     ConstructionMeasurementItemOccurrenceCreate,
     ConstructionMeasurementItemOccurrenceUpdate,
+    ConstructionMeasurementItemUpdate,
     ConstructionProcurementRequestCreate,
     ConstructionProjectCreate,
     ConstructionUnitInstallmentPaymentLine,
@@ -62,25 +67,57 @@ class FakeConstructionRepository:
         self.procurement_requests: dict[tuple[object, object], ConstructionProcurementRequest] = {}
         self.measurement_items: dict[tuple[object, object], ConstructionMeasurementItem] = {}
         self.inspections: dict[tuple[object, object], ConstructionMeasurementItemInspection] = {}
+        self.inspection_rounds: dict[tuple[object, object], ConstructionInspectionRound] = {}
         self.occurrences: dict[tuple[object, object], ConstructionMeasurementItemOccurrence] = {}
         self.unit_payment_sources: dict[tuple[object, object], ConstructionUnitPaymentSource] = {}
         self.service_templates: dict[tuple[object, object], ConstructionServiceTemplate] = {}
+        self.service_template_sections: dict[tuple[object, object], ConstructionServiceTemplateSection] = {}
         self.service_template_items: dict[tuple[object, object], ConstructionServiceTemplateItem] = {}
+        self.service_template_audits: dict[tuple[object, object], ConstructionServiceTemplateAudit] = {}
         self.documentation_types: dict[tuple[object, object], ConstructionDocumentationType] = {}
         self.unit_documentations: dict[tuple[object, object], ConstructionUnitDocumentation] = {}
         self.unit_commissions: dict[tuple[object, object], ConstructionUnitCommission] = {}
         self.commits = 0
         self.replaced_children = 0
 
-    def _template_items(self, *, company_id, service_template_id):
+    def _section_items(self, *, company_id, section_id):
         return sorted(
             (
                 item
                 for (item_company_id, _), item in self.service_template_items.items()
-                if item_company_id == company_id and item.service_template_id == service_template_id
+                if item_company_id == company_id and item.section_id == section_id
             ),
             key=lambda item: item.sequence_number,
         )
+
+    def _template_sections(self, *, company_id, service_template_id):
+        sections = sorted(
+            (
+                section
+                for (section_company_id, _), section in self.service_template_sections.items()
+                if section_company_id == company_id and section.service_template_id == service_template_id
+            ),
+            key=lambda section: section.sequence_number,
+        )
+        for section in sections:
+            section.items = self._section_items(company_id=company_id, section_id=section.id)
+
+        return sections
+
+    def _template_items(self, *, company_id, service_template_id):
+        sections = self._template_sections(
+            company_id=company_id,
+            service_template_id=service_template_id,
+        )
+        return [item for section in sections for item in section.items]
+
+    def _hydrate_template(self, *, company_id, template):
+        template.sections = self._template_sections(
+            company_id=company_id,
+            service_template_id=template.id,
+        )
+        template.items = [item for section in template.sections for item in section.items]
+        return template
 
     async def list_unit_payment_sources(self, *, company_id, unit_id):
         return sorted(
@@ -205,49 +242,110 @@ class FakeConstructionRepository:
 
         return max(commission.sequence_number for commission in commissions) + 1
 
-    async def get_service_template(self, *, company_id, service_template_id):
+    async def get_service_template(self, *, company_id, service_template_id, include_deleted=False):
         template = self.service_templates.get((company_id, service_template_id))
-        if template is not None:
-            template.items = self._template_items(
-                company_id=company_id,
-                service_template_id=service_template_id,
-            )
+        if template is None:
+            return None
 
-        return template
+        if template.deleted_at is not None and not include_deleted:
+            return None
+
+        return self._hydrate_template(company_id=company_id, template=template)
 
     async def get_service_template_by_name(self, *, company_id, name):
-        for (template_company_id, template_id), template in self.service_templates.items():
-            if template_company_id == company_id and template.name == name:
-                template.items = self._template_items(
-                    company_id=company_id,
-                    service_template_id=template_id,
-                )
-                return template
+        for (template_company_id, _), template in self.service_templates.items():
+            if template_company_id != company_id or template.name != name:
+                continue
+
+            if template.deleted_at is not None:
+                continue
+
+            return self._hydrate_template(company_id=company_id, template=template)
 
         return None
 
-    async def list_service_templates(self, *, company_id, only_active=True, search=None):
+    async def get_next_service_template_audit_sequence(self, *, company_id, service_template_id):
+        sequences = [
+            audit.sequence_number
+            for (audit_company_id, _), audit in self.service_template_audits.items()
+            if audit_company_id == company_id and audit.service_template_id == service_template_id
+        ]
+        return max(sequences) + 1 if sequences else 1
+
+    async def list_service_template_audits(self, *, company_id, service_template_id):
+        return sorted(
+            (
+                audit
+                for (audit_company_id, _), audit in self.service_template_audits.items()
+                if audit_company_id == company_id and audit.service_template_id == service_template_id
+            ),
+            key=lambda audit: audit.sequence_number,
+            reverse=True,
+        )
+
+    async def replace_service_template_sections(self, *, company_id, service_template_id, sections):
+        for key, section in list(self.service_template_sections.items()):
+            if key[0] != company_id or section.service_template_id != service_template_id:
+                continue
+
+            for item_key, item in list(self.service_template_items.items()):
+                if item.section_id == section.id:
+                    self.service_template_items.pop(item_key, None)
+
+            self.service_template_sections.pop(key, None)
+
+        for section in sections:
+            await self.add(section)
+
+    async def count_measurement_items_by_service_template(self, *, company_id, service_template_id):
+        return sum(
+            1
+            for (item_company_id, _), item in self.measurement_items.items()
+            if item_company_id == company_id and item.service_template_id == service_template_id
+        )
+
+    async def list_service_templates(self, *, company_id, only_active=True, search=None, only_deleted=False):
         templates = []
         for (template_company_id, template_id), template in self.service_templates.items():
             if template_company_id != company_id:
                 continue
 
-            if only_active and not template.is_active:
-                continue
+            if only_deleted:
+                if template.deleted_at is None:
+                    continue
+            else:
+                if template.deleted_at is not None:
+                    continue
+
+                if only_active and not template.is_active:
+                    continue
 
             if search and search.lower() not in template.name.lower():
                 continue
 
-            template.items = self._template_items(
-                company_id=company_id,
-                service_template_id=template_id,
-            )
+            self._hydrate_template(company_id=company_id, template=template)
             templates.append(template)
 
         return sorted(templates, key=lambda template: template.name)
 
+    def _hydrate_item(self, *, company_id, item):
+        item.inspections = self._sorted_inspections(company_id=company_id, measurement_item_id=item.id)
+        item.occurrences = sorted(
+            (
+                occurrence
+                for (occurrence_company_id, _), occurrence in self.occurrences.items()
+                if occurrence_company_id == company_id and occurrence.measurement_item_id == item.id
+            ),
+            key=lambda occurrence: occurrence.sequence_number,
+        )
+        return item
+
     async def get_measurement_item(self, *, company_id, item_id):
-        return self.measurement_items.get((company_id, item_id))
+        item = self.measurement_items.get((company_id, item_id))
+        if item is None:
+            return None
+
+        return self._hydrate_item(company_id=company_id, item=item)
 
     async def list_measurement_items(self, *, company_id, measurement_id):
         return sorted(
@@ -270,18 +368,54 @@ class FakeConstructionRepository:
         items = await self.list_measurement_items(company_id=company_id, measurement_id=measurement_id)
         return sum((item.amount for item in items), Decimal("0"))
 
-    async def get_measurement_inspection(self, *, company_id, inspection_id):
-        return self.inspections.get((company_id, inspection_id))
+    def _hydrate_inspection(self, *, company_id, inspection):
+        inspection.rounds = sorted(
+            (
+                round_
+                for (round_company_id, _), round_ in self.inspection_rounds.items()
+                if round_company_id == company_id and round_.inspection_id == inspection.id
+            ),
+            key=lambda round_: round_.sequence_number,
+        )
+        return inspection
 
-    async def list_measurement_item_inspections(self, *, company_id, measurement_item_id):
+    async def get_measurement_inspection(self, *, company_id, inspection_id):
+        inspection = self.inspections.get((company_id, inspection_id))
+        if inspection is None:
+            return None
+
+        return self._hydrate_inspection(company_id=company_id, inspection=inspection)
+
+    def _sorted_inspections(self, *, company_id, measurement_item_id):
         return sorted(
             (
-                inspection
+                self._hydrate_inspection(company_id=company_id, inspection=inspection)
                 for (inspection_company_id, _), inspection in self.inspections.items()
                 if inspection_company_id == company_id and inspection.measurement_item_id == measurement_item_id
             ),
             key=lambda inspection: inspection.sequence_number,
         )
+
+    async def list_measurement_item_inspections(self, *, company_id, measurement_item_id):
+        return self._sorted_inspections(company_id=company_id, measurement_item_id=measurement_item_id)
+
+    async def list_inspection_rounds(self, *, company_id, inspection_id):
+        return sorted(
+            (
+                round_
+                for (round_company_id, _), round_ in self.inspection_rounds.items()
+                if round_company_id == company_id and round_.inspection_id == inspection_id
+            ),
+            key=lambda round_: round_.sequence_number,
+        )
+
+    async def get_next_inspection_round_sequence(self, *, company_id, inspection_id):
+        sequences = [
+            round_.sequence_number
+            for (round_company_id, _), round_ in self.inspection_rounds.items()
+            if round_company_id == company_id and round_.inspection_id == inspection_id
+        ]
+        return max(sequences) + 1 if sequences else 1
 
     async def get_next_inspection_sequence(self, *, company_id, measurement_item_id):
         sequences = [
@@ -295,14 +429,23 @@ class FakeConstructionRepository:
         return max(sequences) + 1
 
     async def count_pending_measurement_inspections(self, *, company_id, measurement_id):
+        pending, _ = await self.summarize_measurement_inspection_blockers(
+            company_id=company_id,
+            measurement_id=measurement_id,
+        )
+        return pending
+
+    async def summarize_measurement_inspection_blockers(self, *, company_id, measurement_id):
         items = await self.list_measurement_items(company_id=company_id, measurement_id=measurement_id)
         item_ids = {item.id for item in items}
-        return sum(
-            1
+        statuses = [
+            inspection.status
             for (inspection_company_id, _), inspection in self.inspections.items()
-            if inspection_company_id == company_id
-            and inspection.measurement_item_id in item_ids
-            and "pending" in {inspection.first_status, inspection.second_status}
+            if inspection_company_id == company_id and inspection.measurement_item_id in item_ids
+        ]
+        return (
+            sum(1 for status in statuses if status == "pending"),
+            sum(1 for status in statuses if status == "non_compliant"),
         )
 
     async def get_measurement_occurrence(self, *, company_id, occurrence_id):
@@ -336,6 +479,11 @@ class FakeConstructionRepository:
     ) -> None:
         if entity.id is None:
             entity.id = uuid4()
+
+        for timestamp_column in ("created_at", "updated_at"):
+            if hasattr(entity, timestamp_column) and getattr(entity, timestamp_column) is None:
+                setattr(entity, timestamp_column, datetime.now(UTC))
+
         if isinstance(entity, ConstructionProject):
             self.projects[(entity.company_id, entity.id)] = entity
             return
@@ -371,16 +519,32 @@ class FakeConstructionRepository:
             self.service_templates[(entity.company_id, entity.id)] = entity
             return
 
+        if isinstance(entity, ConstructionServiceTemplateSection):
+            self.service_template_sections[(entity.company_id, entity.id)] = entity
+            for item in list(entity.items or []):
+                item.section_id = entity.id
+                await self.add(item)
+            return
+
         if isinstance(entity, ConstructionServiceTemplateItem):
             self.service_template_items[(entity.company_id, entity.id)] = entity
+            return
+
+        if isinstance(entity, ConstructionServiceTemplateAudit):
+            self.service_template_audits[(entity.company_id, entity.id)] = entity
             return
 
         if isinstance(entity, ConstructionMeasurementItem):
             self.measurement_items[(entity.company_id, entity.id)] = entity
             return
 
+        if isinstance(entity, ConstructionInspectionRound):
+            self.inspection_rounds[(entity.company_id, entity.id)] = entity
+            return
+
         if isinstance(entity, ConstructionMeasurementItemInspection):
             self.inspections[(entity.company_id, entity.id)] = entity
+            entity.rounds = list(entity.rounds or [])
             return
 
         if isinstance(entity, ConstructionMeasurementItemOccurrence):
@@ -446,6 +610,20 @@ class FakeConstructionRepository:
 
         if isinstance(entity, ConstructionDocumentationType):
             self.documentation_types.pop((entity.company_id, entity.id), None)
+            return
+
+        if isinstance(entity, ConstructionServiceTemplate):
+            for section_key, section in list(self.service_template_sections.items()):
+                if section.service_template_id != entity.id:
+                    continue
+
+                for item_key, item in list(self.service_template_items.items()):
+                    if item.section_id == section.id:
+                        self.service_template_items.pop(item_key, None)
+
+                self.service_template_sections.pop(section_key, None)
+
+            self.service_templates.pop((entity.company_id, entity.id), None)
             return
 
         if isinstance(entity, ConstructionProject):
@@ -582,6 +760,12 @@ class FakeErpMeasurementClient:
     def __init__(self) -> None:
         self.events: list[EventEnvelope] = []
         self.confirmation_events: list[EventEnvelope] = []
+        #: Nomes que este ERP falso sabe resolver. Vazio de proposito: o caso
+        #: comum e o nome NAO vir, e a gravacao tem de acontecer assim mesmo.
+        self.person_names: dict = {}
+
+    async def get_person_name(self, *, company_id, user_id, person_id):
+        return self.person_names.get(person_id)
 
     async def create_cost_center_hierarchy(self, *, event: EventEnvelope) -> EventEnvelope:
         self.events.append(event)
@@ -1791,13 +1975,11 @@ async def test_item_period_rejects_end_date_before_start_date() -> None:
     assert error.value.error_code == "CONSTRUCTION_INVALID_PERIOD"
 
 
-@pytest.mark.asyncio
-async def test_second_inspection_check_requires_the_first_one() -> None:
-    company_id, measurement, service = await _build_measurement_scenario()
+async def _build_item_with_one_line(service, company_id, measurement, *, description="Impermeabilizacao"):
     item = await service.create_measurement_item(
         company_id=company_id,
         measurement_id=measurement.id,
-        request=ConstructionMeasurementItemCreate(description="Impermeabilizacao", amount=Decimal("800.00")),
+        request=ConstructionMeasurementItemCreate(description=description, amount=Decimal("800.00")),
     )
     inspection = await service.create_measurement_item_inspection(
         company_id=company_id,
@@ -1807,107 +1989,325 @@ async def test_second_inspection_check_requires_the_first_one() -> None:
             verification_method="Lamina de agua por 72h",
         ),
     )
+    return item, inspection
 
-    with pytest.raises(ConstructionInvalidValueError) as error:
-        await service.verify_measurement_item_inspection(
-            company_id=company_id,
-            inspection_id=inspection.id,
-            request=ConstructionMeasurementInspectionVerifyRequest(check_number=2, status="compliant"),
-            actor_user_id=uuid4(),
-        )
 
-    assert error.value.error_code == "CONSTRUCTION_INSPECTION_FIRST_CHECK_REQUIRED"
+async def _verify(service, company_id, inspection_id, status, **extra):
+    return await service.verify_measurement_item_inspection(
+        company_id=company_id,
+        inspection_id=inspection_id,
+        request=ConstructionMeasurementInspectionVerifyRequest(status=status, **extra),
+        actor_user_id=extra.pop("actor_user_id", None) or uuid4(),
+    )
 
 
 @pytest.mark.asyncio
-async def test_second_inspection_check_requires_a_different_verifier() -> None:
+async def test_the_server_numbers_the_rounds_not_the_caller() -> None:
+    """O numero da rodada e do servidor.
+
+    Com N rodadas o cliente nao tem como saber qual e a proxima, e deixa-lo
+    escolher e a corrida que o advisory lock existe para fechar.
+    """
     company_id, measurement, service = await _build_measurement_scenario()
-    item = await service.create_measurement_item(
-        company_id=company_id,
-        measurement_id=measurement.id,
-        request=ConstructionMeasurementItemCreate(description="Impermeabilizacao", amount=Decimal("800.00")),
-    )
-    inspection = await service.create_measurement_item_inspection(
-        company_id=company_id,
-        item_id=item.id,
-        request=ConstructionMeasurementItemInspectionCreate(description="Teste de estanqueidade"),
-    )
-    first_verifier_id = uuid4()
+    _, inspection = await _build_item_with_one_line(service, company_id, measurement)
 
-    await service.verify_measurement_item_inspection(
-        company_id=company_id,
-        inspection_id=inspection.id,
-        request=ConstructionMeasurementInspectionVerifyRequest(check_number=1, status="compliant"),
-        actor_user_id=first_verifier_id,
-    )
+    await _verify(service, company_id, inspection.id, "non_compliant", comment="camada solta")
+    updated = await _verify(service, company_id, inspection.id, "compliant")
 
-    with pytest.raises(ConstructionInvalidValueError) as error:
-        await service.verify_measurement_item_inspection(
-            company_id=company_id,
-            inspection_id=inspection.id,
-            request=ConstructionMeasurementInspectionVerifyRequest(check_number=2, status="compliant"),
-            actor_user_id=first_verifier_id,
-        )
-
-    assert error.value.error_code == "CONSTRUCTION_INSPECTION_SAME_VERIFIER"
+    rounds = await service.list_inspection_rounds(company_id=company_id, inspection_id=inspection.id)
+    assert [item.sequence_number for item in rounds] == [1, 2]
+    assert [item.status for item in rounds] == ["non_compliant", "compliant"]
+    assert updated.rounds_count == 2
+    assert updated.status == "compliant"
 
 
 @pytest.mark.asyncio
-async def test_item_becomes_compliant_only_after_both_checks_pass() -> None:
+async def test_the_same_user_may_record_the_reinspection() -> None:
+    """A trava de "segunda por outro usuario" caiu junto com a dupla conferencia.
+
+    Reinspecao e o mesmo fiscal voltando a obra depois do reparo; exigir outra
+    pessoa inviabilizaria o fluxo real.
+    """
     company_id, measurement, service = await _build_measurement_scenario()
-    item = await service.create_measurement_item(
-        company_id=company_id,
-        measurement_id=measurement.id,
-        request=ConstructionMeasurementItemCreate(description="Pintura", amount=Decimal("1200.00")),
-    )
-    inspection = await service.create_measurement_item_inspection(
-        company_id=company_id,
-        item_id=item.id,
-        request=ConstructionMeasurementItemInspectionCreate(description="Uniformidade da tinta"),
-    )
+    _, inspection = await _build_item_with_one_line(service, company_id, measurement)
+    inspector_id = uuid4()
 
-    await service.verify_measurement_item_inspection(
-        company_id=company_id,
-        inspection_id=inspection.id,
-        request=ConstructionMeasurementInspectionVerifyRequest(check_number=1, status="compliant"),
-        actor_user_id=uuid4(),
-    )
+    await _verify(service, company_id, inspection.id, "non_compliant", comment="prumo fora", actor_user_id=inspector_id)
+    updated = await _verify(service, company_id, inspection.id, "compliant", actor_user_id=inspector_id)
 
-    assert item.inspection_status == "pending"
+    assert updated.status == "compliant"
+    assert updated.rounds_count == 2
 
-    await service.verify_measurement_item_inspection(
-        company_id=company_id,
-        inspection_id=inspection.id,
-        request=ConstructionMeasurementInspectionVerifyRequest(check_number=2, status="compliant"),
-        actor_user_id=uuid4(),
-    )
+
+@pytest.mark.asyncio
+async def test_one_compliant_check_is_enough_to_approve_the_item() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    item, inspection = await _build_item_with_one_line(service, company_id, measurement, description="Pintura")
+
+    updated = await _verify(service, company_id, inspection.id, "compliant")
 
     assert item.inspection_status == "compliant"
-    assert inspection.is_double_checked is True
+    assert updated.rounds_count == 1
+    assert updated.approved_after_reinspection is False
+
+
+@pytest.mark.asyncio
+async def test_a_line_approved_after_a_reinspection_is_marked_as_such() -> None:
+    """O `AR` do MFCON, derivado em vez de gravado."""
+    company_id, measurement, service = await _build_measurement_scenario()
+    _, inspection = await _build_item_with_one_line(service, company_id, measurement)
+
+    await _verify(service, company_id, inspection.id, "non_compliant", comment="refazer a camada")
+    updated = await _verify(service, company_id, inspection.id, "compliant")
+
+    assert updated.approved_after_reinspection is True
 
 
 @pytest.mark.asyncio
 async def test_non_compliant_check_marks_the_whole_item_as_non_compliant() -> None:
     company_id, measurement, service = await _build_measurement_scenario()
-    item = await service.create_measurement_item(
-        company_id=company_id,
-        measurement_id=measurement.id,
-        request=ConstructionMeasurementItemCreate(description="Pintura", amount=Decimal("1200.00")),
-    )
-    inspection = await service.create_measurement_item_inspection(
+    item, inspection = await _build_item_with_one_line(service, company_id, measurement, description="Pintura")
+
+    updated = await _verify(service, company_id, inspection.id, "non_compliant", comment="tinta desuniforme")
+
+    assert item.inspection_status == "non_compliant"
+    assert updated.status == "non_compliant"
+    assert updated.rounds_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_line_blocks_the_end_date_until_the_reinspection_passes() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    item, inspection = await _build_item_with_one_line(service, company_id, measurement)
+    await _verify(service, company_id, inspection.id, "non_compliant", comment="camada solta")
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.update_measurement_item(
+            company_id=company_id,
+            item_id=item.id,
+            request=ConstructionMeasurementItemUpdate(end_date=date(2026, 7, 20)),
+        )
+
+    assert error.value.error_code == "CONSTRUCTION_INSPECTION_REINSPECTION_REQUIRED"
+
+    await _verify(service, company_id, inspection.id, "compliant")
+    updated = await service.update_measurement_item(
         company_id=company_id,
         item_id=item.id,
-        request=ConstructionMeasurementItemInspectionCreate(description="Uniformidade da tinta"),
+        request=ConstructionMeasurementItemUpdate(end_date=date(2026, 7, 20)),
     )
+    assert updated.end_date == date(2026, 7, 20)
+
+
+@pytest.mark.asyncio
+async def test_a_line_can_be_reinspected_any_number_of_times() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    _, inspection = await _build_item_with_one_line(service, company_id, measurement)
+
+    for attempt in range(3):
+        await _verify(service, company_id, inspection.id, "non_compliant", comment=f"tentativa {attempt}")
+
+    updated = await _verify(service, company_id, inspection.id, "compliant")
+
+    rounds = await service.list_inspection_rounds(company_id=company_id, inspection_id=inspection.id)
+    assert [item.sequence_number for item in rounds] == [1, 2, 3, 4]
+    assert [item.status for item in rounds] == ["non_compliant"] * 3 + ["compliant"]
+    assert updated.rounds_count == 4
+    assert updated.status == "compliant"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_check_without_a_comment_is_refused() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    _, inspection = await _build_item_with_one_line(service, company_id, measurement)
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await _verify(service, company_id, inspection.id, "non_compliant")
+
+    assert error.value.error_code == "CONSTRUCTION_INSPECTION_COMMENT_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_the_round_records_who_went_to_the_site_and_who_typed_it() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    _, inspection = await _build_item_with_one_line(service, company_id, measurement)
+    inspector_person_id, typist_user_id, typist_person_id = uuid4(), uuid4(), uuid4()
 
     await service.verify_measurement_item_inspection(
         company_id=company_id,
         inspection_id=inspection.id,
-        request=ConstructionMeasurementInspectionVerifyRequest(check_number=1, status="non_compliant"),
-        actor_user_id=uuid4(),
+        request=ConstructionMeasurementInspectionVerifyRequest(
+            status="compliant",
+            inspector_person_id=inspector_person_id,
+            inspected_on=date(2026, 7, 15),
+        ),
+        actor_user_id=typist_user_id,
+        actor_person_id=typist_person_id,
     )
 
-    assert item.inspection_status == "non_compliant"
+    recorded = (await service.list_inspection_rounds(company_id=company_id, inspection_id=inspection.id))[0]
+    assert recorded.inspector_person_id == inspector_person_id
+    assert recorded.recorded_by_user_id == typist_user_id
+    assert recorded.inspected_on == date(2026, 7, 15)
+
+
+@pytest.mark.asyncio
+async def test_waiving_a_failed_line_needs_permission_and_releases_the_item() -> None:
+    """A valvula de escape: o servico saiu do contrato, a parede ja foi rebocada.
+
+    Dispensar tira uma obrigacao da ficha, entao nao pode caber a quem so edita
+    -- e nao apaga a reprovacao, que continua na rodada anterior.
+    """
+    company_id, measurement, service = await _build_measurement_scenario()
+    item, inspection = await _build_item_with_one_line(service, company_id, measurement)
+    await _verify(service, company_id, inspection.id, "non_compliant", comment="camada solta")
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.verify_measurement_item_inspection(
+            company_id=company_id,
+            inspection_id=inspection.id,
+            request=ConstructionMeasurementInspectionVerifyRequest(status="waived", comment="item fora do contrato"),
+            actor_user_id=uuid4(),
+        )
+
+    assert error.value.error_code == "CONSTRUCTION_INSPECTION_WAIVE_NOT_ALLOWED"
+
+    await service.verify_measurement_item_inspection(
+        company_id=company_id,
+        inspection_id=inspection.id,
+        request=ConstructionMeasurementInspectionVerifyRequest(status="waived", comment="item fora do contrato"),
+        actor_user_id=uuid4(),
+        actor_can_waive=True,
+    )
+
+    assert item.inspection_status == "compliant"
+    rounds = await service.list_inspection_rounds(company_id=company_id, inspection_id=inspection.id)
+    assert [round_.status for round_ in rounds] == ["non_compliant", "waived"]
+
+
+@pytest.mark.asyncio
+async def test_submitting_a_measurement_with_a_failed_line_is_refused() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    _, inspection = await _build_item_with_one_line(service, company_id, measurement)
+    await _verify(service, company_id, inspection.id, "non_compliant", comment="camada solta")
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
+
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_REINSPECTION_REQUIRED"
+
+    await _verify(service, company_id, inspection.id, "compliant")
+    submitted = await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
+    assert submitted.status == "submitted"
+
+
+@pytest.mark.asyncio
+async def test_submitting_a_measurement_with_an_unverified_line_is_refused() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    await _build_item_with_one_line(service, company_id, measurement)
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
+
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_INSPECTIONS_PENDING"
+
+
+@pytest.mark.asyncio
+async def test_an_item_without_any_inspection_line_does_not_block_the_measurement() -> None:
+    """A armadilha mais provavel desta mudanca.
+
+    Item de texto livre nasce com `inspection_status = pending` e nunca tem linha
+    de FVS. Bloquear pelo rollup travaria toda medicao que tem um, para sempre e
+    sem destravar -- por isso o bloqueio conta LINHAS, nao o status do item.
+    """
+    company_id, measurement, service = await _build_measurement_scenario()
+    item = await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(description="Servico avulso", amount=Decimal("500.00")),
+    )
+
+    assert item.inspection_status == "pending"
+
+    submitted = await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
+    assert submitted.status == "submitted"
+
+
+@pytest.mark.asyncio
+async def test_reopening_an_approved_line_after_submission_is_refused() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    _, inspection = await _build_item_with_one_line(service, company_id, measurement)
+    await _verify(service, company_id, inspection.id, "compliant")
+    await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await _verify(service, company_id, inspection.id, "non_compliant", comment="reabrindo")
+
+    assert error.value.error_code == "CONSTRUCTION_INSPECTION_ALREADY_APPROVED"
+
+
+@pytest.mark.asyncio
+async def test_a_line_approved_by_mistake_can_be_corrected_while_in_draft() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    _, inspection = await _build_item_with_one_line(service, company_id, measurement)
+    await _verify(service, company_id, inspection.id, "compliant")
+
+    corrected = await _verify(service, company_id, inspection.id, "non_compliant", comment="cliquei errado")
+
+    assert corrected.status == "non_compliant"
+    assert corrected.rounds_count == 2
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_line_that_was_already_verified_is_refused() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    _, inspection = await _build_item_with_one_line(service, company_id, measurement)
+    await _verify(service, company_id, inspection.id, "compliant")
+
+    with pytest.raises(ConstructionResourceInUseError) as error:
+        await service.delete_measurement_item_inspection(company_id=company_id, inspection_id=inspection.id)
+
+    assert error.value.error_code == "CONSTRUCTION_INSPECTION_HAS_HISTORY"
+
+
+@pytest.mark.asyncio
+async def test_the_optional_shortcut_opens_one_occurrence_linked_to_the_line() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    item, inspection = await _build_item_with_one_line(service, company_id, measurement)
+
+    await _verify(
+        service,
+        company_id,
+        inspection.id,
+        "non_compliant",
+        comment="camada 3 solta",
+        open_occurrence=True,
+    )
+    # Segunda reprovacao com o atalho de novo NAO duplica a ocorrencia aberta.
+    await _verify(
+        service,
+        company_id,
+        inspection.id,
+        "non_compliant",
+        comment="continua solta",
+        open_occurrence=True,
+    )
+
+    reloaded = await service.get_measurement_item(company_id=company_id, item_id=item.id)
+    assert len(reloaded.occurrences) == 1
+    assert reloaded.occurrences[0].inspection_id == inspection.id
+    assert reloaded.occurrences[0].problem == "camada 3 solta"
+
+    # Aprovar depois NAO resolve a ocorrencia: resolver exige solucao escrita.
+    await _verify(service, company_id, inspection.id, "compliant")
+    reloaded = await service.get_measurement_item(company_id=company_id, item_id=item.id)
+    assert reloaded.occurrences[0].status == "open"
+
+
+@pytest.mark.asyncio
+async def test_pending_is_not_an_acceptable_verdict() -> None:
+    with pytest.raises(PydanticValidationError):
+        ConstructionMeasurementInspectionVerifyRequest(status="pending")
 
 
 @pytest.mark.asyncio

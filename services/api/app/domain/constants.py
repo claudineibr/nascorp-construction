@@ -116,9 +116,24 @@ class ConstructionInspectionStatus:
     PENDING = "pending"
     COMPLIANT = "compliant"
     NON_COMPLIANT = "non_compliant"
+    #: Reprovado e dispensado de reinspecao: o servico saiu do contrato, a
+    #: parede ja foi rebocada. Libera o fechamento sem apagar a reprovacao.
+    WAIVED = "waived"
 
-    ALL_STATUSES = {PENDING, COMPLIANT, NON_COMPLIANT}
-    RESOLVED_STATUSES = {COMPLIANT, NON_COMPLIANT}
+    ALL_STATUSES = {PENDING, COMPLIANT, NON_COMPLIANT, WAIVED}
+    RESOLVED_STATUSES = {COMPLIANT, NON_COMPLIANT, WAIVED}
+    #: O que uma RODADA aceita. `PENDING` de proposito fora: pendente deixou de
+    #: ser valor gravado e passou a ser a ausencia de rodada.
+    ROUND_STATUSES = {COMPLIANT, NON_COMPLIANT, WAIVED}
+    #: Vereditos que liberam o fechamento do item.
+    CLOSING_STATUSES = {COMPLIANT, WAIVED}
+
+
+class ConstructionInspectionRoundSource:
+    MANUAL = "manual"
+    MIGRATION = "migration"
+
+    ALL_SOURCES = {MANUAL, MIGRATION}
 
 
 class ConstructionOccurrenceStatus:

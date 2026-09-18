@@ -4,7 +4,7 @@ from uuid import UUID
 
 from decimal import Decimal
 
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -14,8 +14,11 @@ from app.domain.constants import ConstructionInspectionStatus, ConstructionOccur
 from app.infrastructure.database.models import (
     ConstructionBlock,
     ConstructionDocumentationType,
+    ConstructionInspectionRound,
     ConstructionMeasurement,
     ConstructionServiceTemplate,
+    ConstructionServiceTemplateAudit,
+    ConstructionServiceTemplateSection,
     ConstructionUnitCommission,
     ConstructionUnitDocumentation,
     ConstructionUnitPaymentSource,
@@ -497,20 +500,40 @@ class ConstructionRepository:
             lock_scope=f"construction_unit_commissions:{unit_id}",
         )
 
+    @staticmethod
+    def _service_template_loaders() -> tuple:
+        return (
+            selectinload(ConstructionServiceTemplate.sections).selectinload(
+                ConstructionServiceTemplateSection.items
+            ),
+            selectinload(ConstructionServiceTemplate.items),
+        )
+
     async def get_service_template(
         self,
         *,
         company_id: UUID,
         service_template_id: UUID,
+        include_deleted: bool = False,
     ) -> ConstructionServiceTemplate | None:
-        result = await self.session.execute(
+        statement = (
             select(ConstructionServiceTemplate)
-            .options(selectinload(ConstructionServiceTemplate.items))
+            .options(*self._service_template_loaders())
             .where(
                 ConstructionServiceTemplate.company_id == company_id,
                 ConstructionServiceTemplate.id == service_template_id,
             )
         )
+        if not include_deleted:
+            statement = statement.where(ConstructionServiceTemplate.deleted_at.is_(None))
+
+        # populate_existing is not optional here. The session runs with
+        # expire_on_commit=False, so an instance already in the identity map
+        # keeps the collections it loaded earlier and selectinload does NOT
+        # overwrite them. Re-reading a template right after replacing its
+        # sections would hand back the OLD structure -- and the audit snapshot
+        # taken from it would state the wrong thing forever.
+        result = await self.session.execute(statement.execution_options(populate_existing=True))
         return result.scalars().first()
 
     async def get_service_template_by_name(
@@ -519,12 +542,19 @@ class ConstructionRepository:
         company_id: UUID,
         name: str,
     ) -> ConstructionServiceTemplate | None:
+        """Only live services answer here.
+
+        A deleted one keeps its name in the table but no longer reserves it --
+        the unique index is partial on deleted_at IS NULL. Matching it would
+        block recreating a service that the user already removed.
+        """
         result = await self.session.execute(
             select(ConstructionServiceTemplate)
-            .options(selectinload(ConstructionServiceTemplate.items))
+            .options(*self._service_template_loaders())
             .where(
                 ConstructionServiceTemplate.company_id == company_id,
                 ConstructionServiceTemplate.name == name,
+                ConstructionServiceTemplate.deleted_at.is_(None),
             )
         )
         return result.scalars().first()
@@ -535,20 +565,96 @@ class ConstructionRepository:
         company_id: UUID,
         only_active: bool = True,
         search: str | None = None,
+        only_deleted: bool = False,
     ) -> list[ConstructionServiceTemplate]:
         statement = (
             select(ConstructionServiceTemplate)
-            .options(selectinload(ConstructionServiceTemplate.items))
+            .options(*self._service_template_loaders())
             .where(ConstructionServiceTemplate.company_id == company_id)
         )
-        if only_active:
-            statement = statement.where(ConstructionServiceTemplate.is_active.is_(True))
+        if only_deleted:
+            statement = statement.where(ConstructionServiceTemplate.deleted_at.is_not(None))
+        else:
+            statement = statement.where(ConstructionServiceTemplate.deleted_at.is_(None))
+            if only_active:
+                statement = statement.where(ConstructionServiceTemplate.is_active.is_(True))
 
         if search:
             statement = statement.where(ConstructionServiceTemplate.name.ilike(f"%{search}%"))
 
         result = await self.session.execute(statement.order_by(ConstructionServiceTemplate.name))
         return list(result.scalars().all())
+
+    async def get_next_service_template_audit_sequence(
+        self,
+        *,
+        company_id: UUID,
+        service_template_id: UUID,
+    ) -> int:
+        return await self._next_scoped_sequence(
+            column=ConstructionServiceTemplateAudit.sequence_number,
+            filters=(
+                ConstructionServiceTemplateAudit.company_id == company_id,
+                ConstructionServiceTemplateAudit.service_template_id == service_template_id,
+            ),
+            lock_scope=f"construction_service_template_audits:{service_template_id}",
+        )
+
+    async def list_service_template_audits(
+        self,
+        *,
+        company_id: UUID,
+        service_template_id: UUID,
+    ) -> list[ConstructionServiceTemplateAudit]:
+        result = await self.session.execute(
+            select(ConstructionServiceTemplateAudit)
+            .where(
+                ConstructionServiceTemplateAudit.company_id == company_id,
+                ConstructionServiceTemplateAudit.service_template_id == service_template_id,
+            )
+            .order_by(ConstructionServiceTemplateAudit.sequence_number.desc())
+        )
+        return list(result.scalars().all())
+
+    async def replace_service_template_sections(
+        self,
+        *,
+        company_id: UUID,
+        service_template_id: UUID,
+        sections: list[ConstructionServiceTemplateSection],
+    ) -> None:
+        """Swaps a template's sections for the new ones.
+
+        Same reason as replace_unit_children: the unit of work emits the INSERTs
+        before the DELETEs it schedules itself, and the unique on
+        (section, sequence) would blow up when re-editing the same template. Old
+        items go away through the FK with ondelete CASCADE -- a DELETE issued as
+        a statement does not trigger the ORM cascade.
+        """
+        await self.session.execute(
+            delete(ConstructionServiceTemplateSection).where(
+                ConstructionServiceTemplateSection.company_id == company_id,
+                ConstructionServiceTemplateSection.service_template_id == service_template_id,
+            )
+        )
+        for section in sections:
+            self.session.add(section)
+
+    async def count_measurement_items_by_service_template(
+        self,
+        *,
+        company_id: UUID,
+        service_template_id: UUID,
+    ) -> int:
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(ConstructionMeasurementItem)
+            .where(
+                ConstructionMeasurementItem.company_id == company_id,
+                ConstructionMeasurementItem.service_template_id == service_template_id,
+            )
+        )
+        return int(result.scalar_one())
 
     async def get_measurement_item(
         self,
@@ -559,7 +665,9 @@ class ConstructionRepository:
         result = await self.session.execute(
             select(ConstructionMeasurementItem)
             .options(
-                selectinload(ConstructionMeasurementItem.inspections),
+                selectinload(ConstructionMeasurementItem.inspections).selectinload(
+                    ConstructionMeasurementItemInspection.rounds
+                ),
                 selectinload(ConstructionMeasurementItem.occurrences),
             )
             .where(
@@ -578,7 +686,9 @@ class ConstructionRepository:
         result = await self.session.execute(
             select(ConstructionMeasurementItem)
             .options(
-                selectinload(ConstructionMeasurementItem.inspections),
+                selectinload(ConstructionMeasurementItem.inspections).selectinload(
+                    ConstructionMeasurementItemInspection.rounds
+                ),
                 selectinload(ConstructionMeasurementItem.occurrences),
             )
             .where(
@@ -614,13 +724,51 @@ class ConstructionRepository:
         company_id: UUID,
         inspection_id: UUID,
     ) -> ConstructionMeasurementItemInspection | None:
+        """Reads the line with its rounds, always from the database.
+
+        populate_existing is not optional here. The session runs with
+        expire_on_commit=False, so an instance already in the identity map keeps
+        the collection it loaded earlier and selectinload does NOT overwrite it.
+        Re-reading right after recording a round would hand back the history
+        without the round that was just written -- and the derived status on the
+        response would contradict it.
+        """
         result = await self.session.execute(
-            select(ConstructionMeasurementItemInspection).where(
+            select(ConstructionMeasurementItemInspection)
+            .options(selectinload(ConstructionMeasurementItemInspection.rounds))
+            .where(
                 ConstructionMeasurementItemInspection.company_id == company_id,
                 ConstructionMeasurementItemInspection.id == inspection_id,
             )
+            .execution_options(populate_existing=True)
         )
         return result.scalars().first()
+
+    async def list_inspection_rounds(
+        self,
+        *,
+        company_id: UUID,
+        inspection_id: UUID,
+    ) -> list[ConstructionInspectionRound]:
+        result = await self.session.execute(
+            select(ConstructionInspectionRound)
+            .where(
+                ConstructionInspectionRound.company_id == company_id,
+                ConstructionInspectionRound.inspection_id == inspection_id,
+            )
+            .order_by(ConstructionInspectionRound.sequence_number)
+        )
+        return list(result.scalars().all())
+
+    async def get_next_inspection_round_sequence(self, *, company_id: UUID, inspection_id: UUID) -> int:
+        return await self._next_scoped_sequence(
+            column=ConstructionInspectionRound.sequence_number,
+            filters=(
+                ConstructionInspectionRound.company_id == company_id,
+                ConstructionInspectionRound.inspection_id == inspection_id,
+            ),
+            lock_scope=f"construction_inspection_rounds:{inspection_id}",
+        )
 
     async def list_measurement_item_inspections(
         self,
@@ -649,8 +797,34 @@ class ConstructionRepository:
         )
 
     async def count_pending_measurement_inspections(self, *, company_id: UUID, measurement_id: UUID) -> int:
+        pending, _ = await self.summarize_measurement_inspection_blockers(
+            company_id=company_id,
+            measurement_id=measurement_id,
+        )
+        return pending
+
+    async def summarize_measurement_inspection_blockers(
+        self,
+        *,
+        company_id: UUID,
+        measurement_id: UUID,
+    ) -> tuple[int, int]:
+        """Counts, in one trip, what stops the measurement from closing.
+
+        Returns (never verified, failed without an approved reinspection). It
+        counts INSPECTION LINES, never the item rollup: a free-text item has no
+        line at all and must not block anything -- reading its `pending` rollup
+        would deadlock every measurement that has one, with no way out.
+        """
         result = await self.session.execute(
-            select(func.count())
+            select(
+                func.count()
+                .filter(ConstructionMeasurementItemInspection.status == ConstructionInspectionStatus.PENDING)
+                .label("pending"),
+                func.count()
+                .filter(ConstructionMeasurementItemInspection.status == ConstructionInspectionStatus.NON_COMPLIANT)
+                .label("non_compliant"),
+            )
             .select_from(ConstructionMeasurementItemInspection)
             .join(
                 ConstructionMeasurementItem,
@@ -659,13 +833,10 @@ class ConstructionRepository:
             .where(
                 ConstructionMeasurementItem.company_id == company_id,
                 ConstructionMeasurementItem.measurement_id == measurement_id,
-                or_(
-                    ConstructionMeasurementItemInspection.first_status == ConstructionInspectionStatus.PENDING,
-                    ConstructionMeasurementItemInspection.second_status == ConstructionInspectionStatus.PENDING,
-                ),
             )
         )
-        return int(result.scalar_one())
+        pending, non_compliant = result.one()
+        return int(pending), int(non_compliant)
 
     async def get_measurement_occurrence(
         self,

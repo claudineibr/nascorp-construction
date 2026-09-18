@@ -6,9 +6,11 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -21,6 +23,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.domain.constants import (
+    ConstructionInspectionRoundSource,
     ConstructionInspectionStatus,
     ConstructionOccurrenceStatus,
     ConstructionBlockStatus,
@@ -351,8 +354,16 @@ class ConstructionUnitPaymentSource(Base):
 
 class ConstructionServiceTemplate(Base):
     __tablename__ = "construction_service_templates"
+    # Partial unique: a soft-deleted service releases its name, two live ones
+    # still cannot share it.
     __table_args__ = (
-        UniqueConstraint("company_id", "name", name="uq_construction_service_templates_name"),
+        Index(
+            "uq_construction_service_templates_live_name",
+            "company_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         {"schema": CONSTRUCTION_SCHEMA},
     )
 
@@ -362,6 +373,10 @@ class ConstructionServiceTemplate(Base):
     product_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     source_file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text("true"))
+    created_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    updated_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -370,20 +385,24 @@ class ConstructionServiceTemplate(Base):
         onupdate=func.now(),
     )
 
-    items: Mapped[list[ConstructionServiceTemplateItem]] = relationship(
+    sections: Mapped[list[ConstructionServiceTemplateSection]] = relationship(
         back_populates="service_template",
         cascade="all, delete-orphan",
+        order_by="ConstructionServiceTemplateSection.sequence_number",
+    )
+    items: Mapped[list[ConstructionServiceTemplateItem]] = relationship(
+        viewonly=True,
         order_by="ConstructionServiceTemplateItem.sequence_number",
     )
 
 
-class ConstructionServiceTemplateItem(Base):
-    __tablename__ = "construction_service_template_items"
+class ConstructionServiceTemplateSection(Base):
+    __tablename__ = "construction_service_template_sections"
     __table_args__ = (
         UniqueConstraint(
             "service_template_id",
             "sequence_number",
-            name="uq_construction_service_template_items_sequence",
+            name="uq_construction_service_template_sections_sequence",
         ),
         {"schema": CONSTRUCTION_SCHEMA},
     )
@@ -397,8 +416,7 @@ class ConstructionServiceTemplateItem(Base):
         index=True,
     )
     sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    verification_method: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -407,7 +425,110 @@ class ConstructionServiceTemplateItem(Base):
         onupdate=func.now(),
     )
 
-    service_template: Mapped[ConstructionServiceTemplate] = relationship(back_populates="items")
+    service_template: Mapped[ConstructionServiceTemplate] = relationship(back_populates="sections")
+    items: Mapped[list[ConstructionServiceTemplateItem]] = relationship(
+        back_populates="section",
+        cascade="all, delete-orphan",
+        order_by="ConstructionServiceTemplateItem.sequence_number",
+    )
+
+
+class ConstructionServiceTemplateItem(Base):
+    __tablename__ = "construction_service_template_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "section_id",
+            "sequence_number",
+            name="uq_construction_service_template_items_section_sequence",
+        ),
+        {"schema": CONSTRUCTION_SCHEMA},
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    service_template_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_service_templates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    section_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_service_template_sections.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    verification_method: Mapped[str] = mapped_column(Text, nullable=False)
+    requires_comment: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    requires_photo: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    section: Mapped[ConstructionServiceTemplateSection] = relationship(back_populates="items")
+
+
+class ConstructionServiceTemplateAudit(Base):
+    """One row per mutation of a catalog service: who, when, and what it became.
+
+    The author columns on the template only ever hold the LAST write. A sheet is
+    revised more than once, so without this table a revision would erase the
+    previous author -- and the FVS exists precisely to prove the trail.
+
+    Name and actor are denormalized: the service gets renamed, people get
+    renamed and leave the company, and the trail still has to read years later.
+    """
+
+    __tablename__ = "construction_service_template_audits"
+    __table_args__ = (
+        UniqueConstraint(
+            "service_template_id",
+            "sequence_number",
+            name="uq_construction_service_template_audits_sequence",
+        ),
+        Index(
+            "ix_construction_service_template_audits_template",
+            "service_template_id",
+            "sequence_number",
+        ),
+        {"schema": CONSTRUCTION_SCHEMA},
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    service_template_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_service_templates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    service_template_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: Numero da revisao da ficha. E ele que ordena o historico: `created_at`
+    #: sozinho empata quando dois eventos caem na mesma transacao.
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    event: Mapped[str] = mapped_column(String(32), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual", server_default=text("'manual'"))
+    actor_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    actor_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    actor_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    summary: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class ConstructionDocumentationType(Base):
@@ -609,27 +730,37 @@ class ConstructionMeasurementItemInspection(Base):
         index=True,
     )
     sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    section_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     verification_method: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    requires_comment: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    requires_photo: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: Inspetor padrao da linha, herdado do item. E apenas o VALOR INICIAL das
+    #: rodadas novas -- quem foi a campo de verdade esta em cada rodada.
     inspector_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
-    first_status: Mapped[str] = mapped_column(
+    #: Derivadas das rodadas, mantidas pelo servico. Existem para que o rollup do
+    #: item e o bloqueio de fechamento nao precisem de uma window function por
+    #: linha -- a camada de servico nao pode montar query.
+    status: Mapped[str] = mapped_column(
         String(30),
         nullable=False,
         default=ConstructionInspectionStatus.PENDING,
         server_default=ConstructionInspectionStatus.PENDING,
     )
-    first_status_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    first_status_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
-    second_status: Mapped[str] = mapped_column(
-        String(30),
-        nullable=False,
-        default=ConstructionInspectionStatus.PENDING,
-        server_default=ConstructionInspectionStatus.PENDING,
-    )
-    second_status_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    second_status_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    rounds_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -639,13 +770,145 @@ class ConstructionMeasurementItemInspection(Base):
     )
 
     item: Mapped[ConstructionMeasurementItem] = relationship(back_populates="inspections")
+    rounds: Mapped[list[ConstructionInspectionRound]] = relationship(
+        back_populates="inspection",
+        cascade="all, delete-orphan",
+        order_by="ConstructionInspectionRound.sequence_number",
+    )
+
+    @property
+    def approved_after_reinspection(self) -> bool:
+        """O `AR` do MFCON, calculado em vez de gravado.
+
+        Um quarto valor de status obrigaria toda comparacao `== COMPLIANT` do
+        codigo a aprender um segundo "aprovado" -- que e exatamente a classe de
+        bug que este plano veio consertar.
+        """
+        return self.status == ConstructionInspectionStatus.COMPLIANT and self.rounds_count > 1
+
+    # --- Compatibilidade: campos do modelo de dupla conferencia ------------
+    # Deprecated. Existem so para o MFE em voo nao quebrar entre o restart da
+    # API e o build do front; saem no release seguinte. Derivam das rodadas,
+    # nunca de coluna -- coluna que ninguem escreve diverge do historico.
+
+    @property
+    def first_status(self) -> str:
+        rounds = self.rounds or []
+        return rounds[0].status if rounds else ConstructionInspectionStatus.PENDING
+
+    @property
+    def first_status_at(self) -> datetime | None:
+        rounds = self.rounds or []
+        return rounds[0].verified_at if rounds else None
+
+    @property
+    def first_status_by_user_id(self) -> UUID | None:
+        rounds = self.rounds or []
+        return rounds[0].recorded_by_user_id if rounds else None
+
+    @property
+    def second_status(self) -> str:
+        rounds = self.rounds or []
+        return rounds[1].status if len(rounds) > 1 else ConstructionInspectionStatus.PENDING
+
+    @property
+    def second_status_at(self) -> datetime | None:
+        rounds = self.rounds or []
+        return rounds[1].verified_at if len(rounds) > 1 else None
+
+    @property
+    def second_status_by_user_id(self) -> UUID | None:
+        rounds = self.rounds or []
+        return rounds[1].recorded_by_user_id if len(rounds) > 1 else None
 
     @property
     def is_double_checked(self) -> bool:
-        return (
-            self.first_status in ConstructionInspectionStatus.RESOLVED_STATUSES
-            and self.second_status in ConstructionInspectionStatus.RESOLVED_STATUSES
-        )
+        """Passou a significar "esta linha esta resolvida".
+
+        E o uso real que o MFE faz do campo (badge de concluido), entao o
+        comportamento visivel nao muda -- so a semantica.
+        """
+        return self.status in ConstructionInspectionStatus.RESOLVED_STATUSES
+
+
+class ConstructionInspectionRound(Base):
+    """Uma verificacao de uma linha da FVS: a primeira ou uma reinspecao.
+
+    Append-only de proposito, e por isso nao tem `updated_at`: a coluna
+    convidaria um UPDATE e o historico deixaria de ser historico. Corrigir uma
+    rodada errada e registrar outra, que fica ao lado da anterior.
+
+    `status` nunca e `pending`: pendente deixou de ser valor gravado e passou a
+    ser a AUSENCIA de rodada.
+    """
+
+    __tablename__ = "construction_inspection_rounds"
+    __table_args__ = (
+        UniqueConstraint(
+            "inspection_id",
+            "sequence_number",
+            name="uq_construction_inspection_rounds_sequence",
+        ),
+        CheckConstraint(
+            "status IN ('compliant', 'non_compliant', 'waived')",
+            name="ck_construction_inspection_rounds_status",
+        ),
+        Index(
+            "ix_construction_inspection_rounds_inspection",
+            "inspection_id",
+            "sequence_number",
+        ),
+        {"schema": CONSTRUCTION_SCHEMA},
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    inspection_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_measurement_item_inspections.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    #: Desnormalizado: poupa um join no bloqueio de submit/approve, que roda por
+    #: medicao inteira, e nunca muda -- inspecao nao migra de item.
+    measurement_item_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_measurement_items.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    #: Quando foi lancado no sistema.
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: Quando a pessoa esteve em campo. Nulo quando nao se sabe -- e o caso de
+    #: toda reinspecao vinda do MFCON, cuja data nunca foi gravada.
+    inspected_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    inspector_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    #: Nomes congelados na data da rodada: a pessoa e renomeada e sai da empresa,
+    #: e a ficha continua tendo de ser legivel anos depois.
+    inspector_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    recorded_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    recorded_by_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default=ConstructionInspectionRoundSource.MANUAL,
+        server_default=text("'manual'"),
+    )
+    #: Rodada deduzida na carga do legado, nao registrada por ninguem. So a ETL
+    #: escreve; e o que permite separar depois o que foi medido do que foi
+    #: inferido.
+    is_inferred: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    inspection: Mapped[ConstructionMeasurementItemInspection] = relationship(back_populates="rounds")
 
 
 class ConstructionMeasurementItemOccurrence(Base):
@@ -665,6 +928,15 @@ class ConstructionMeasurementItemOccurrence(Base):
         PG_UUID(as_uuid=True),
         ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_measurement_items.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
+    )
+    #: A linha da FVS que originou a ocorrencia, quando houve uma. SET NULL e
+    #: nao CASCADE: apagar a linha da ficha nao pode apagar o registro do
+    #: problema encontrado.
+    inspection_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_measurement_item_inspections.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)

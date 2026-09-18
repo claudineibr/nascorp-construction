@@ -29,7 +29,7 @@ async def get_permission_client() -> PermissionClient:
 
 async def require_service_key(x_service_key: str = Header(..., alias="X-Service-Key")) -> None:
     if not settings.erp_service_key or not hmac.compare_digest(x_service_key, settings.erp_service_key):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid service key")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Chave de serviço inválida")
 
 
 async def get_construction_context(
@@ -54,7 +54,7 @@ async def get_construction_context(
             effective_permissions.user_id,
             effective_permissions.company_id,
         )
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission context mismatch")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Contexto de permissão não confere")
 
     return ConstructionContext(
         company_id=x_company_id,
@@ -77,7 +77,7 @@ def require_permission(feature: str, action: int):
                 ctx.company_id,
                 ctx.feature_permissions,
             )
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient Construction permission")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão insuficiente no módulo de Obras")
 
         return ctx
 
@@ -87,35 +87,35 @@ def require_permission(feature: str, action: int):
 def _extract_bearer_token(*, authorization: str) -> str:
     prefix = "Bearer "
     if not authorization.startswith(prefix):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization header")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Cabeçalho de autorização inválido")
 
     return authorization.removeprefix(prefix).strip()
 
 
 def _decode_jwt(*, token: str) -> dict[str, Any]:
     if not settings.jwt_secret_key:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="JWT secret is not configured")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="A chave do JWT não está configurada")
 
     try:
         header_value, payload_value, signature_value = token.split(".")
         header = json.loads(_base64url_decode(value=header_value))
         payload = json.loads(_base64url_decode(value=payload_value))
     except (ValueError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token inválido") from exc
 
     algorithm = header.get("alg")
     if algorithm != settings.jwt_algorithm or algorithm != "HS256":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unsupported token algorithm")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Algoritmo do token não suportado")
 
     signed_value = f"{header_value}.{payload_value}".encode()
     expected_signature = hmac.new(settings.jwt_secret_key.encode(), signed_value, hashlib.sha256).digest()
     received_signature = _base64url_decode(value=signature_value)
     if not hmac.compare_digest(expected_signature, received_signature):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token signature")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Assinatura do token inválida")
 
     expires_at = payload.get("exp")
     if expires_at is not None and datetime.fromtimestamp(int(expires_at), tz=UTC) <= datetime.now(tz=UTC):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expirado")
 
     return payload
 
@@ -123,12 +123,12 @@ def _decode_jwt(*, token: str) -> dict[str, Any]:
 def _extract_user_id(*, payload: dict[str, Any]) -> UUID:
     user_value = payload.get("user_id") or payload.get("sub")
     if not user_value:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token user is missing")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="O token não traz o usuário")
 
     try:
         return UUID(str(user_value))
     except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token user is invalid") from exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="O usuário do token é inválido") from exc
 
 
 async def _resolve_permissions(
@@ -150,7 +150,7 @@ async def _resolve_permissions(
             type(exc).__name__,
             exc,
         )
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Unable to resolve Construction permissions") from exc
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Não foi possível resolver as permissões de Obras") from exc
 
 
 def _base64url_decode(*, value: str) -> bytes:
