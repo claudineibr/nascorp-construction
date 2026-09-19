@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from uuid import UUID
 
 from decimal import Decimal
@@ -92,6 +93,9 @@ class ConstructionRepository:
         *,
         company_id: UUID,
         search: str | None,
+        status: str | None = None,
+        start_date_from: date | None = None,
+        start_date_to: date | None = None,
         page: int,
         page_size: int,
     ) -> tuple[list[ConstructionProject], int]:
@@ -99,13 +103,26 @@ class ConstructionRepository:
         if search:
             search_pattern = f"%{search}%"
             conditions.append(ConstructionProject.name.ilike(search_pattern) | ConstructionProject.code.ilike(search_pattern))
+        if status:
+            conditions.append(ConstructionProject.status == status)
+        # A tela sempre filtrou por `start_date`, inclusive no campo chamado
+        # "Inicio final": e a janela em que a obra COMECOU, nao o fim dela.
+        if start_date_from is not None:
+            conditions.append(ConstructionProject.start_date >= start_date_from)
+        if start_date_to is not None:
+            conditions.append(ConstructionProject.start_date <= start_date_to)
 
         total_result = await self.session.execute(select(func.count()).select_from(ConstructionProject).where(*conditions))
         total = int(total_result.scalar_one())
         result = await self.session.execute(
             select(ConstructionProject)
             .where(*conditions)
-            .order_by(ConstructionProject.created_at.desc())
+            # `created_at` NAO desempata: no Postgres o `now()` e o mesmo para a
+            # transacao inteira, e as 77 obras da carga do MFCON entraram com o
+            # timestamp identico -- medido. Ordenar so por ele deixa o banco
+            # livre para devolver qualquer ordem, e com OFFSET a mesma obra
+            # aparece na pagina 1 e some na 2. O `code` e UNIQUE por empresa.
+            .order_by(ConstructionProject.created_at.desc(), ConstructionProject.code.asc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         )

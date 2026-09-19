@@ -573,7 +573,15 @@ export async function fetchConstructionAddressByZip({ bridge, zipCode }) {
   return toAddressView(payload)
 }
 
-export async function listConstructionProjects({ bridge, page = 1, pageSize = 20, search = "" } = {}) {
+export async function listConstructionProjects({
+  bridge,
+  page = 1,
+  pageSize = 20,
+  search = "",
+  status = "",
+  startDate = "",
+  endDate = "",
+} = {}) {
   const query = new URLSearchParams({
     page: String(page),
     page_size: String(pageSize),
@@ -581,6 +589,21 @@ export async function listConstructionProjects({ bridge, page = 1, pageSize = 20
 
   if (search.trim()) {
     query.set("search", search.trim())
+  }
+
+  // Os filtros vao para o servidor porque a lista pagina no servidor: filtrar
+  // no navegador olharia so a pagina aberta e esconderia obra que casa com o
+  // filtro duas paginas adiante.
+  if (status) {
+    query.set("status", status)
+  }
+
+  if (startDate) {
+    query.set("start_date_from", startDate)
+  }
+
+  if (endDate) {
+    query.set("start_date_to", endDate)
   }
 
   const payload = await requestJson({

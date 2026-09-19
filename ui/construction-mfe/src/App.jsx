@@ -108,6 +108,11 @@ const defaultFilters = {
   endDate: "",
 }
 
+// O teto e 100 porque e o `le=100` do `page_size` na rota; oferecer 200 aqui
+// devolveria 422 do servidor.
+const projectPageSizeOptions = [10, 20, 50, 100]
+const defaultProjectPageSize = 20
+
 const statusLabel = {
   draft: "Rascunho",
   active: "Ativa",
@@ -1113,6 +1118,9 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [filters, setFilters] = useState(defaultFilters)
   const [projects, setProjects] = useState([])
   const [totalProjects, setTotalProjects] = useState(0)
+  const [projectPage, setProjectPage] = useState(1)
+  const [projectPageSize, setProjectPageSize] = useState(defaultProjectPageSize)
+  const [projectTotalPages, setProjectTotalPages] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
 
@@ -1250,16 +1258,28 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     try {
       const result = await listConstructionProjects({
         bridge,
+        page: projectPage,
+        pageSize: projectPageSize,
         search: filters.search,
+        status: filters.status,
+        startDate: filters.startDate,
+        endDate: filters.endDate,
       })
       setProjects(result.items)
       setTotalProjects(result.total)
+      setProjectTotalPages(result.totalPages)
+
+      // Apagar obras ou apertar o filtro encurta a lista, e a pagina aberta
+      // pode deixar de existir: sem isto a tela fica vazia sem dizer por que.
+      if (result.totalPages > 0 && projectPage > result.totalPages) {
+        setProjectPage(result.totalPages)
+      }
     } catch (requestError) {
       setError(requestError?.message ?? "Não foi possível carregar as obras.")
     } finally {
       setLoading(false)
     }
-  }, [bridge, filters.search])
+  }, [bridge, filters.search, filters.status, filters.startDate, filters.endDate, projectPage, projectPageSize])
 
   useEffect(() => {
     void loadProjects()
@@ -1293,24 +1313,6 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }, [activeUnitId, units])
 
-  const visibleProjects = useMemo(() => {
-    const searchTerm = filters.search.trim().toLowerCase()
-
-    return projects.filter((project) => {
-      const matchesSearch = searchTerm
-        ? [project.code, project.name, project.cnpjSpe].some((value) =>
-            String(value ?? "").toLowerCase().includes(searchTerm)
-          )
-        : true
-      const matchesStatus = filters.status ? project.status === filters.status : true
-      const startDate = project.startDate ? String(project.startDate).slice(0, 10) : ""
-      const matchesStartDate = filters.startDate ? startDate >= filters.startDate : true
-      const matchesEndDate = filters.endDate ? startDate <= filters.endDate : true
-
-      return matchesSearch && matchesStatus && matchesStartDate && matchesEndDate
-    })
-  }, [filters, projects])
-
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === activeProjectId) ?? null,
     [activeProjectId, projects]
@@ -1326,43 +1328,49 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     [activeUnitId, measurements]
   )
 
+  const hasActiveFilters = Object.values(filters).some(Boolean)
+
+  const projectRangeStart = projects.length ? (projectPage - 1) * projectPageSize + 1 : 0
+  const projectRangeEnd = (projectPage - 1) * projectPageSize + projects.length
+
   const summaryItems = useMemo(() => {
     const activeProjects = projects.filter((project) => project.status === "active").length
     const pendingCostCenters = projects.filter((project) => !project.analyticCostCenterId).length
 
+    // `activeProjects` e `pendingCostCenters` contam o que veio na PAGINA, nao a
+    // empresa inteira -- os cartoes dizem isso na dica, porque somar tudo exigiria
+    // uma consulta de agregacao que a rota nao tem.
     return [
       {
         label: "Empreendimentos",
         value: totalProjects,
-        hint: `${visibleProjects.length} na lista`,
+        hint: hasActiveFilters ? "no filtro atual" : "cadastrados",
         icon: Building2,
         tone: "muted",
       },
       {
         label: "Ativas",
         value: activeProjects,
-        hint: "obras em andamento",
+        hint: "em andamento nesta página",
         icon: CheckCircle,
         tone: "success",
       },
       {
         label: "Centros pendentes",
         value: pendingCostCenters,
-        hint: "sem vínculo analítico",
+        hint: "sem vínculo analítico nesta página",
         icon: Clock,
         tone: "warning",
       },
       {
-        label: "Filtradas",
-        value: visibleProjects.length,
-        hint: "obras na lista atual",
+        label: "Página",
+        value: projectTotalPages ? `${projectPage} / ${projectTotalPages}` : "—",
+        hint: `${projects.length} obras exibidas`,
         icon: Layers3,
         tone: "muted",
       },
     ]
-  }, [projects, totalProjects, visibleProjects.length])
-
-  const hasActiveFilters = Object.values(filters).some(Boolean)
+  }, [hasActiveFilters, projects, projectPage, projectTotalPages, totalProjects])
 
   const scheduleProgress = useMemo(() => {
     if (!schedulePhases.length) {
@@ -1613,6 +1621,14 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const handleFilterChange = (field, value) => {
     setFilters((currentFilters) => ({ ...currentFilters, [field]: value }))
+    // Filtrar estando na pagina 5 cairia numa faixa que o novo filtro talvez
+    // nem tenha.
+    setProjectPage(1)
+  }
+
+  const handleProjectPageSizeChange = (value) => {
+    setProjectPageSize(Number(value) || defaultProjectPageSize)
+    setProjectPage(1)
   }
 
   const handlePersonLookupQueryChange = (value) => {
@@ -1623,7 +1639,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     await loadPersonSummaries(personLookupQuery)
   }
 
-  const clearFilters = () => setFilters(defaultFilters)
+  const clearFilters = () => {
+    setFilters(defaultFilters)
+    setProjectPage(1)
+  }
 
   const openProjectDetail = (project) => {
     setActiveProjectId(project.id)
@@ -3822,7 +3841,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
             subtitle="Abra uma obra para gerenciar blocos, unidades, cronograma, medições e requisições."
             content={
               <ProjectList
-                projects={visibleProjects}
+                projects={projects}
                 loading={loading}
                 error={error}
                 onRetry={loadProjects}
@@ -3832,9 +3851,47 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
               />
             }
             footer={
-              <span className={styles.paginationSummary}>
-                Mostrando {visibleProjects.length} de {totalProjects} obras
-              </span>
+              <div className={styles.paginationBar}>
+                <span className={styles.paginationSummary}>
+                  {totalProjects
+                    ? `Mostrando ${projectRangeStart}-${projectRangeEnd} de ${totalProjects} obras`
+                    : "Nenhuma obra para exibir"}
+                </span>
+                <div className={styles.paginationControls}>
+                  <label className={styles.paginationPageSize}>
+                    <span>Itens por página</span>
+                    <select
+                      value={projectPageSize}
+                      onChange={(event) => handleProjectPageSizeChange(event.target.value)}
+                    >
+                      {projectPageSizeOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    className={styles.paginationButton}
+                    onClick={() => setProjectPage((current) => Math.max(1, current - 1))}
+                    disabled={loading || projectPage <= 1}
+                  >
+                    Anterior
+                  </button>
+                  <span className={styles.paginationSummary}>
+                    Página {projectPage} de {projectTotalPages || 1}
+                  </span>
+                  <button
+                    type="button"
+                    className={styles.paginationButton}
+                    onClick={() => setProjectPage((current) => current + 1)}
+                    disabled={loading || projectPage >= projectTotalPages}
+                  >
+                    Próxima
+                  </button>
+                </div>
+              </div>
             }
           />
         </>

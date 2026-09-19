@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 from math import ceil
 from uuid import UUID
@@ -135,7 +136,12 @@ async def create_project(
 @router.get("/projects", response_model=ConstructionProjectListResponse)
 async def list_projects(
     search: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    start_date_from: date | None = Query(default=None),
+    start_date_to: date | None = Query(default=None),
     page: int = Query(default=1, ge=1),
+    # O teto de 100 e o do banco, nao o da tela: a lista de obras pagina no
+    # servidor e o seletor de itens por pagina para em 100 pelo mesmo motivo.
     page_size: int = Query(default=20, ge=1, le=100),
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.READ)),
     service: ConstructionProjectService = Depends(get_project_service),
@@ -143,6 +149,9 @@ async def list_projects(
     items, total = await service.list_projects(
         company_id=ctx.company_id,
         search=search,
+        status=status,
+        start_date_from=start_date_from,
+        start_date_to=start_date_to,
         page=page,
         page_size=page_size,
     )

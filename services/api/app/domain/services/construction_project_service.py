@@ -330,12 +330,18 @@ class ConstructionProjectService:
         *,
         company_id: UUID,
         search: str | None,
+        status: str | None = None,
+        start_date_from: date | None = None,
+        start_date_to: date | None = None,
         page: int,
         page_size: int,
     ) -> tuple[list[ConstructionProject], int]:
         return await self.repository.list_projects(
             company_id=company_id,
             search=search,
+            status=status,
+            start_date_from=start_date_from,
+            start_date_to=start_date_to,
             page=page,
             page_size=page_size,
         )
