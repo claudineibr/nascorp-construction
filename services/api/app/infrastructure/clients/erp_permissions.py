@@ -12,6 +12,13 @@ class EffectivePermissions:
     user_id: UUID
     person_id: UUID | None
     feature_permissions: dict[str, int]
+    #: Quais obras este ator enxerga. Vem resolvido do ERP, que e dono da
+    #: tabela de concessoes -- Obras nao tem como recalcular isso, e nem
+    #: deveria: `role_ids` e descartado neste contrato, entao MASTER nao e
+    #: deduzivel aqui. Por isso o ERP manda a resposta pronta, e nao os
+    #: insumos para deduzi-la.
+    record_access_unrestricted: bool = True
+    allowed_project_ids: frozenset[UUID] = frozenset()
 
 
 class ErpPermissionClient:
@@ -39,4 +46,10 @@ class ErpPermissionClient:
             user_id=UUID(payload["user_id"]),
             person_id=UUID(payload["person_id"]) if payload.get("person_id") else None,
             feature_permissions={key: int(value) for key, value in payload.get("feature_permissions", {}).items()},
+            # Campo AUSENTE e irrestrito, de proposito: ERP anterior ao plano 23
+            # nao manda nada aqui, e fail-closed nesse caso trancaria Obras
+            # inteira para todo mundo numa subida fora de ordem. Presente e
+            # False, manda -- a lista vazia entao nega, e e o que tem de ser.
+            record_access_unrestricted=bool(payload.get("record_access_unrestricted", True)),
+            allowed_project_ids=frozenset(UUID(str(value)) for value in payload.get("allowed_project_ids", ())),
         )

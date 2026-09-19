@@ -13,6 +13,7 @@ from fastapi import Depends, Header, HTTPException, status
 
 from app.core.config import settings
 from app.core.context import ConstructionContext
+from app.domain.record_scope import ProjectScope
 from app.infrastructure.clients import EffectivePermissions, ErpPermissionClient
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,11 @@ async def get_construction_context(
         user_id=user_id,
         person_id=effective_permissions.person_id,
         feature_permissions=effective_permissions.feature_permissions,
+        project_scope=(
+            ProjectScope.unlimited()
+            if effective_permissions.record_access_unrestricted
+            else ProjectScope.limited_to(effective_permissions.allowed_project_ids)
+        ),
     )
 
 

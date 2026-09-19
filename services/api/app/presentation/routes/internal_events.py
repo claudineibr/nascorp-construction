@@ -15,6 +15,13 @@ router = APIRouter(prefix="/internal", tags=["internal"])
 
 
 async def get_project_service(session: AsyncSession = Depends(get_session)) -> ConstructionProjectService:
+    """Sem escopo por registro, e isso e deliberado.
+
+    Aqui quem chama e o ERP com chave de servico, nao uma pessoa -- nao ha a
+    quem restringir, e a obra que o evento cria ainda nao foi concedida a
+    ninguem. Restringir este caminho faria o evento de centro de custo nao achar
+    a obra que ele mesmo acabou de criar.
+    """
     return ConstructionProjectService(
         repository=ConstructionRepository(session=session),
         event_repository=EventRepository(session=session),

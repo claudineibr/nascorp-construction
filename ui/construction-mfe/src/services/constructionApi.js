@@ -539,6 +539,13 @@ async function requestJson({ bridge, path, method = "GET", body = null, baseUrl 
         payload?.detail?.message ||
         payload?.message ||
         (typeof payloadDetails === "string" ? payloadDetails : payloadDetails?.message) ||
+        // `detail` como TEXTO puro e o que toda recusa de autorizacao produz:
+        // `raise HTTPException(detail="Permissao insuficiente no modulo de
+        // Obras")`. Nenhuma das chaves acima existe nesse corpo, e sem este
+        // ramo o 403 chegava como "Nao foi possivel concluir a requisicao" --
+        // indistinguivel de queda de rede justamente no caso em que o operador
+        // precisa saber que o problema e permissao, e nao tentar de novo.
+        (typeof payload?.detail === "string" ? payload.detail : null) ||
         // Um 422 do FastAPI traz `detail` como LISTA de erros de campo, e nenhuma
         // das chaves acima existe nele: sem este ramo, toda recusa de contrato
         // virava a mensagem generica e o operador nao sabia o que corrigir.

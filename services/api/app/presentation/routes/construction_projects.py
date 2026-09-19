@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, Up
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.context import ConstructionContext
-from app.core.security import require_permission
+from app.core.security import get_construction_context, require_permission
 from app.domain.exceptions import ConstructionDomainError
 from app.domain.permissions import ConstructionFeature, PermissionAction
 from app.domain.services import ConstructionProjectService
@@ -99,10 +99,17 @@ async def get_erp_construction_client() -> ErpConstructionClient:
 async def get_project_service(
     session: AsyncSession = Depends(get_session),
     erp_client: ErpConstructionClient = Depends(get_erp_construction_client),
+    ctx: ConstructionContext = Depends(get_construction_context),
 ) -> ConstructionProjectService:
+    """A costura do escopo por registro: uma linha, e vale para as 78 rotas.
+
+    `get_construction_context` ja e dependencia de toda rota por dentro de
+    `require_permission`, e o FastAPI resolve dependencia uma vez por
+    requisicao -- pedi-la aqui NAO gera uma segunda consulta ao ERP.
+    """
     event_repository = EventRepository(session=session)
     return ConstructionProjectService(
-        repository=ConstructionRepository(session=session),
+        repository=ConstructionRepository(session=session, scope=ctx.project_scope),
         event_repository=event_repository,
         erp_client=erp_client,
         integration_dispatcher=create_construction_integration_dispatcher(

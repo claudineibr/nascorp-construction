@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.domain.constants import ConstructionInspectionStatus, ConstructionOccurrenceStatus
+from app.infrastructure.repository._project_scope_filters import scope_conditions
 
 from app.infrastructure.database.models import (
     ConstructionBlock,
@@ -34,8 +35,32 @@ from app.infrastructure.database.models import (
 
 
 class ConstructionRepository:
-    def __init__(self, session: AsyncSession) -> None:
+    """As consultas de Obras, ja limitadas as obras que o ator enxerga.
+
+    O escopo entra AQUI, e nao nas 79 rotas: `ConstructionProjectService` tem
+    118 metodos async e 103 deles recebem `company_id` -- filtrar la seria 103
+    chances de esquecer uma. O repositorio e o unico caminho ate o banco.
+
+    `scope=None` e irrestrito de proposito: e o que o handler de evento interno
+    usa, porque evento vindo do ERP nao tem pessoa a quem restringir.
+
+    Tres familias de consulta ficam DE FORA do filtro, e nenhuma por esquecimento:
+
+    1. **Os `*_by_code`.** Sao guarda de unicidade, nao leitura. Esconder a obra
+       de codigo ja usado faria o servico seguir e o INSERT estourar no indice
+       unico -- um 500 no lugar do "codigo ja existe". O que vaza e a existencia
+       do codigo, e so para quem ja tentou criar aquele codigo.
+    2. **Os geradores de sequencia** (`_next_scoped_sequence`). Filtrar o MAX
+       devolveria um numero ja usado por uma linha fora do escopo -- duplicata
+       no indice unico, que e justamente a corrida que o advisory lock evita.
+    3. **As contagens de bloqueio** (inspecao pendente, ocorrencia aberta, item
+       usando o servico). Sao guarda de fechamento e de exclusao: contagem
+       filtrada CONTA MENOS, e contar menos aqui libera o que devia travar.
+    """
+
+    def __init__(self, session: AsyncSession, scope=None) -> None:
         self.session = session
+        self.scope = scope
 
     async def add(self, entity: object) -> None:
         self.session.add(entity)
@@ -75,6 +100,7 @@ class ConstructionRepository:
             select(ConstructionProject).where(
                 ConstructionProject.company_id == company_id,
                 ConstructionProject.id == project_id,
+                *scope_conditions(ConstructionProject, self.scope),
             )
         )
         return result.scalars().first()
@@ -99,7 +125,10 @@ class ConstructionRepository:
         page: int,
         page_size: int,
     ) -> tuple[list[ConstructionProject], int]:
-        conditions = [ConstructionProject.company_id == company_id]
+        conditions = [
+            ConstructionProject.company_id == company_id,
+            *scope_conditions(ConstructionProject, self.scope),
+        ]
         if search:
             search_pattern = f"%{search}%"
             conditions.append(ConstructionProject.name.ilike(search_pattern) | ConstructionProject.code.ilike(search_pattern))
@@ -133,6 +162,7 @@ class ConstructionRepository:
             select(ConstructionBlock).where(
                 ConstructionBlock.company_id == company_id,
                 ConstructionBlock.id == block_id,
+                *scope_conditions(ConstructionBlock, self.scope),
             )
         )
         return result.scalars().first()
@@ -153,6 +183,7 @@ class ConstructionRepository:
             .where(
                 ConstructionBlock.company_id == company_id,
                 ConstructionBlock.project_id == project_id,
+                *scope_conditions(ConstructionBlock, self.scope),
             )
             .order_by(ConstructionBlock.code)
         )
@@ -163,6 +194,7 @@ class ConstructionRepository:
             select(ConstructionUnit).where(
                 ConstructionUnit.company_id == company_id,
                 ConstructionUnit.id == unit_id,
+                *scope_conditions(ConstructionUnit, self.scope),
             )
         )
         return result.scalars().first()
@@ -187,6 +219,7 @@ class ConstructionRepository:
             select(ConstructionUnit).where(
                 ConstructionUnit.company_id == company_id,
                 ConstructionUnit.external_contract_id == external_contract_id,
+                *scope_conditions(ConstructionUnit, self.scope),
             )
         )
         return result.scalars().first()
@@ -197,6 +230,7 @@ class ConstructionRepository:
             .where(
                 ConstructionUnit.company_id == company_id,
                 ConstructionUnit.project_id == project_id,
+                *scope_conditions(ConstructionUnit, self.scope),
             )
             .order_by(ConstructionUnit.code)
         )
@@ -207,6 +241,7 @@ class ConstructionRepository:
             select(ConstructionSchedulePhase).where(
                 ConstructionSchedulePhase.company_id == company_id,
                 ConstructionSchedulePhase.id == phase_id,
+                *scope_conditions(ConstructionSchedulePhase, self.scope),
             )
         )
         return result.scalars().first()
@@ -233,6 +268,7 @@ class ConstructionRepository:
             .where(
                 ConstructionSchedulePhase.company_id == company_id,
                 ConstructionSchedulePhase.project_id == project_id,
+                *scope_conditions(ConstructionSchedulePhase, self.scope),
             )
             .order_by(ConstructionSchedulePhase.sequence_order)
         )
@@ -243,6 +279,7 @@ class ConstructionRepository:
             select(ConstructionMeasurement).where(
                 ConstructionMeasurement.company_id == company_id,
                 ConstructionMeasurement.id == measurement_id,
+                *scope_conditions(ConstructionMeasurement, self.scope),
             )
         )
         return result.scalars().first()
@@ -306,6 +343,7 @@ class ConstructionRepository:
             select(ConstructionMeasurement).where(
                 ConstructionMeasurement.company_id == company_id,
                 ConstructionMeasurement.external_accounts_payable_id == accounts_payable_id,
+                *scope_conditions(ConstructionMeasurement, self.scope),
             )
         )
         return result.scalars().first()
@@ -316,6 +354,7 @@ class ConstructionRepository:
             .where(
                 ConstructionMeasurement.company_id == company_id,
                 ConstructionMeasurement.project_id == project_id,
+                *scope_conditions(ConstructionMeasurement, self.scope),
             )
             .order_by(ConstructionMeasurement.created_at.desc())
         )
@@ -332,6 +371,7 @@ class ConstructionRepository:
             .where(
                 ConstructionUnitPaymentSource.company_id == company_id,
                 ConstructionUnitPaymentSource.unit_id == unit_id,
+                *scope_conditions(ConstructionUnitPaymentSource, self.scope),
             )
             .order_by(ConstructionUnitPaymentSource.source_type)
         )
@@ -472,6 +512,7 @@ class ConstructionRepository:
             .where(
                 ConstructionUnitDocumentation.company_id == company_id,
                 ConstructionUnitDocumentation.unit_id == unit_id,
+                *scope_conditions(ConstructionUnitDocumentation, self.scope),
             )
             .order_by(ConstructionUnitDocumentation.sequence_number)
         )
@@ -488,6 +529,7 @@ class ConstructionRepository:
             .where(
                 ConstructionUnitCommission.company_id == company_id,
                 ConstructionUnitCommission.unit_id == unit_id,
+                *scope_conditions(ConstructionUnitCommission, self.scope),
             )
             .order_by(ConstructionUnitCommission.sequence_number)
         )
@@ -503,6 +545,7 @@ class ConstructionRepository:
             select(ConstructionUnitCommission).where(
                 ConstructionUnitCommission.company_id == company_id,
                 ConstructionUnitCommission.id == commission_id,
+                *scope_conditions(ConstructionUnitCommission, self.scope),
             )
         )
         return result.scalar_one_or_none()
@@ -690,6 +733,7 @@ class ConstructionRepository:
             .where(
                 ConstructionMeasurementItem.company_id == company_id,
                 ConstructionMeasurementItem.id == item_id,
+                *scope_conditions(ConstructionMeasurementItem, self.scope),
             )
         )
         return result.scalars().first()
@@ -711,6 +755,7 @@ class ConstructionRepository:
             .where(
                 ConstructionMeasurementItem.company_id == company_id,
                 ConstructionMeasurementItem.measurement_id == measurement_id,
+                *scope_conditions(ConstructionMeasurementItem, self.scope),
             )
             .order_by(ConstructionMeasurementItem.sequence_number)
         )
@@ -756,6 +801,7 @@ class ConstructionRepository:
             .where(
                 ConstructionMeasurementItemInspection.company_id == company_id,
                 ConstructionMeasurementItemInspection.id == inspection_id,
+                *scope_conditions(ConstructionMeasurementItemInspection, self.scope),
             )
             .execution_options(populate_existing=True)
         )
@@ -772,6 +818,7 @@ class ConstructionRepository:
             .where(
                 ConstructionInspectionRound.company_id == company_id,
                 ConstructionInspectionRound.inspection_id == inspection_id,
+                *scope_conditions(ConstructionInspectionRound, self.scope),
             )
             .order_by(ConstructionInspectionRound.sequence_number)
         )
@@ -798,6 +845,7 @@ class ConstructionRepository:
             .where(
                 ConstructionMeasurementItemInspection.company_id == company_id,
                 ConstructionMeasurementItemInspection.measurement_item_id == measurement_item_id,
+                *scope_conditions(ConstructionMeasurementItemInspection, self.scope),
             )
             .order_by(ConstructionMeasurementItemInspection.sequence_number)
         )
@@ -865,6 +913,7 @@ class ConstructionRepository:
             select(ConstructionMeasurementItemOccurrence).where(
                 ConstructionMeasurementItemOccurrence.company_id == company_id,
                 ConstructionMeasurementItemOccurrence.id == occurrence_id,
+                *scope_conditions(ConstructionMeasurementItemOccurrence, self.scope),
             )
         )
         return result.scalars().first()
@@ -905,6 +954,7 @@ class ConstructionRepository:
             select(ConstructionProcurementRequest).where(
                 ConstructionProcurementRequest.company_id == company_id,
                 ConstructionProcurementRequest.id == procurement_request_id,
+                *scope_conditions(ConstructionProcurementRequest, self.scope),
             )
         )
         return result.scalars().first()
@@ -936,6 +986,7 @@ class ConstructionRepository:
             .where(
                 ConstructionProcurementRequest.company_id == company_id,
                 ConstructionProcurementRequest.project_id == project_id,
+                *scope_conditions(ConstructionProcurementRequest, self.scope),
             )
             .order_by(ConstructionProcurementRequest.created_at.desc())
         )
