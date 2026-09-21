@@ -149,6 +149,7 @@ class ErpConstructionClient:
         company_id: UUID,
         receivable_id: UUID | None,
         contract_id: UUID | None,
+        construction_unit_id: UUID | None = None,
     ) -> dict[str, object]:
         if not settings.erp_service_key:
             raise RuntimeError("ERP service key is not configured for Construction payment plan integration.")
@@ -163,6 +164,11 @@ class ErpConstructionClient:
 
         if contract_id is not None:
             params["contract_id"] = str(contract_id)
+
+        # A unidade sempre vai junto: e por ela que o ERP acha a venda MIGRADA,
+        # que nao tem ponteiro nenhum para oferecer.
+        if construction_unit_id is not None:
+            params["construction_unit_id"] = str(construction_unit_id)
 
         async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
             response = await client.get(

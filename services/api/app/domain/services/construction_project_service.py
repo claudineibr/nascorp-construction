@@ -2966,14 +2966,19 @@ class ConstructionProjectService:
             "erp_unavailable_reason": None,
         }
 
-        if self.erp_client is not None and (
-            unit.external_receivable_id is not None or unit.external_contract_id is not None
-        ):
+        # A pergunta ao ERP NAO depende mais de a unidade ter ponteiro. Ela
+        # dependia, e o preco foi alto: a venda migrada do MFCON nasce sem
+        # `external_receivable_id`, entao Obras nem chegava a perguntar -- 676
+        # unidades com R$ 14,6 milhoes de parcela carregada e a aba vazia.
+        # Agora a unidade vai como parametro, e o ERP acha pela coluna
+        # `receivables.construction_unit_id`.
+        if self.erp_client is not None:
             try:
                 erp_plan = await self.erp_client.get_unit_payment_plan(
                     company_id=company_id,
                     receivable_id=unit.external_receivable_id,
                     contract_id=unit.external_contract_id,
+                    construction_unit_id=unit.id,
                 )
                 plan.update(erp_plan)
             except Exception as request_error:
