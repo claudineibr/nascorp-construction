@@ -3261,8 +3261,22 @@ class ConstructionProjectService:
 
         target_receivable_id = receivable_id or unit.external_receivable_id
         if target_receivable_id is None:
+            # A mensagem antiga dizia "confirme a venda antes de mexer nas
+            # parcelas", e em 2026-09-21 ela estava MENTINDO: a venda estava
+            # confirmada, as parcelas estavam na tela, e o que faltava era o
+            # ponteiro -- que a venda migrada nunca teve, porque o recebivel
+            # nasce no ETL e nao no fluxo de venda. Eram 676 unidades.
+            #
+            # O ponteiro foi preenchido e a 05B passou a grava-lo, entao o caso
+            # que sobra aqui e outro: unidade cujas parcelas sao TODAS de
+            # aditivo, sem serie de venda (6 no legado). Mandar essa pessoa
+            # "confirmar a venda" nao resolveria nada.
             raise ConstructionDomainError(
-                message="A unidade ainda não tem recebível no ERP: confirme a venda antes de mexer nas parcelas.",
+                message=(
+                    "Esta unidade não tem série de parcelas da venda no ERP. "
+                    "Se as parcelas dela são de aditivo, a operação precisa ser feita "
+                    "pela linha do aditivo."
+                ),
                 status_code=409,
             )
 
