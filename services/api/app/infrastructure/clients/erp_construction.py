@@ -48,6 +48,7 @@ class ErpConstructionClient:
         page: int,
         page_size: int,
         person_id: UUID | None = None,
+        business_role: str | None = None,
     ) -> dict[str, object]:
         if not settings.erp_service_key:
             raise RuntimeError("ERP service key is not configured for Construction person lookup integration.")
@@ -67,6 +68,8 @@ class ErpConstructionClient:
             params["search"] = search
         if person_id is not None:
             params["person_id"] = str(person_id)
+        if business_role:
+            params["business_role"] = business_role
 
         async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
             response = await client.get(

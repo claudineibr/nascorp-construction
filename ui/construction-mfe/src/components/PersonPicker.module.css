@@ -1,0 +1,151 @@
+/* O campo imita `filterControl` do App.module.css de proposito: ele vive dentro
+   do mesmo `formGrid` dos inputs comuns, e uma borda diferente faria a linha do
+   comprador parecer de outro formulario. */
+
+.field {
+  color: var(--color-text);
+  display: flex;
+  flex-direction: column;
+  font-size: 0.9rem;
+  font-weight: 600;
+  gap: 0.4rem;
+  min-width: 0;
+  position: relative;
+}
+
+.label {
+  color: inherit;
+}
+
+.chosen,
+.search {
+  align-items: center;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  color: var(--color-text);
+  display: flex;
+  gap: 0.45rem;
+  min-height: 2.6rem;
+  min-width: 0;
+  padding: 0.3rem 0.5rem 0.3rem 0.85rem;
+}
+
+.search:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-focus-ring);
+}
+
+.input {
+  background: none;
+  border: none;
+  color: var(--color-text);
+  flex: 1;
+  font: inherit;
+  font-weight: 400;
+  min-width: 0;
+  padding: 0.35rem 0;
+}
+
+.input:focus {
+  outline: none;
+}
+
+.name {
+  flex: 1;
+  font-weight: 400;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clearButton {
+  align-items: center;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  display: flex;
+  justify-content: center;
+  min-height: 1.8rem;
+  min-width: 1.8rem;
+  padding: 0;
+}
+
+.clearButton:hover:not(:disabled) {
+  color: var(--color-text);
+}
+
+.clearButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.options {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.18);
+  left: 0;
+  list-style: none;
+  margin: 0;
+  max-height: 15rem;
+  overflow-y: auto;
+  padding: 0.25rem;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 40;
+}
+
+.option {
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  font-weight: 400;
+  gap: 0.1rem;
+  padding: 0.45rem 0.5rem;
+  text-align: left;
+  width: 100%;
+}
+
+.option:hover,
+.optionActive {
+  background: var(--color-surface-muted);
+}
+
+.optionName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.optionDocument {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+}
+
+.hint {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  font-weight: 400;
+  padding: 0.45rem 0.5rem;
+}
+
+.warning {
+  color: var(--color-warning, #b45309);
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
+.error {
+  color: var(--color-danger, #dc2626);
+  font-size: 0.78rem;
+  font-weight: 400;
+}

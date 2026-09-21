@@ -178,6 +178,10 @@ async def list_person_summaries(
     # que a unidade ja tem: eles quase nunca cabem nas 50 primeiras de um
     # cadastro de 3.117 pessoas.
     person_id: UUID | None = Query(default=None),
+    # O papel COMERCIAL da pessoa (`broker`, `supplier`...). O campo Corretor
+    # listava as 3.116 pessoas do cadastro; com o recorte, lista as 10 que sao
+    # corretoras de fato.
+    business_role: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=50),
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.READ)),
@@ -191,6 +195,7 @@ async def list_person_summaries(
             page=page,
             page_size=page_size,
             person_id=person_id,
+            business_role=business_role,
         )
         return ConstructionPersonSummaryListResponse.model_validate(payload)
     except ConstructionDomainError as exc:

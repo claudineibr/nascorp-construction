@@ -633,6 +633,7 @@ export async function listConstructionPersonSummaries({
   page = 1,
   pageSize = 50,
   personId = null,
+  businessRole = null,
 } = {}) {
   const query = new URLSearchParams({
     page: String(page),
@@ -641,6 +642,12 @@ export async function listConstructionPersonSummaries({
 
   if (search.trim()) {
     query.set("search", search.trim())
+  }
+
+  // Papel comercial: o campo Corretor listava as 3.116 pessoas da empresa.
+  // Com o recorte lista as 9 que tem o papel `broker`.
+  if (businessRole) {
+    query.set("business_role", String(businessRole))
   }
 
   // Uma pessoa pelo id. O formulario usa isto para mostrar o comprador e o
@@ -1277,6 +1284,86 @@ export async function listErpReceiptTemplates({ bridge }) {
     })),
     total: payload.total ?? 0,
   }
+}
+
+// --- recibo da parcela ---
+//
+// Vai DIRETO ao ERP, com o token do operador -- o mesmo caminho de
+// `listErpReceiptTemplates` e `listErpPaymentMethods`. Nao passa pelo Obras de
+// proposito: o salto service-to-service usaria a chave do servico e apagaria as
+// permissoes `receipt.*` de quem esta na tela. Emitir recibo e ato do operador,
+// nao do modulo.
+const erpBaseUrl = (bridge) =>
+  bridge?.erpApiBaseUrl || import.meta.env.VITE_ERP_API_URL || DEFAULT_ERP_API_URL
+
+const toReceiptView = (receipt) =>
+  receipt
+    ? {
+        id: receipt.id,
+        receiptNumber: receipt.receipt_number ?? "",
+        status: receipt.status ?? "",
+        totalPaid: receipt.total_paid ?? null,
+        issueDate: receipt.issue_date ?? null,
+        // Nulo enquanto o recibo existe so como registro: o PDF so nasce quando
+        // o recibo deixa de ser provisorio.
+        pdfPath: receipt.pdf_path ?? null,
+        personName: receipt.person_name ?? null,
+      }
+    : null
+
+export async function getErpReceiptByInstallment({ bridge, installmentId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/receipts/by-installment/${installmentId}`,
+    baseUrl: erpBaseUrl(bridge),
+  })
+  return toReceiptView(payload)
+}
+
+export async function generateErpReceiptForInstallment({ bridge, installmentId }) {
+  const payload = await requestJson({
+    bridge,
+    method: "POST",
+    path: `/v1/receipts/generate-for-installment/${installmentId}`,
+    baseUrl: erpBaseUrl(bridge),
+  })
+  return toReceiptView(payload)
+}
+
+// O PDF nao passa por `requestJson`: aquela funcao sempre faz `.json()` e
+// engasgaria no binario. Repete o minimo -- cabecalhos, retry de 401 e a
+// mensagem de erro -- para nao mexer no caminho que todas as outras usam.
+export async function downloadErpReceiptPdf({ bridge, receiptId }) {
+  const headers = { ...(bridge?.getAuthHeaders?.() ?? {}) }
+  if (!headers.Authorization || !headers["X-Company-ID"]) {
+    throw new Error("Contexto autenticado da empresa indisponível.")
+  }
+
+  const url = `${erpBaseUrl(bridge)}/v1/receipts/${receiptId}/pdf`
+  let response = await fetch(url, { headers })
+
+  if (response.status === 401 && typeof bridge?.refreshToken === "function") {
+    const refreshed = await bridge.refreshToken()
+    response = await fetch(url, {
+      headers: {
+        ...headers,
+        ...(refreshed?.token ? { Authorization: `Bearer ${refreshed.token}` } : {}),
+      },
+    })
+  }
+
+  if (!response.ok) {
+    let mensagem = "Não foi possível baixar o PDF do recibo."
+    try {
+      const payload = await response.json()
+      mensagem = payload?.detail?.message || payload?.message || payload?.detail || mensagem
+    } catch {
+      // corpo vazio ou binario: fica a mensagem padrao
+    }
+    throw new Error(typeof mensagem === "string" ? mensagem : "Não foi possível baixar o PDF do recibo.")
+  }
+
+  return response.blob()
 }
 
 export async function listConstructionDocumentationTypes({ bridge, search = null, onlyActive = true } = {}) {

@@ -27,6 +27,8 @@ import {
 } from "lucide-react"
 import styles from "./App.module.css"
 import CreatableCombobox from "./components/CreatableCombobox.jsx"
+import { PersonPicker } from "./components/PersonPicker.jsx"
+import { BridgeProvider } from "./components/bridgeContext.js"
 import { InspectionChecklist } from "./features/measurementInspections/InspectionChecklist"
 import {
   countBlockingLines,
@@ -99,6 +101,9 @@ import {
   updateConstructionProject,
   updateConstructionSchedulePhase,
   updateConstructionUnit,
+  getErpReceiptByInstallment,
+  generateErpReceiptForInstallment,
+  downloadErpReceiptPdf,
 } from "./services/constructionApi.js"
 
 const defaultFilters = {
@@ -1241,6 +1246,9 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const [personLookupQuery, setPersonLookupQuery] = useState("")
   const [personSummaries, setPersonSummaries] = useState([])
+  // Qual parcela esta gerando/baixando recibo. Um por vez: o PDF nasce no
+  // servidor e dois cliques seguidos na mesma linha pediriam duas vezes.
+  const [receiptBusyId, setReceiptBusyId] = useState(null)
   // A lista vista de dentro do callback, sem ele depender dela: com
   // `personSummaries` na dependencia, cada pessoa acrescentada recriava o
   // callback e o efeito disparava de novo.
@@ -2756,6 +2764,48 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     })
   }
 
+  // Recibo da parcela.
+  //
+  // Vai direto ao ERP com o token do operador, e e o MESMO recibo da tela de
+  // Contas a Receber -- nao um segundo documento. Ja existe, baixa; parcela
+  // paga e sem recibo, emite e baixa. A ordem importa: `generate` promove um
+  // provisorio se houver, entao consultar antes evita queimar numeracao.
+  const handleInstallmentReceipt = async (installment) => {
+    if (receiptBusyId) {
+      return
+    }
+
+    setReceiptBusyId(installment.id)
+    try {
+      let receipt = await getErpReceiptByInstallment({ bridge, installmentId: installment.id })
+
+      if (!receipt || !receipt.pdfPath) {
+        receipt = await generateErpReceiptForInstallment({ bridge, installmentId: installment.id })
+        bridge?.feedback?.success?.(`Recibo ${receipt?.receiptNumber ?? ""} emitido.`)
+      }
+
+      const blob = await downloadErpReceiptPdf({ bridge, receiptId: receipt.id })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = `recibo-${String(receipt.receiptNumber ?? receipt.id).replace("/", "-")}.pdf`
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+
+      // O recibo emitido TRANCA a parcela (D11). Recarregar o plano faz o
+      // cadeado aparecer agora, e nao so no proximo F5.
+      if (selectedUnit) {
+        await loadUnitPaymentPlan(selectedUnit.id)
+      }
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível gerar o recibo.")
+    } finally {
+      setReceiptBusyId(null)
+    }
+  }
+
   const handleOpenDeleteAdjustment = (adjustment) => {
     setDeletingAdjustment(adjustment)
     setDeleteAdjustmentReason("")
@@ -3757,6 +3807,9 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }
 
   return (
+    // O bridge desce por contexto para os campos de pessoa, que falam com o
+    // servidor de dentro de seis modais diferentes -- ver `bridgeContext.js`.
+    <BridgeProvider value={bridge}>
     <main className={styles.page} data-theme={bridge?.theme ?? "light"}>
       <section className={styles.pageHeader}>
         <div className={styles.header}>
@@ -4071,6 +4124,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                     onPayInstallment={handleOpenPayInstallment}
                     onDeleteInstallment={handleDeleteInstallment}
                     onDeleteAdjustment={handleOpenDeleteAdjustment}
+                    onInstallmentReceipt={handleInstallmentReceipt}
+                    receiptBusyId={receiptBusyId}
                     onCreateInstallment={handleOpenCreateInstallment}
                     onRebuildPlan={openRebuildPlanModal}
                     people={personSummaries}
@@ -4440,6 +4495,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         />
       ) : null}
     </main>
+    </BridgeProvider>
   )
 }
 
@@ -5109,6 +5165,8 @@ function UnitDetailPanel({
   onPayInstallment,
   onDeleteInstallment,
   onDeleteAdjustment,
+  onInstallmentReceipt,
+  receiptBusyId,
   onCreateInstallment,
   onRebuildPlan,
   people,
@@ -5277,6 +5335,8 @@ function UnitDetailPanel({
           onDeleteInstallment={onDeleteInstallment}
           onCreateAdjustment={onCreateAdjustment}
           onDeleteAdjustment={onDeleteAdjustment}
+          onInstallmentReceipt={onInstallmentReceipt}
+          receiptBusyId={receiptBusyId}
           onCreateInstallment={onCreateInstallment}
           onRebuildPlan={onRebuildPlan}
         />
@@ -5447,6 +5507,8 @@ function UnitInstallmentsPanel({
   onDeleteInstallment,
   onCreateAdjustment,
   onDeleteAdjustment,
+  onInstallmentReceipt,
+  receiptBusyId,
   onCreateInstallment,
   onRebuildPlan,
 }) {
@@ -5655,6 +5717,8 @@ function UnitInstallmentsPanel({
                           onPayInstallment,
                           onDeleteInstallment,
                           onDeleteAdjustment,
+                          onInstallmentReceipt,
+                          receiptBusy: receiptBusyId === row.id,
                         })}
                       />
                     </td>
@@ -5682,6 +5746,8 @@ function buildInstallmentActions({
   onPayInstallment,
   onDeleteInstallment,
   onDeleteAdjustment,
+  onInstallmentReceipt,
+  receiptBusy = false,
 }) {
   const isPaid = installment.status === "PAID"
   const hasPayments = (installment.payments?.length ?? 0) > 0
@@ -5690,6 +5756,24 @@ function buildInstallmentActions({
   // cabe mais aqui.
   const receiptIssued = Boolean(installment.hasIssuedReceipt)
   const actions = []
+
+  // Recibo. Visivel SEMPRE, desabilitado enquanto a parcela nao foi paga: o
+  // servidor recusa emitir recibo de parcela em aberto, e esconder o item
+  // faria o operador procurar onde ele nao esta. Quem ja tem recibo baixa o
+  // PDF -- o cadeado da parcela nao impede reimprimir o proprio recibo.
+  if (onInstallmentReceipt) {
+    actions.push({
+      key: "receipt",
+      label: receiptIssued ? "Baixar recibo" : "Gerar recibo",
+      icon: FileText,
+      disabled: receiptBusy || (!isPaid && !receiptIssued),
+      title:
+        !isPaid && !receiptIssued
+          ? "O recibo só sai depois que a parcela for baixada."
+          : undefined,
+      onSelect: () => onInstallmentReceipt(installment),
+    })
+  }
 
   // Um diálogo so por parcela: "Baixar parcela" abre a composicao por formas e
   // carrega tambem o numero do documento e a observacao, que antes moravam num
@@ -6479,15 +6563,15 @@ function CommissionModal({
         </header>
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <div className={styles.formGrid}>
-            <PersonIdInput
+            <PersonPicker
               label="Corretor favorecido*"
               value={commissionForm.beneficiaryPersonId}
               onChange={(value) => onChange("beneficiaryPersonId", value)}
-              people={people}
+              knownPeople={people}
               required
-              loading={loadingPeople}
+              businessRole="broker"
               error={personLookupError}
-              emptyLabel="Selecione o corretor"
+              emptyLabel="Buscar corretor pelo nome"
             />
             <label className={styles.filterControl}>
               <span>Valor da parcela*</span>
@@ -7082,6 +7166,31 @@ function MeasurementsList({
     return Object.fromEntries(schedulePhases.map((phase) => [phase.id, phase.name]))
   }, [schedulePhases])
 
+  // As canceladas saem da lista por padrao. Sao 259 vindas do MFCON (status
+  // `C`), e elas competiam por espaco com as ordens vivas numa obra que chega a
+  // 2.279 medicoes.
+  //
+  // Escondidas, NAO sumidas: o contador fica na tela e o botao traz de volta. E
+  // a diferenca entre tirar do caminho e apagar da historia -- e o defeito que
+  // este modulo acabou de corrigir foi justamente o de dado presente que a tela
+  // nao mostrava.
+  //
+  // O recorte e SO DE EXIBICAO. Quem calcula o proximo numero de OS da unidade
+  // continua lendo a lista inteira: filtrar a fonte faria a proxima ordem
+  // reaproveitar o numero de uma cancelada.
+  const [showCancelled, setShowCancelled] = useState(false)
+  const cancelledCount = useMemo(
+    () => measurements.filter((measurement) => measurement.status === "rejected").length,
+    [measurements]
+  )
+  const visibleMeasurements = useMemo(
+    () =>
+      showCancelled
+        ? measurements
+        : measurements.filter((measurement) => measurement.status !== "rejected"),
+    [measurements, showCancelled]
+  )
+
   if (loading) {
     return (
       <div className={styles.tableWrapper} aria-busy="true">
@@ -7115,8 +7224,40 @@ function MeasurementsList({
     )
   }
 
+  if (!visibleMeasurements.length) {
+    return (
+      <div className={styles.tableWrapper}>
+        <div className={styles.empty}>
+          <span>
+            {cancelledCount === 1
+              ? "A única medição desta obra está cancelada."
+              : `Todas as ${cancelledCount} medições desta obra estão canceladas.`}
+          </span>
+          <button type="button" className={styles.secondaryButton} onClick={() => setShowCancelled(true)}>
+            Mostrar canceladas
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className={styles.tableWrapper}>
+      {cancelledCount ? (
+        <div className={styles.listToolbar}>
+          <span className={styles.rowSecondaryText}>
+            {cancelledCount === 1 ? "1 medição cancelada" : `${cancelledCount} medições canceladas`}
+            {showCancelled ? " na lista" : " ocultas"}
+          </span>
+          <button
+            type="button"
+            className={styles.secondaryButton}
+            onClick={() => setShowCancelled((atual) => !atual)}
+          >
+            {showCancelled ? "Ocultar canceladas" : "Mostrar canceladas"}
+          </button>
+        </div>
+      ) : null}
       <table className={styles.table}>
         <thead>
           <tr>
@@ -7132,7 +7273,7 @@ function MeasurementsList({
           </tr>
         </thead>
         <tbody>
-          {measurements.map((measurement) => {
+          {visibleMeasurements.map((measurement) => {
             const canSubmit = ["draft", "rejected"].includes(measurement.status)
             const canApprove = ["draft", "submitted", "in_approval", "rejected"].includes(measurement.status)
             const canReject = ["draft", "submitted", "in_approval"].includes(measurement.status)
@@ -7142,8 +7283,14 @@ function MeasurementsList({
             return (
               <tr key={measurement.id}>
                 <td>
-                  <strong>{measurement.code}</strong>
-                  <div className={styles.rowSecondaryText}>Seq. {measurement.sequenceNumber ?? "-"}</div>
+                  {/* O numero DA UNIDADE em destaque, o codigo abaixo.
+                      `code` e `OS-{id do MFCON}` -- util para rastrear a
+                      migracao, mas invisivel no sistema antigo: quem procurasse
+                      "OS-006444" no MFCON nao achava nada, porque la aquela
+                      ordem e a de numero 1 da moradia. O numero e unico por
+                      unidade nas 6.696 migradas. */}
+                  <strong>OS {measurement.sequenceNumber ?? "-"}</strong>
+                  <div className={styles.rowSecondaryText}>{measurement.code}</div>
                 </td>
                 <td>
                   <strong>{measurement.unitId ? unitNameById[measurement.unitId] ?? measurement.unitId : "-"}</strong>
@@ -7159,7 +7306,11 @@ function MeasurementsList({
                   <span className={`${styles.statusPill} ${styles[`status${measurement.status}`] || ""}`}>
                     {measurementStatusLabel[measurement.status] ?? measurement.status}
                   </span>
-                  {measurement.approvedByUserId ? (
+                  {measurement.status === "rejected" && measurement.rejectionReason ? (
+                    <div className={styles.rowSecondaryText} title={measurement.rejectionReason}>
+                      {measurement.rejectionReason}
+                    </div>
+                  ) : measurement.approvedByUserId ? (
                     <div className={styles.rowSecondaryText}>aprovada por usuário registrado</div>
                   ) : measurement.submittedByUserId ? (
                     <div className={styles.rowSecondaryText}>aguardando aprovador diferente</div>
@@ -7447,12 +7598,14 @@ function ProcurementModal({ mode, procurementForm, people, onClose, onChange, on
                 onChange={(event) => onChange("neededByDate", event.target.value)}
               />
             </label>
-            <PersonIdInput
-              label="Fornecedor (ID)"
+            <PersonPicker
+              label="Fornecedor"
               value={procurementForm.supplierPersonId}
               onChange={(value) => onChange("supplierPersonId", value)}
-              people={people}
+              knownPeople={people}
+              emptyLabel="Buscar fornecedor pelo nome"
               warnUnqualified
+              qualificationWarnings={QUALIFICATION_WARNINGS}
             />
             <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
               <span>Descrição</span>
@@ -7615,12 +7768,14 @@ function MeasurementModal({
                 onChange={(event) => onChange("competenceDate", event.target.value)}
               />
             </label>
-            <PersonIdInput
-              label="Fornecedor (ID)"
+            <PersonPicker
+              label="Fornecedor"
               value={measurementForm.supplierPersonId}
               onChange={(value) => onChange("supplierPersonId", value)}
-              people={people}
+              knownPeople={people}
+              emptyLabel="Buscar fornecedor pelo nome"
               warnUnqualified
+              qualificationWarnings={QUALIFICATION_WARNINGS}
             />
             <label className={styles.filterControl}>
               <span>Vencimento*</span>
@@ -7744,55 +7899,6 @@ const QUALIFICATION_WARNINGS = {
   none: "Este fornecedor nunca foi qualificado. A obra pode seguir, mas a auditoria da Caixa pede a avaliacao registrada.",
   expired: "A qualificacao deste fornecedor venceu. Registre uma nova avaliacao no cadastro da pessoa.",
   rejected: "Este fornecedor foi REPROVADO na qualificacao. Confirme com o responsavel antes de seguir.",
-}
-
-function PersonIdInput({
-  label,
-  value,
-  onChange,
-  people = [],
-  required = false,
-  loading = false,
-  error = null,
-  emptyLabel = "Selecione uma pessoa",
-  warnUnqualified = false,
-}) {
-  const hasSelectedPerson = people.some((person) => person.id === value)
-  const selectedPerson = people.find((person) => person.id === value) ?? null
-
-  // Avisa, nao bloqueia: no legado 69 fornecedores compraram sem qualificacao
-  // nenhuma, em 359 pedidos. Barrar de saida trancaria a operacao.
-  // O aviso so aparece com fornecedor escolhido -- nao a cada salvamento.
-  const qualificationWarning =
-    warnUnqualified && selectedPerson
-      ? QUALIFICATION_WARNINGS[selectedPerson.qualificationStatus ?? "none"] ?? null
-      : null
-
-  return (
-    <label className={styles.filterControl}>
-      <span>{label}</span>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        required={required}
-        disabled={loading}
-      >
-        <option value="">{loading ? "Carregando pessoas..." : emptyLabel}</option>
-        {value && !hasSelectedPerson ? <option value={value}>Pessoa selecionada</option> : null}
-        {people.map((person) => (
-          <option key={person.id} value={person.id}>
-            {person.name}{person.document ? ` - ${person.document}` : ""}
-          </option>
-        ))}
-      </select>
-      {qualificationWarning ? (
-        <small className={styles.qualificationWarning} data-testid="qualification-warning">
-          {qualificationWarning}
-        </small>
-      ) : null}
-      {error ? <small className={styles.formError}>{error}</small> : null}
-    </label>
-  )
 }
 
 function IntegrationPanel({
@@ -7932,14 +8038,13 @@ function ProjectModal({
                 ))}
               </select>
             </label>
-            <PersonIdInput
+            <PersonPicker
               label="Cliente/Contratante ERP"
               value={projectForm.customerPersonId}
               onChange={(value) => onChange("customerPersonId", value)}
-              people={people}
-              loading={loadingPeople}
+              knownPeople={people}
               error={personLookupError}
-              emptyLabel="Sem cliente vinculado"
+              emptyLabel="Buscar cliente pelo nome"
             />
             <label className={styles.filterControl}>
               <span>CNPJ SPE</span>
@@ -8337,11 +8442,12 @@ function ReserveUnitModal({ reserveForm, unit, people, onClose, onChange, onSubm
         </header>
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <div className={styles.formGrid}>
-            <PersonIdInput
-              label="Comprador (ID)*"
+            <PersonPicker
+              label="Comprador*"
               value={reserveForm.buyerPersonId}
               onChange={(value) => onChange("buyerPersonId", value)}
-              people={people}
+              knownPeople={people}
+              emptyLabel="Buscar comprador pelo nome"
               required
             />
             <label className={styles.filterControl}>
@@ -8505,26 +8611,28 @@ function SaleUnitModal({
             </p>
           ) : null}
           <div className={styles.formGrid}>
-            <PersonIdInput
+            <PersonPicker
               label="Comprador*"
               value={saleForm.buyerPersonId}
               onChange={(value) => onChange("buyerPersonId", value)}
-              people={people}
+              knownPeople={people}
+              emptyLabel="Buscar comprador pelo nome"
               required
             />
-            <PersonIdInput
+            <PersonPicker
               label="Comprador secundário"
               value={saleForm.secondaryBuyerPersonId}
               onChange={(value) => onChange("secondaryBuyerPersonId", value)}
-              people={people}
-              emptyLabel="Sem comprador secundário"
+              knownPeople={people}
+              emptyLabel="Buscar comprador secundário"
             />
-            <PersonIdInput
+            <PersonPicker
               label="Corretor"
               value={saleForm.brokerPersonId}
               onChange={(value) => onChange("brokerPersonId", value)}
-              people={people}
-              emptyLabel="Sem corretor"
+              knownPeople={people}
+              businessRole="broker"
+              emptyLabel="Buscar corretor pelo nome"
             />
             <label className={styles.filterControl}>
               <span>Preço da venda*</span>
@@ -9078,12 +9186,12 @@ function MeasurementItemsModal({
                     onChange={(event) => handleItemChange("endDate", event.target.value)}
                   />
                 </label>
-                <PersonIdInput
+                <PersonPicker
                   label="Inspetor responsável"
                   value={itemForm.inspectorPersonId}
                   onChange={(value) => handleItemChange("inspectorPersonId", value)}
-                  people={people}
-                  emptyLabel="Sem inspetor"
+                  knownPeople={people}
+                  emptyLabel="Buscar inspetor pelo nome"
                 />
               </div>
               <div className={styles.filtersFooter}>

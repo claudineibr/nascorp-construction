@@ -87,6 +87,13 @@ class ConstructionPersonSummaryResponse(BaseModel):
     primary_phone: str | None = None
     primary_email: str | None = None
     is_active: bool = True
+    # O ERP mandava os dois desde sempre; este schema e que nao os declarava, e
+    # o `model_validate` os descartava em silencio a caminho do navegador. O
+    # resultado era `businessRoles` sempre vazio e o aviso de fornecedor sem
+    # qualificacao que nunca disparava, embora o dado estivesse do outro lado.
+    # Os defaults ficam porque uma versao antiga do core pode nao mandar.
+    business_roles: list[str] = Field(default_factory=list)
+    qualification_status: str = "none"
 
 
 class ConstructionPersonSummaryListResponse(BaseModel):

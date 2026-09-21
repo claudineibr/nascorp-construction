@@ -1108,3 +1108,21 @@
     width: 100%;
   }
 }
+
+/* Barra acima da tabela de medicoes: diz quantas canceladas estao fora da lista
+   e traz de volta. `sticky` porque o `.tableWrapper` tem altura fixa e rola --
+   sem isso o contador subia com a rolagem e o operador perdia o aviso de que a
+   lista esta recortada, que e justamente o que ele precisa ver. */
+.listToolbar {
+  align-items: center;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: space-between;
+  padding: 0.6rem 0.9rem;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}

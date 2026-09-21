@@ -378,6 +378,7 @@ class ConstructionProjectService:
         page: int,
         page_size: int,
         person_id: UUID | None = None,
+        business_role: str | None = None,
     ) -> dict[str, Any]:
         """A lista de pessoas do formulario, e o caso de UMA pessoa por id.
 
@@ -389,6 +390,11 @@ class ConstructionProjectService:
 
         Foi assim que a tela "Editar venda" passou a nao mostrar nem comprador
         nem corretor depois da migracao, com os dois no banco.
+
+        `business_role` recorta pelo papel comercial -- e o que faz o campo
+        Corretor parar de listar as 3.116 pessoas da empresa e mostrar so as 10
+        que tem o papel. Quem ja esta gravado na unidade continua sendo buscado
+        por `person_id`, que ignora o recorte de proposito.
         """
         if self.erp_client is None:
             raise ConstructionInvalidValueError(
@@ -403,6 +409,7 @@ class ConstructionProjectService:
             page=page,
             page_size=page_size,
             person_id=person_id,
+            business_role=business_role,
         )
 
     async def get_project(self, *, company_id: UUID, project_id: UUID) -> ConstructionProject:
