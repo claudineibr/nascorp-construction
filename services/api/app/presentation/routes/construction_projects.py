@@ -174,6 +174,10 @@ async def list_projects(
 @router.get("/person-summaries", response_model=ConstructionPersonSummaryListResponse)
 async def list_person_summaries(
     search: str | None = Query(default=None),
+    # Uma pessoa pelo id. E como o formulario mostra o comprador e o corretor
+    # que a unidade ja tem: eles quase nunca cabem nas 50 primeiras de um
+    # cadastro de 3.117 pessoas.
+    person_id: UUID | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=50),
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.READ)),
@@ -186,6 +190,7 @@ async def list_person_summaries(
             search=search,
             page=page,
             page_size=page_size,
+            person_id=person_id,
         )
         return ConstructionPersonSummaryListResponse.model_validate(payload)
     except ConstructionDomainError as exc:

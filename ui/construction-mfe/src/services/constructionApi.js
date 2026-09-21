@@ -632,6 +632,7 @@ export async function listConstructionPersonSummaries({
   search = "",
   page = 1,
   pageSize = 50,
+  personId = null,
 } = {}) {
   const query = new URLSearchParams({
     page: String(page),
@@ -640,6 +641,14 @@ export async function listConstructionPersonSummaries({
 
   if (search.trim()) {
     query.set("search", search.trim())
+  }
+
+  // Uma pessoa pelo id. O formulario usa isto para mostrar o comprador e o
+  // corretor que a unidade JA tem: o cadastro passou de 3.117 pessoas com a
+  // migracao, o servidor limita a pagina a 50, e o selecionado quase nunca
+  // cabe nelas -- o campo aparecia vazio com o id gravado.
+  if (personId) {
+    query.set("person_id", String(personId))
   }
 
   const payload = await requestJson({

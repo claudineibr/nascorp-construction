@@ -377,7 +377,19 @@ class ConstructionProjectService:
         search: str | None,
         page: int,
         page_size: int,
+        person_id: UUID | None = None,
     ) -> dict[str, Any]:
+        """A lista de pessoas do formulario, e o caso de UMA pessoa por id.
+
+        `person_id` existia no cliente e no ERP desde sempre; o que faltava era
+        este meio do caminho. Sem ele o formulario de venda so enxerga as 50
+        primeiras pessoas da empresa -- e sao 3.117 migradas. O comprador e o
+        corretor de qualquer unidade praticamente nunca estao entre as 50, e o
+        campo aparece VAZIO mesmo com o id gravado na unidade.
+
+        Foi assim que a tela "Editar venda" passou a nao mostrar nem comprador
+        nem corretor depois da migracao, com os dois no banco.
+        """
         if self.erp_client is None:
             raise ConstructionInvalidValueError(
                 message="A integração com o ERP está indisponível para consultar pessoas.",
@@ -390,6 +402,7 @@ class ConstructionProjectService:
             search=search,
             page=page,
             page_size=page_size,
+            person_id=person_id,
         )
 
     async def get_project(self, *, company_id: UUID, project_id: UUID) -> ConstructionProject:

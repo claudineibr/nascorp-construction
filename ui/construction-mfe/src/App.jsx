@@ -1249,6 +1249,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const [personLookupQuery, setPersonLookupQuery] = useState("")
   const [personSummaries, setPersonSummaries] = useState([])
+  // A lista vista de dentro do callback, sem ele depender dela: com
+  // `personSummaries` na dependencia, cada pessoa acrescentada recriava o
+  // callback e o efeito disparava de novo.
+  const personSummariesRef = useRef(personSummaries)
+  personSummariesRef.current = personSummaries
   const [loadingPersonSummaries, setLoadingPersonSummaries] = useState(false)
   const [personLookupError, setPersonLookupError] = useState(null)
 
@@ -1541,6 +1546,57 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     },
     [bridge]
   )
+
+  // Completa a lista com pessoas ESPECIFICAS, pelo id.
+  //
+  // `loadPersonSummaries` traz a primeira pagina, e o servidor limita a pagina
+  // a 50. Com a migracao o cadastro passou de 3.117 pessoas: o comprador e o
+  // corretor de uma unidade praticamente nunca estao entre as 50 primeiras, e
+  // os campos de "Editar venda" apareciam VAZIOS com o id gravado na unidade.
+  //
+  // Busca so o que falta, e acrescenta -- nunca substitui a lista, senao a
+  // proxima digitacao de busca perderia o selecionado de novo.
+  const ensurePeopleLoaded = useCallback(
+    async (ids) => {
+      const faltando = [...new Set((ids ?? []).filter(Boolean))].filter(
+        (id) => !personSummariesRef.current.some((person) => person.id === id)
+      )
+      if (!faltando.length) {
+        return
+      }
+
+      const encontrados = []
+      for (const id of faltando) {
+        try {
+          const result = await listConstructionPersonSummaries({ bridge, personId: id, pageSize: 1 })
+          encontrados.push(...(result.items ?? []))
+        } catch {
+          // Pessoa apagada ou sem permissao: o campo segue mostrando o id, que
+          // ja era o comportamento. Falhar a tela inteira por causa de um nome
+          // seria pior.
+        }
+      }
+      if (encontrados.length) {
+        setPersonSummaries((atual) => {
+          const conhecidos = new Set(atual.map((person) => person.id))
+          return [...atual, ...encontrados.filter((person) => !conhecidos.has(person.id))]
+        })
+      }
+    },
+    [bridge]
+  )
+
+  useEffect(() => {
+    if (!selectedUnit) {
+      return
+    }
+
+    void ensurePeopleLoaded([
+      selectedUnit.buyerPersonId,
+      selectedUnit.secondaryBuyerPersonId,
+      selectedUnit.brokerPersonId,
+    ])
+  }, [ensurePeopleLoaded, selectedUnit])
 
   useEffect(() => {
     if (viewMode !== "projectDetail" || projectDetailTab !== "blocks") {
