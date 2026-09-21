@@ -5710,6 +5710,8 @@ function UnitInstallmentsPanel({
                     </td>
                     <td className={styles.actionsCell}>
                       <RowActionsMenu
+                        busy={receiptBusyId === row.id}
+                        busyLabel="Recibo..."
                         actions={buildInstallmentActions({
                           installment: row,
                           adjustment: row.adjustment,
@@ -6792,7 +6794,13 @@ function UnitContractPanel({ unit, plan, loading, error, onRetry }) {
   )
 }
 
-function RowActionsMenu({ label = "Ações", actions }) {
+// `busy` existe porque o menu FECHA ao clicar (`setIsOpen(false)` antes do
+// `onSelect`). Desabilitar o item nao aparece para ninguem: a essa altura ele
+// ja saiu da tela. Quem precisa mostrar que algo esta em curso e o botao da
+// linha, que continua visivel -- foi o que faltou em "Gerar recibo", uma acao
+// que fala com o servidor, gera PDF e leva segundos parecendo que nada
+// aconteceu.
+function RowActionsMenu({ label = "Ações", actions, busy = false, busyLabel = "Aguarde..." }) {
   const [isOpen, setIsOpen] = useState(false)
   const [menuPosition, setMenuPosition] = useState(null)
   const wrapperRef = useRef(null)
@@ -6812,6 +6820,12 @@ function RowActionsMenu({ label = "Ações", actions }) {
       right: Math.max(window.innerWidth - triggerRect.right, 8),
     })
   }, [visibleActions.length])
+
+  useEffect(() => {
+    if (busy && isOpen) {
+      setIsOpen(false)
+    }
+  }, [busy, isOpen])
 
   useEffect(() => {
     if (!isOpen) {
@@ -6857,9 +6871,20 @@ function RowActionsMenu({ label = "Ações", actions }) {
         onClick={() => setIsOpen((previous) => !previous)}
         aria-expanded={isOpen}
         aria-haspopup="menu"
+        disabled={busy}
+        aria-busy={busy || undefined}
       >
-        {label}
-        <ChevronDown size={14} className={chevronClassName} />
+        {busy ? (
+          <>
+            <RefreshCw size={14} className={styles.spinIcon} />
+            {busyLabel}
+          </>
+        ) : (
+          <>
+            {label}
+            <ChevronDown size={14} className={chevronClassName} />
+          </>
+        )}
       </button>
 
       {isOpen && menuPosition ? (
