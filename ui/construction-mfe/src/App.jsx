@@ -584,14 +584,6 @@ const salePaymentSourceDefinitions = [
   },
 ]
 
-const receivableInstallmentStatusLabel = {
-  OPEN: "Aberta",
-  PAID: "Paga",
-  PARTIALLY_PAID: "Parcial",
-  OVERDUE: "Vencida",
-  CANCELED: "Cancelada",
-}
-
 // O ERP responde com os status em maiúsculas e em inglês (ACTIVE, OPEN...).
 // Sem estes mapas eles chegavam crus à tela.
 const erpContractStatusLabel = {
@@ -5626,11 +5618,9 @@ function UnitInstallmentsPanel({
                 <tr>
                   <th>Tipo</th>
                   <th>Parcela</th>
-                  <th>Origem</th>
                   <th>Vencimento</th>
                   <th>Valor</th>
                   <th>Pago</th>
-                  <th>Status</th>
                   <th aria-label="Ações" />
                 </tr>
               </thead>
@@ -5648,7 +5638,6 @@ function UnitInstallmentsPanel({
                         {row.installmentNumber}/{row.totalInstallments}
                       </strong>
                     </td>
-                    <td>{row.documentNumber || "-"}</td>
                     <td>{formatDate(row.dueDate)}</td>
                     <td>{formatMoney(row.amount)}</td>
                     <td>
@@ -5656,11 +5645,6 @@ function UnitInstallmentsPanel({
                       <div className={styles.rowSecondaryText}>
                         {row.paidAmount ? formatMoney(row.paidAmount) : ""}
                       </div>
-                    </td>
-                    <td>
-                      <span className={`${styles.statusPill} ${styles[`status${row.status}`] || ""}`}>
-                        {receivableInstallmentStatusLabel[row.status] ?? row.status}
-                      </span>
                     </td>
                     <td className={styles.actionsCell}>
                       <RowActionsMenu
