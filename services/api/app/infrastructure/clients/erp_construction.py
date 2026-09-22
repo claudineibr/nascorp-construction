@@ -430,6 +430,38 @@ class ErpConstructionClient:
             response.raise_for_status()
             return response.json()
 
+    async def rename_unit_cost_center(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        cost_center_id: UUID,
+        description: str,
+    ) -> dict[str, object]:
+        """Acerta o nome do centro de custo da unidade no ERP.
+
+        So a descricao viaja. O codigo do centro de custo e identificador
+        contabil e nao muda -- o ERP recusaria de qualquer forma.
+        """
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for Construction cost center integration.")
+
+        headers = {
+            "X-Service-Key": settings.erp_service_key,
+            "X-Company-ID": str(company_id),
+        }
+        if user_id is not None:
+            headers["X-User-ID"] = str(user_id)
+
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.patch(
+                f"/v1/internal/construction/cost-centers/{cost_center_id}",
+                headers=headers,
+                json={"description": description},
+            )
+            response.raise_for_status()
+            return response.json()
+
     async def create_cost_center_hierarchy(self, *, event: EventEnvelope) -> EventEnvelope:
         return await self.deliver_event(event=event)
 

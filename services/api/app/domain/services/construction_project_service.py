@@ -597,6 +597,7 @@ class ConstructionProjectService:
         company_id: UUID,
         unit_id: UUID,
         request: ConstructionUnitUpdate,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionUnit:
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
         updates = request.model_dump(exclude_unset=True)
@@ -614,6 +615,30 @@ class ConstructionProjectService:
 
         next_code = updates.get("code")
         if next_code is not None and next_code != unit.code:
+            # O CODIGO E IMUTAVEL depois que a unidade ganha centro de custo.
+            #
+            # O centro de custo analitico nasce com o codigo derivado daqui --
+            # `CONST-{obra}-{unidade}` -- e batizado uma unica vez, na criacao
+            # da unidade. Trocar o codigo aqui fazia os dois divergirem em
+            # silencio: o vinculo e por UUID, entao nada quebrava, e o relatorio
+            # de custos passava a mostrar um codigo que nao existe mais em
+            # Obras.
+            #
+            # E renomear o centro de custo junto nao e alternativa: o codigo
+            # dele e identificador contabil. 676 recebiveis ja apontam para
+            # estes centros, um deles com lancamento gerado, e documento ja
+            # emitido carrega o codigo da epoca. Quem precisa de outro codigo
+            # precisa de outra unidade.
+            if unit.analytic_cost_center_id is not None:
+                raise ConstructionInvalidValueError(
+                    message=(
+                        "O código da unidade não pode mudar depois que ela tem centro de custo: "
+                        "ele é o identificador contábil usado nos lançamentos. A descrição pode ser "
+                        "alterada à vontade."
+                    ),
+                    error_code="CONSTRUCTION_UNIT_CODE_IS_IMMUTABLE",
+                )
+
             existing_unit = await self.repository.get_unit_by_code(
                 company_id=company_id,
                 project_id=unit.project_id,
@@ -621,6 +646,31 @@ class ConstructionProjectService:
             )
             if existing_unit and existing_unit.id != unit.id:
                 raise ConstructionDuplicateCodeError(resource_name="a unidade", code=next_code)
+
+        # A descricao carrega o DONO, e muda a cada revenda. O centro de custo
+        # era batizado na criacao e nunca mais: o relatorio de custos seguia
+        # mostrando o comprador anterior. Renomeia ANTES de gravar -- se o ERP
+        # recusar, a unidade nao muda, e os dois nunca divergem.
+        nova_descricao = updates.get("description")
+        renomear = (
+            nova_descricao is not None
+            and (nova_descricao or "").strip() != (unit.description or "").strip()
+            and unit.analytic_cost_center_id is not None
+            and self.erp_client is not None
+        )
+        if renomear:
+            try:
+                await self.erp_client.rename_unit_cost_center(
+                    company_id=company_id,
+                    user_id=actor_user_id,
+                    cost_center_id=unit.analytic_cost_center_id,
+                    description=nova_descricao,
+                )
+            except httpx.HTTPStatusError as request_error:
+                raise self._erp_domain_error(
+                    request_error=request_error,
+                    fallback_message="Não foi possível renomear o centro de custo da unidade no ERP.",
+                ) from request_error
 
         self._apply_updates(entity=unit, updates=updates)
         await self.repository.commit()

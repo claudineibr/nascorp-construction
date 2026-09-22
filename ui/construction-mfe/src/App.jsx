@@ -8298,6 +8298,12 @@ function BlockModal({ mode, blockForm, onClose, onChange, onSubmit, loading }) {
 function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loading }) {
   const unitQuantity = Number(unitForm.quantity)
   const submitLabel = mode === "create" && unitQuantity > 1 ? `Criar ${unitQuantity} unidades` : "Criar unidade"
+  // O codigo da unidade batiza o centro de custo -- `CONST-{obra}-{unidade}` --
+  // e esse codigo e identificador contabil: ha recebivel e lancamento
+  // apontando para ele. Editar so a unidade fazia os dois divergirem em
+  // silencio. O servidor recusa; o campo fica travado para nao oferecer o que
+  // vai ser negado.
+  const codeIsLocked = mode !== "create"
 
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
@@ -8350,7 +8356,18 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
                     value={unitForm.code}
                     onChange={(event) => onChange("code", event.target.value)}
                     required
+                    readOnly={codeIsLocked}
+                    title={
+                      codeIsLocked
+                        ? "O código identifica o centro de custo da unidade na contabilidade e não muda."
+                        : undefined
+                    }
                   />
+                  {codeIsLocked ? (
+                    <small className={styles.rowSecondaryText}>
+                      É o identificador do centro de custo na contabilidade, e não muda.
+                    </small>
+                  ) : null}
                 </label>
                 <label className={styles.filterControl}>
                   <span>Descrição</span>
@@ -8359,6 +8376,11 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
                     value={unitForm.description}
                     onChange={(event) => onChange("description", event.target.value)}
                   />
+                  {codeIsLocked ? (
+                    <small className={styles.rowSecondaryText}>
+                      Renomeia também o centro de custo da unidade.
+                    </small>
+                  ) : null}
                 </label>
               </>
             )}
