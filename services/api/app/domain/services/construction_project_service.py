@@ -677,8 +677,62 @@ class ConstructionProjectService:
         await self.repository.refresh(unit)
         return unit
 
+    async def _refuse_when_unit_has_installments(self, *, company_id: UUID, unit: ConstructionUnit, acao: str) -> None:
+        """Recusa tirar o dono da unidade enquanto houver parcela no ERP.
+
+        Quem responde pelas parcelas e o COMPRADOR: `receivables.person_id` sai
+        de `construction_units.buyer_person_id` -- e na venda viva e na carga do
+        MFCON. Zerar o comprador aqui nao apaga nada no ERP: o recebivel
+        continua inteiro, no nome de quem era dono, e a unidade deixa de
+        alcanca-lo pela tela. A divida fica orfa por relacao, nao por dado --
+        que e a pior forma, porque nao aparece em nenhum relatorio.
+
+        A contagem vem do plano de pagamento, e NAO de
+        `external_receivable_id`: o aditivo e recebivel proprio, sem ponteiro na
+        unidade, e a venda migrada do MFCON so ganhou o ponteiro em 2026-09-21.
+        `construction_unit_id` alcanca os dois.
+
+        Quando o ERP nao responde a operacao e RECUSADA, nao liberada. Deixar
+        passar sem saber e exatamente o defeito que este guard fecha.
+        """
+        if self.erp_client is None:
+            return
+
+        try:
+            plan = await self.erp_client.get_unit_payment_plan(
+                company_id=company_id,
+                receivable_id=unit.external_receivable_id,
+                contract_id=unit.external_contract_id,
+                construction_unit_id=unit.id,
+            )
+        except httpx.HTTPError as request_error:
+            raise ConstructionResourceInUseError(
+                message=(
+                    f"Não foi possível conferir as parcelas da unidade no ERP para {acao}. "
+                    "Tente novamente em instantes."
+                ),
+                error_code="CONSTRUCTION_UNIT_INSTALLMENTS_UNKNOWN",
+            ) from request_error
+
+        parcelas = plan.get("installments") or []
+        if not parcelas:
+            return
+
+        raise ConstructionResourceInUseError(
+            message=(
+                f"A unidade {unit.code} tem {len(parcelas)} parcela(s) no contas a receber. "
+                f"Remova as parcelas antes de {acao}, senão a cobrança fica sem dono."
+            ),
+            error_code="CONSTRUCTION_UNIT_HAS_INSTALLMENTS",
+        )
+
     async def delete_unit(self, *, company_id: UUID, unit_id: UUID) -> None:
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        # Apagar a unidade tira o dono junto -- pela porta maior. Ver
+        # `_refuse_when_unit_has_installments`.
+        await self._refuse_when_unit_has_installments(
+            company_id=company_id, unit=unit, acao="excluir a unidade"
+        )
         await self.repository.delete(unit)
         await self.repository.commit()
 
@@ -711,6 +765,10 @@ class ConstructionProjectService:
                 message="Só é possível liberar a reserva de uma unidade reservada.",
                 error_code="CONSTRUCTION_UNIT_INVALID_STATUS",
             )
+
+        await self._refuse_when_unit_has_installments(
+            company_id=company_id, unit=unit, acao="liberar a reserva"
+        )
 
         unit.status = ConstructionUnitStatus.AVAILABLE
         unit.buyer_person_id = None
