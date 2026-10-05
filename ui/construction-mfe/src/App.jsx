@@ -1,3 +1,4 @@
+import { getMeasurementApprovalActions } from "./features/measurementActions.js"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   BarChart3,
@@ -3549,10 +3550,11 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }
 
   const handleApproveMeasurement = (measurement) => {
+    const { canRetryIntegration } = getMeasurementApprovalActions(measurement)
     setConfirmRequest({
-      title: `Aprovar a medição ${measurement.code}`,
-      message: "A medição passa a valer e conta no avanço da obra.",
-      confirmLabel: "Aprovar medição",
+      title: canRetryIntegration ? `Reenviar a medição ${measurement.code} ao ERP` : `Aprovar a medição ${measurement.code}`,
+      message: canRetryIntegration ? "O reenvio tenta vincular o título a pagar e preserva a aprovação original." : "A medição passa a valer e conta no avanço da obra.",
+      confirmLabel: canRetryIntegration ? "Reenviar ao ERP" : "Aprovar medição",
       danger: false,
       run: () => runApproveMeasurement(measurement),
     })
@@ -3561,7 +3563,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const runApproveMeasurement = async (measurement) => {
     try {
       await approveConstructionMeasurement({ bridge, measurementId: measurement.id })
-      bridge?.feedback?.success?.("Medição aprovada com sucesso.")
+      const { canRetryIntegration } = getMeasurementApprovalActions(measurement)
+      bridge?.feedback?.success?.(canRetryIntegration ? "Reenvio da medição ao ERP solicitado." : "Medição aprovada com sucesso.")
       await loadMeasurements()
     } catch (requestError) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível aprovar a medição.")
@@ -7300,7 +7303,7 @@ function MeasurementsList({
         <tbody>
           {visibleMeasurements.map((measurement) => {
             const canSubmit = ["draft", "rejected"].includes(measurement.status)
-            const canApprove = ["draft", "submitted", "in_approval", "rejected"].includes(measurement.status)
+            const { canApprove, canRetryIntegration } = getMeasurementApprovalActions(measurement)
             const canReject = ["draft", "submitted", "in_approval"].includes(measurement.status)
             const canEdit = measurement.status !== "approved" && measurement.status !== "paid"
             const canDelete = measurement.status !== "approved" && measurement.status !== "paid"
@@ -7390,7 +7393,7 @@ function MeasurementsList({
                       },
                       {
                         key: "approve",
-                        label: "Aprovar",
+                        label: canRetryIntegration ? "Reenviar ao ERP" : "Aprovar",
                         icon: CheckCircle,
                         visible: canApprove,
                         dividerBefore: !canSubmit,

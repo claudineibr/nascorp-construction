@@ -1315,6 +1315,7 @@ async def test_approve_measurement_creates_accounts_payable_once() -> None:
         ),
     )
 
+    await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
     approved_first = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
     approved_second = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
 
@@ -1368,6 +1369,7 @@ async def test_async_integration_mode_records_measurement_without_http_delivery(
             due_date=date(2026, 5, 15),
         ),
     )
+    await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
     approved_measurement = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
 
     assert approved_measurement.status == ConstructionMeasurementStatus.APPROVED
@@ -3532,3 +3534,65 @@ async def test_reversing_a_unit_payment_targets_the_resolved_receivable() -> Non
 
     assert captured["receivable_id"] == unit.external_receivable_id
     assert captured["installment_number"] == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [ConstructionMeasurementStatus.DRAFT, ConstructionMeasurementStatus.REJECTED])
+async def test_approval_requires_submission(status):
+    company_id, measurement, service = await _build_measurement_scenario()
+    measurement.status = status
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.approve_measurement(company_id=company_id, measurement_id=measurement.id, actor_user_id=uuid4())
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_MUST_BE_SUBMITTED"
+    assert not service.erp_client.events
+
+
+@pytest.mark.asyncio
+async def test_measurement_creator_cannot_approve_even_when_someone_else_submitted():
+    company_id, measurement, service = await _build_measurement_scenario()
+    creator = uuid4()
+    measurement.created_by_user_id = creator
+    await service.submit_measurement(company_id=company_id, measurement_id=measurement.id, actor_user_id=uuid4())
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.approve_measurement(company_id=company_id, measurement_id=measurement.id, actor_user_id=creator)
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_SELF_APPROVAL"
+    assert "enviada" not in error.value.message
+    assert measurement.status == ConstructionMeasurementStatus.SUBMITTED
+    assert not service.erp_client.events
+
+
+@pytest.mark.asyncio
+async def test_approved_measurement_without_title_retries_and_preserves_original_approval(monkeypatch):
+    company_id, measurement, service = await _build_measurement_scenario()
+    creator, approver = uuid4(), uuid4()
+    measurement.created_by_user_id = creator
+    measurement.submitted_by_user_id = creator
+    measurement.status = ConstructionMeasurementStatus.APPROVED
+    measurement.approved_by_user_id = approver
+    approved_at = datetime(2026, 9, 1, tzinfo=UTC)
+    measurement.approved_at = approved_at
+    original_amount = measurement.measured_amount
+
+    async def _no_recalculation(**kwargs):
+        raise AssertionError("Retry must preserve approved amounts")
+
+    monkeypatch.setattr(service, "_sync_measurement_amounts_from_items", _no_recalculation)
+    result = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id, actor_user_id=creator)
+    assert result.external_accounts_payable_id is not None
+    assert result.approved_by_user_id == approver
+    assert result.approved_at == approved_at
+    assert result.measured_amount == original_amount
+    assert len(service.erp_client.events) == 1
+    await service.approve_measurement(company_id=company_id, measurement_id=measurement.id, actor_user_id=uuid4())
+    assert len(service.erp_client.events) == 1
+
+
+@pytest.mark.asyncio
+async def test_paid_measurement_has_a_specific_denial():
+    company_id, measurement, service = await _build_measurement_scenario()
+    measurement.status = ConstructionMeasurementStatus.PAID
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_ALREADY_PAID"
+    assert "paga" in error.value.message
+    assert not service.erp_client.events

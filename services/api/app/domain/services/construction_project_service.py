@@ -1383,8 +1383,25 @@ class ConstructionProjectService:
         ):
             return measurement
 
+        retry_integration = measurement.status == ConstructionMeasurementStatus.APPROVED
+        if measurement.status == ConstructionMeasurementStatus.PAID:
+            raise ConstructionInvalidValueError(
+                message="A medição já está paga e não pode ser aprovada novamente.",
+                error_code="CONSTRUCTION_MEASUREMENT_ALREADY_PAID",
+            )
+
         # Antes das travas de unidade e fase de propósito: quem aprova precisa
         # ver o problema da FVS antes de ouvir sobre centro de custo.
+        if measurement.status not in {
+            ConstructionMeasurementStatus.SUBMITTED,
+            ConstructionMeasurementStatus.IN_APPROVAL,
+            ConstructionMeasurementStatus.APPROVED,
+        }:
+            raise ConstructionInvalidValueError(
+                message="Envie a medição para aprovação antes de aprovar.",
+                error_code="CONSTRUCTION_MEASUREMENT_MUST_BE_SUBMITTED",
+            )
+
         await self._assert_measurement_inspections_are_approved(
             company_id=company_id,
             measurement_id=measurement_id,
@@ -1410,26 +1427,30 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_UNIT_COST_CENTER_REQUIRED",
             )
 
-        if actor_user_id is not None and measurement.submitted_by_user_id == actor_user_id:
+        if not retry_integration and actor_user_id is not None and actor_user_id in {
+            measurement.submitted_by_user_id,
+            measurement.created_by_user_id,
+        }:
             raise ConstructionInvalidValueError(
-                message="A medição precisa ser aprovada por um usuário diferente de quem a enviou.",
+                message="Quem criou ou enviou a medição não pode aprová-la. Peça a outro usuário com permissão para aprovar.",
                 error_code="CONSTRUCTION_MEASUREMENT_SELF_APPROVAL",
             )
 
-        await self._sync_measurement_amounts_from_items(measurement=measurement)
+        if not retry_integration:
+            await self._sync_measurement_amounts_from_items(measurement=measurement)
 
-        measurement.status = ConstructionMeasurementStatus.APPROVED
-        measurement.rejection_reason = None
-        measurement.rejected_by_user_id = None
-        measurement.rejected_at = None
-        measurement.approved_by_user_id = actor_user_id
-        if measurement.approved_at is None:
-            measurement.approved_at = datetime.now(tz=UTC)
+            measurement.status = ConstructionMeasurementStatus.APPROVED
+            measurement.rejection_reason = None
+            measurement.rejected_by_user_id = None
+            measurement.rejected_at = None
+            measurement.approved_by_user_id = actor_user_id
+            if measurement.approved_at is None:
+                measurement.approved_at = datetime.now(tz=UTC)
 
         approval_event = self._build_measurement_approved_event(
             measurement=measurement,
             analytic_cost_center_id=unit.analytic_cost_center_id,
-            actor_user_id=actor_user_id,
+            actor_user_id=measurement.approved_by_user_id,
         )
         dispatch_result = await self._dispatch_integration_event(event=approval_event)
         if dispatch_result is not None and dispatch_result.response_event is not None:
