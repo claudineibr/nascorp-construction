@@ -569,7 +569,7 @@ def test_create_procurement_request_requires_create_permission() -> None:
         },
         json={
             "title": "Concrete package",
-            "estimated_amount": "12000.00",
+            "items": [{"product_id": str(uuid4()), "quantity": "1", "unit_of_measure": "M3", "unit_price": "12000.00"}],
         },
     )
 

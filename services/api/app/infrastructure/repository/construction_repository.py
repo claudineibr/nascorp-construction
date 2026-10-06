@@ -951,7 +951,7 @@ class ConstructionRepository:
         procurement_request_id: UUID,
     ) -> ConstructionProcurementRequest | None:
         result = await self.session.execute(
-            select(ConstructionProcurementRequest).where(
+            select(ConstructionProcurementRequest).options(selectinload(ConstructionProcurementRequest.items)).where(
                 ConstructionProcurementRequest.company_id == company_id,
                 ConstructionProcurementRequest.id == procurement_request_id,
                 *scope_conditions(ConstructionProcurementRequest, self.scope),
@@ -983,6 +983,7 @@ class ConstructionRepository:
     ) -> list[ConstructionProcurementRequest]:
         result = await self.session.execute(
             select(ConstructionProcurementRequest)
+            .options(selectinload(ConstructionProcurementRequest.items))
             .where(
                 ConstructionProcurementRequest.company_id == company_id,
                 ConstructionProcurementRequest.project_id == project_id,

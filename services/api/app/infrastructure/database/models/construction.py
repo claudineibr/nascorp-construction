@@ -981,6 +981,7 @@ class ConstructionProcurementRequest(Base):
     title: Mapped[str] = mapped_column(String(150), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     estimated_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    discount_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=Decimal("0"), server_default="0")
     needed_by_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     supplier_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     supplier_qualification_status: Mapped[str] = mapped_column(
@@ -992,6 +993,7 @@ class ConstructionProcurementRequest(Base):
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     external_procurement_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     external_procurement_status: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    external_order_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -1001,3 +1003,35 @@ class ConstructionProcurementRequest(Base):
     )
 
     project: Mapped[ConstructionProject] = relationship(back_populates="procurement_requests")
+    items: Mapped[list[ConstructionProcurementItem]] = relationship(
+        back_populates="procurement_request", cascade="all, delete-orphan", order_by="ConstructionProcurementItem.sequence_number"
+    )
+
+
+class ConstructionProcurementItem(Base):
+    __tablename__ = "construction_procurement_items"
+    __table_args__ = (
+        UniqueConstraint("procurement_request_id", "sequence_number", name="uq_construction_procurement_items_sequence"),
+        CheckConstraint("quantity > 0", name="ck_construction_procurement_items_quantity_positive"),
+        CheckConstraint("unit_price >= 0", name="ck_construction_procurement_items_unit_price_nonnegative"),
+        {"schema": CONSTRUCTION_SCHEMA},
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    procurement_request_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_procurement_requests.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    product_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    product_code: Mapped[str] = mapped_column(String(40), nullable=False)
+    product_description: Mapped[str] = mapped_column(String(500), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
+    unit_of_measure: Mapped[str] = mapped_column(String(10), nullable=False)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+
+    procurement_request: Mapped[ConstructionProcurementRequest] = relationship(back_populates="items")

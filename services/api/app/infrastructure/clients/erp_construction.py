@@ -112,6 +112,40 @@ class ErpConstructionClient:
             return "none"
         return str(items[0].get("qualification_status") or "none")
 
+    async def validate_procurement_products(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        product_ids: list[UUID],
+    ) -> list[dict[str, object]]:
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for Construction product validation.")
+        headers = {
+            "X-Service-Key": settings.erp_service_key,
+            "X-Company-ID": str(company_id),
+        }
+        if user_id is not None:
+            headers["X-User-ID"] = str(user_id)
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.post(
+                "/v1/internal/construction/procurement-products/validate",
+                headers=headers,
+                json={"product_ids": [str(product_id) for product_id in product_ids]},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        return list(payload.get("items") or [])
+
+    async def get_procurement_statuses(self, *, company_id: UUID, user_id: UUID | None, source_ids: list[UUID]):
+        headers = {"X-Service-Key": settings.erp_service_key or "", "X-Company-ID": str(company_id)}
+        if user_id:
+            headers["X-User-ID"] = str(user_id)
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.post("/v1/internal/construction/procurement-requests/status", headers=headers, json={"source_ids": [str(value) for value in source_ids]})
+            response.raise_for_status()
+            return list(response.json().get("items") or [])
+
     async def get_person_name(
         self,
         *,

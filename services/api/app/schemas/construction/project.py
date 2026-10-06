@@ -922,20 +922,43 @@ class ConstructionMeasurementItemListResponse(BaseModel):
     total_amount: Decimal
 
 
+class ConstructionProcurementItemInput(BaseModel):
+    product_id: UUID
+    quantity: Decimal = Field(..., gt=0, max_digits=14, decimal_places=4)
+    unit_of_measure: str = Field(..., min_length=1, max_length=10)
+    unit_price: Decimal = Field(..., ge=0, max_digits=14, decimal_places=2)
+
+
+class ConstructionProcurementItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    sequence_number: int
+    product_id: UUID
+    product_code: str
+    product_description: str
+    quantity: Decimal
+    unit_of_measure: str
+    unit_price: Decimal
+    line_total: Decimal
+
+
 class ConstructionProcurementRequestCreate(BaseModel):
     code: str | None = Field(default=None, min_length=1, max_length=50)
     title: str = Field(..., min_length=1, max_length=150)
     description: str | None = Field(default=None, max_length=1000)
-    estimated_amount: Decimal = Field(..., gt=0)
+    items: list[ConstructionProcurementItemInput] = Field(..., min_length=1)
+    discount_amount: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
     needed_by_date: date | None = None
-    supplier_person_id: UUID | None = None
+    supplier_person_id: UUID
 
 
 class ConstructionProcurementRequestUpdate(BaseModel):
     code: str | None = Field(default=None, min_length=1, max_length=50)
     title: str | None = Field(default=None, min_length=1, max_length=150)
     description: str | None = Field(default=None, max_length=1000)
-    estimated_amount: Decimal | None = Field(default=None, gt=0)
+    items: list[ConstructionProcurementItemInput] | None = Field(default=None, min_length=1)
+    discount_amount: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
     needed_by_date: date | None = None
     supplier_person_id: UUID | None = None
 
@@ -954,6 +977,8 @@ class ConstructionProcurementRequestResponse(BaseModel):
     title: str
     description: str | None = None
     estimated_amount: Decimal
+    discount_amount: Decimal = Decimal("0")
+    items: list[ConstructionProcurementItemResponse] = Field(default_factory=list)
     needed_by_date: date | None = None
     supplier_person_id: UUID | None = None
     supplier_qualification_status: str = "none"
@@ -963,6 +988,7 @@ class ConstructionProcurementRequestResponse(BaseModel):
     approved_at: datetime | None = None
     external_procurement_id: UUID | None = None
     external_procurement_status: str | None = None
+    external_order_number: str | None = None
     created_at: datetime
     updated_at: datetime
 

@@ -1,7 +1,7 @@
 import calendar
 import logging
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, ClassVar, Protocol
 from uuid import UUID, uuid4
 
@@ -58,6 +58,7 @@ from app.infrastructure.database.models import (
     ConstructionMeasurementItemInspection,
     ConstructionMeasurementItemOccurrence,
     ConstructionProcurementRequest,
+    ConstructionProcurementItem,
     ConstructionProject,
     ConstructionSchedulePhase,
     ConstructionUnit,
@@ -79,6 +80,7 @@ from app.schemas.construction import (
     ConstructionProjectCreate,
     ConstructionProjectUpdate,
     ConstructionProcurementRequestCreate,
+    ConstructionProcurementItemInput,
     ConstructionProcurementRequestUpdate,
     ConstructionMeasurementCreate,
     ConstructionMeasurementUpdate,
@@ -142,6 +144,15 @@ class ErpMeasurementClient(Protocol):
         user_id: UUID | None,
         person_id: UUID,
     ) -> str:
+        raise NotImplementedError
+
+    async def validate_procurement_products(
+        self,
+        *,
+        company_id: UUID,
+        user_id: UUID | None,
+        product_ids: list[UUID],
+    ) -> list[dict[str, Any]]:
         raise NotImplementedError
 
     async def create_accounts_payable_from_measurement(self, *, event: EventEnvelope) -> EventEnvelope:
@@ -936,6 +947,12 @@ class ConstructionProjectService:
         actor_user_id: UUID | None = None,
     ) -> ConstructionProcurementRequest:
         await self.get_project(company_id=company_id, project_id=project_id)
+        items, _, total = await self._prepare_procurement_items(
+            company_id=company_id,
+            actor_user_id=actor_user_id,
+            item_inputs=request.items,
+            discount_amount=request.discount_amount,
+        )
         procurement_code = (request.code or "").strip()
         if procurement_code:
             existing_request = await self.repository.get_procurement_request_by_code(
@@ -957,7 +974,8 @@ class ConstructionProjectService:
             code=procurement_code,
             title=request.title.strip(),
             description=request.description,
-            estimated_amount=request.estimated_amount,
+            estimated_amount=total,
+            discount_amount=request.discount_amount,
             needed_by_date=request.needed_by_date,
             supplier_person_id=request.supplier_person_id,
             supplier_qualification_status=await self._resolve_supplier_qualification_status(
@@ -968,19 +986,39 @@ class ConstructionProjectService:
             status=ConstructionProcurementStatus.DRAFT,
             rejection_reason=None,
         )
+        procurement_request.items = [
+            ConstructionProcurementItem(
+                company_id=company_id,
+                sequence_number=index,
+                product_id=item["product_id"],
+                product_code=item["product_code"],
+                product_description=item["product_description"],
+                quantity=item["quantity"],
+                unit_of_measure=item["unit_of_measure"],
+                unit_price=item["unit_price"],
+                line_total=item["line_total"],
+            )
+            for index, item in enumerate(items, start=1)
+        ]
         await self.repository.add(procurement_request)
         await self.repository.commit()
         await self.repository.refresh(procurement_request)
-        return procurement_request
+        return await self.get_procurement_request(
+            company_id=company_id,
+            procurement_request_id=procurement_request.id,
+        )
 
     async def list_procurement_requests(
         self,
         *,
         company_id: UUID,
         project_id: UUID,
+        actor_user_id: UUID | None = None,
     ) -> list[ConstructionProcurementRequest]:
         await self.get_project(company_id=company_id, project_id=project_id)
-        return await self.repository.list_procurement_requests(company_id=company_id, project_id=project_id)
+        items = await self.repository.list_procurement_requests(company_id=company_id, project_id=project_id)
+        await self._sync_procurement_statuses(company_id=company_id, actor_user_id=actor_user_id, items=items)
+        return items
 
     async def get_procurement_request(
         self,
@@ -1003,11 +1041,13 @@ class ConstructionProjectService:
         company_id: UUID,
         procurement_request_id: UUID,
         request: ConstructionProcurementRequestUpdate,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionProcurementRequest:
         procurement_request = await self.get_procurement_request(
             company_id=company_id,
             procurement_request_id=procurement_request_id,
         )
+        await self._sync_procurement_statuses(company_id=company_id, actor_user_id=actor_user_id, items=[procurement_request])
         if procurement_request.status not in {
             ConstructionProcurementStatus.DRAFT,
             ConstructionProcurementStatus.REJECTED,
@@ -1017,7 +1057,12 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_PROCUREMENT_LOCKED",
             )
 
-        updates = request.model_dump(exclude_unset=True)
+        updates = request.model_dump(exclude_unset=True, exclude={"items", "discount_amount"})
+        if not updates.get("supplier_person_id", procurement_request.supplier_person_id):
+            raise ConstructionInvalidValueError(
+                message="Selecione o fornecedor da requisição.",
+                error_code="CONSTRUCTION_PROCUREMENT_SUPPLIER_REQUIRED",
+            )
         next_code = updates.get("code")
         if next_code is not None:
             next_code = next_code.strip()
@@ -1041,10 +1086,46 @@ class ConstructionProjectService:
 
             updates["code"] = next_code
 
+        if "items" in request.model_fields_set or "discount_amount" in request.model_fields_set:
+            next_discount = request.discount_amount
+            if next_discount is None:
+                next_discount = procurement_request.discount_amount
+            next_items = request.items
+            if next_items is None:
+                next_items = [
+                    ConstructionProcurementItemInput(
+                        product_id=item.product_id,
+                        quantity=item.quantity,
+                        unit_of_measure=item.unit_of_measure,
+                        unit_price=item.unit_price,
+                    )
+                    for item in procurement_request.items
+                ]
+            prepared_items, _, total = await self._prepare_procurement_items(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                item_inputs=next_items,
+                discount_amount=next_discount,
+            )
+            existing_items = {item.sequence_number: item for item in procurement_request.items}
+            next_entities = []
+            for index, item in enumerate(prepared_items, start=1):
+                entity = existing_items.get(index)
+                if entity is None:
+                    entity = ConstructionProcurementItem(company_id=company_id, sequence_number=index)
+                for field, value in item.items():
+                    setattr(entity, field, value)
+                next_entities.append(entity)
+            procurement_request.items = next_entities
+            procurement_request.discount_amount = next_discount
+            procurement_request.estimated_amount = total
         self._apply_updates(entity=procurement_request, updates=updates)
         await self.repository.commit()
         await self.repository.refresh(procurement_request)
-        return procurement_request
+        return await self.get_procurement_request(
+            company_id=company_id,
+            procurement_request_id=procurement_request.id,
+        )
 
     async def submit_procurement_request(
         self,
@@ -1066,20 +1147,11 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_PROCUREMENT_INVALID_STATUS",
             )
 
-        if procurement_request.estimated_amount >= Decimal(str(CONSTRUCTION_PROCUREMENT_APPROVAL_THRESHOLD)):
-            procurement_request.status = ConstructionProcurementStatus.PENDING_APPROVAL
-            await self.repository.commit()
-            await self.repository.refresh(procurement_request)
-            return procurement_request
-
-        procurement_request.status = ConstructionProcurementStatus.APPROVED
-        procurement_request.approved_by_user_id = actor_user_id
-        procurement_request.approved_at = datetime.now(tz=UTC)
-        procurement_request.rejection_reason = None
         await self._dispatch_procurement_request_to_erp(
             procurement_request=procurement_request,
             actor_user_id=actor_user_id,
         )
+        procurement_request.rejection_reason = None
         await self.repository.commit()
         await self.repository.refresh(procurement_request)
         return procurement_request
@@ -1091,27 +1163,10 @@ class ConstructionProjectService:
         procurement_request_id: UUID,
         actor_user_id: UUID | None,
     ) -> ConstructionProcurementRequest:
-        procurement_request = await self.get_procurement_request(
-            company_id=company_id,
-            procurement_request_id=procurement_request_id,
+        raise ConstructionInvalidValueError(
+            message="Aprovação e rejeição são feitas em Compras > Requisições.",
+            error_code="CONSTRUCTION_PROCUREMENT_CENTRAL_APPROVAL",
         )
-        if procurement_request.status != ConstructionProcurementStatus.PENDING_APPROVAL:
-            raise ConstructionInvalidValueError(
-                message="Só é possível aprovar requisição que está aguardando aprovação.",
-                error_code="CONSTRUCTION_PROCUREMENT_INVALID_STATUS",
-            )
-
-        procurement_request.status = ConstructionProcurementStatus.APPROVED
-        procurement_request.approved_by_user_id = actor_user_id
-        procurement_request.approved_at = datetime.now(tz=UTC)
-        procurement_request.rejection_reason = None
-        await self._dispatch_procurement_request_to_erp(
-            procurement_request=procurement_request,
-            actor_user_id=actor_user_id,
-        )
-        await self.repository.commit()
-        await self.repository.refresh(procurement_request)
-        return procurement_request
 
     async def reject_procurement_request(
         self,
@@ -1120,15 +1175,10 @@ class ConstructionProjectService:
         procurement_request_id: UUID,
         reason: str | None = None,
     ) -> ConstructionProcurementRequest:
-        procurement_request = await self.get_procurement_request(
-            company_id=company_id,
-            procurement_request_id=procurement_request_id,
+        raise ConstructionInvalidValueError(
+            message="Aprovação e rejeição são feitas em Compras > Requisições.",
+            error_code="CONSTRUCTION_PROCUREMENT_CENTRAL_APPROVAL",
         )
-        procurement_request.status = ConstructionProcurementStatus.REJECTED
-        procurement_request.rejection_reason = reason.strip() if reason else None
-        await self.repository.commit()
-        await self.repository.refresh(procurement_request)
-        return procurement_request
 
     async def delete_procurement_request(self, *, company_id: UUID, procurement_request_id: UUID) -> None:
         procurement_request = await self.get_procurement_request(
@@ -4363,17 +4413,60 @@ class ConstructionProjectService:
         procurement_request: ConstructionProcurementRequest,
         actor_user_id: UUID | None,
     ) -> None:
+        if self.erp_client is None or not hasattr(self.erp_client, "validate_procurement_products"):
+            raise ConstructionInvalidValueError(
+                message="Não foi possível validar os produtos no ERP agora. Tente novamente.",
+                error_code="CONSTRUCTION_PROCUREMENT_PRODUCT_VALIDATION_UNAVAILABLE",
+            )
+        try:
+            await self.erp_client.validate_procurement_products(
+                company_id=procurement_request.company_id,
+                user_id=actor_user_id,
+                product_ids=list(dict.fromkeys(item.product_id for item in procurement_request.items)),
+            )
+        except Exception as exc:
+            raise ConstructionInvalidValueError(
+                message="Um ou mais produtos não existem, estão inativos ou não puderam ser validados no ERP.",
+                error_code="CONSTRUCTION_PROCUREMENT_PRODUCT_UNAVAILABLE",
+            ) from exc
         request_event = self._build_procurement_requested_event(
             procurement_request=procurement_request,
             actor_user_id=actor_user_id,
         )
-        procurement_request.status = ConstructionProcurementStatus.SENT_TO_ERP
+        project = await self.get_project(company_id=procurement_request.company_id, project_id=procurement_request.project_id)
+        request_event.payload["source_reference"] = f"{project.code} - {project.name}"[:150]
+        procurement_request.status = ConstructionProcurementStatus.PENDING_APPROVAL
         dispatch_result = await self._dispatch_integration_event(event=request_event)
         if dispatch_result is not None and dispatch_result.response_event is not None:
             self._apply_procurement_snapshot_from_payload(
                 procurement_request=procurement_request,
                 payload=dispatch_result.response_event.payload,
             )
+
+    async def _sync_procurement_statuses(self, *, company_id, actor_user_id, items):
+        if not items or actor_user_id is None or not hasattr(self.erp_client, "get_procurement_statuses"):
+            return
+        sent = [item for item in items if item.external_procurement_id or item.status == ConstructionProcurementStatus.PENDING_APPROVAL]
+        changed = False
+        for start in range(0, len(sent), 200):
+            batch = sent[start:start + 200]
+            try:
+                snapshots = await self.erp_client.get_procurement_statuses(company_id=company_id, user_id=actor_user_id, source_ids=[item.id for item in batch])
+            except Exception:
+                _logger.warning("Não foi possível atualizar as situações de compras no ERP.")
+                continue
+            by_id = {str(item.id): item for item in batch}
+            for snapshot in snapshots:
+                item = by_id.get(snapshot.get("source_id"))
+                if item is None:
+                    continue
+                before = (item.status, item.external_procurement_id, item.external_procurement_status, item.external_order_number, item.rejection_reason)
+                self._apply_procurement_snapshot_from_payload(procurement_request=item, payload=snapshot)
+                if snapshot.get("external_procurement_status") == "REJECTED":
+                    item.rejection_reason = snapshot.get("rejection_reason")
+                changed = changed or before != (item.status, item.external_procurement_id, item.external_procurement_status, item.external_order_number, item.rejection_reason)
+        if changed:
+            await self.repository.commit()
 
     async def _dispatch_integration_event(
         self,
@@ -4426,6 +4519,22 @@ class ConstructionProjectService:
             "estimated_amount": ConstructionProjectService._format_event_decimal(
                 value=procurement_request.estimated_amount
             ),
+            "discount_amount": ConstructionProjectService._format_event_decimal(
+                value=procurement_request.discount_amount
+            ),
+            "items": [
+                {
+                    "sequence_number": item.sequence_number,
+                    "product_id": str(item.product_id),
+                    "product_code": item.product_code,
+                    "product_description": item.product_description,
+                    "quantity": ConstructionProjectService._format_event_decimal(value=item.quantity),
+                    "unit_of_measure": item.unit_of_measure,
+                    "unit_price": ConstructionProjectService._format_event_decimal(value=item.unit_price),
+                    "line_total": ConstructionProjectService._format_event_decimal(value=item.line_total),
+                }
+                for item in procurement_request.items
+            ],
             "needed_by_date": ConstructionProjectService._format_event_date(value=procurement_request.needed_by_date),
             "supplier_person_id": (
                 str(procurement_request.supplier_person_id) if procurement_request.supplier_person_id else None
@@ -4449,6 +4558,87 @@ class ConstructionProjectService:
             payload=payload,
         )
 
+    async def _prepare_procurement_items(
+        self,
+        *,
+        company_id: UUID,
+        actor_user_id: UUID | None,
+        item_inputs,
+        discount_amount: Decimal,
+    ) -> tuple[list[dict[str, Any]], Decimal, Decimal]:
+        if not item_inputs:
+            raise ConstructionInvalidValueError(
+                message="Inclua pelo menos um produto na requisição.",
+                error_code="CONSTRUCTION_PROCUREMENT_ITEMS_REQUIRED",
+            )
+        if discount_amount < Decimal("0"):
+            raise ConstructionInvalidValueError(
+                message="O desconto não pode ser negativo.",
+                error_code="CONSTRUCTION_PROCUREMENT_DISCOUNT_INVALID",
+            )
+        if self.erp_client is None or not hasattr(self.erp_client, "validate_procurement_products"):
+            raise ConstructionInvalidValueError(
+                message="Não foi possível validar os produtos no ERP agora.",
+                error_code="CONSTRUCTION_PROCUREMENT_PRODUCT_VALIDATION_UNAVAILABLE",
+            )
+        product_ids = list(dict.fromkeys(item.product_id for item in item_inputs))
+        try:
+            products = await self.erp_client.validate_procurement_products(
+                company_id=company_id,
+                user_id=actor_user_id,
+                product_ids=product_ids,
+            )
+        except Exception as exc:
+            raise ConstructionInvalidValueError(
+                message="Não foi possível validar os produtos no ERP agora. Tente novamente.",
+                error_code="CONSTRUCTION_PROCUREMENT_PRODUCT_VALIDATION_UNAVAILABLE",
+            ) from exc
+        products_by_id = {str(product["id"]): product for product in products}
+        prepared: list[dict[str, Any]] = []
+        subtotal = Decimal("0.00")
+        for item in item_inputs:
+            product = products_by_id.get(str(item.product_id))
+            if product is None:
+                raise ConstructionInvalidValueError(
+                    message="Um ou mais produtos não existem, estão inativos ou pertencem a outra empresa.",
+                    error_code="CONSTRUCTION_PROCUREMENT_PRODUCT_UNAVAILABLE",
+                )
+            if item.quantity <= 0 or item.unit_price < 0:
+                raise ConstructionInvalidValueError(
+                    message="Informe quantidade maior que zero e preço unitário igual ou maior que zero.",
+                    error_code="CONSTRUCTION_PROCUREMENT_ITEM_VALUE_INVALID",
+                )
+            if not item.unit_of_measure.strip():
+                raise ConstructionInvalidValueError(
+                    message="Informe a unidade de medida de cada produto.",
+                    error_code="CONSTRUCTION_PROCUREMENT_UNIT_REQUIRED",
+                )
+            line_total = (item.quantity * item.unit_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            subtotal += line_total
+            prepared.append(
+                {
+                    "product_id": item.product_id,
+                    "product_code": str(product["code"]),
+                    "product_description": str(product["description"]),
+                    "quantity": item.quantity,
+                    "unit_of_measure": item.unit_of_measure.strip(),
+                    "unit_price": item.unit_price,
+                    "line_total": line_total,
+                }
+            )
+        total = (subtotal - discount_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if discount_amount > subtotal:
+            raise ConstructionInvalidValueError(
+                message="O desconto não pode ser maior que o subtotal dos produtos.",
+                error_code="CONSTRUCTION_PROCUREMENT_DISCOUNT_INVALID",
+            )
+        if total <= 0:
+            raise ConstructionInvalidValueError(
+                message="O total da requisição, após o desconto, precisa ser maior que zero.",
+                error_code="CONSTRUCTION_PROCUREMENT_TOTAL_INVALID",
+            )
+        return prepared, subtotal, total
+
     @staticmethod
     def _apply_procurement_snapshot_from_payload(
         *,
@@ -4465,6 +4655,11 @@ class ConstructionProjectService:
         external_procurement_status = payload.get("external_procurement_status")
         if external_procurement_status is not None:
             procurement_request.external_procurement_status = str(external_procurement_status)
+            statuses = {"PENDING_APPROVAL": ConstructionProcurementStatus.PENDING_APPROVAL, "APPROVED": ConstructionProcurementStatus.APPROVED, "REJECTED": ConstructionProcurementStatus.REJECTED, "ORDER_CREATED": ConstructionProcurementStatus.SENT_TO_ERP}
+            if external_procurement_status in statuses:
+                procurement_request.status = statuses[external_procurement_status]
+            if payload.get("order_number"):
+                procurement_request.external_order_number = payload["order_number"]
 
     @staticmethod
     def _add_months(*, value: date, months: int) -> date:

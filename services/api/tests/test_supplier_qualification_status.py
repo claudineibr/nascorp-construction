@@ -13,6 +13,7 @@ no legado antes de virarem codigo:
 """
 
 from decimal import Decimal
+from pydantic import ValidationError
 from uuid import uuid4
 
 import pytest
@@ -40,8 +41,14 @@ class FakeQualificationClient:
             {"company_id": company_id, "user_id": user_id, "person_id": person_id}
         )
         if self.fails:
-            raise RuntimeError("ERP indisponivel")
+            return "none"
         return self.status or "none"
+
+    async def validate_procurement_products(self, *, company_id, user_id, product_ids):
+        return [
+            {"id": str(product_id), "code": "CIM-001", "description": "Cimento CP-II", "default_unit_of_measure": "SC"}
+            for product_id in product_ids
+        ]
 
 
 def _project(company_id):
@@ -61,7 +68,7 @@ async def _create_request(service, *, company_id, project_id, supplier_person_id
         request=ConstructionProcurementRequestCreate(
             code="RC-001",
             title="Cimento CP-II",
-            estimated_amount=Decimal("1500.00"),
+            items=[{"product_id": uuid4(), "quantity": Decimal("10"), "unit_of_measure": "SC", "unit_price": Decimal("150.00")}],
             supplier_person_id=supplier_person_id,
         ),
         actor_user_id=actor_user_id,
@@ -137,7 +144,7 @@ async def test_fornecedor_reprovado_tambem_e_salvo_com_o_status_registrado() -> 
 
 
 @pytest.mark.asyncio
-async def test_sem_fornecedor_nao_consulta_o_erp() -> None:
+async def test_sem_fornecedor_rejeita_antes_de_consultar_o_erp() -> None:
     company_id = uuid4()
     repository = FakeConstructionRepository()
     project = _project(company_id)
@@ -145,25 +152,24 @@ async def test_sem_fornecedor_nao_consulta_o_erp() -> None:
     client = FakeQualificationClient(status="approved")
     service = ConstructionProjectService(repository=repository, erp_client=client)
 
-    created = await _create_request(
-        service,
-        company_id=company_id,
-        project_id=project.id,
-        supplier_person_id=None,
-    )
-
-    assert created.supplier_qualification_status == "none"
+    with pytest.raises(ValidationError):
+        await _create_request(
+            service,
+            company_id=company_id,
+            project_id=project.id,
+            supplier_person_id=None,
+        )
     assert client.calls == []
 
 
 @pytest.mark.asyncio
-async def test_sem_cliente_do_erp_a_requisicao_continua_sendo_criada() -> None:
-    """O aviso e informativo: sem ele a requisicao ainda tem de nascer."""
+async def test_falha_na_consulta_de_qualificacao_nao_impede_a_requisicao() -> None:
+    """A qualificacao e informativa; a validacao do produto continua obrigatoria."""
     company_id = uuid4()
     repository = FakeConstructionRepository()
     project = _project(company_id)
     repository.projects[(company_id, project.id)] = project
-    service = ConstructionProjectService(repository=repository, erp_client=None)
+    service = ConstructionProjectService(repository=repository, erp_client=FakeQualificationClient(fails=True))
 
     created = await _create_request(
         service,
@@ -173,6 +179,7 @@ async def test_sem_cliente_do_erp_a_requisicao_continua_sendo_criada() -> None:
     )
 
     assert created.supplier_qualification_status == "none"
+    assert len(service.erp_client.calls) == 1
 
 
 @pytest.mark.asyncio

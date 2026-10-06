@@ -29,6 +29,8 @@ import {
 import styles from "./App.module.css"
 import CreatableCombobox from "./components/CreatableCombobox.jsx"
 import { PersonPicker } from "./components/PersonPicker.jsx"
+import { ProductPicker } from "./components/ProductPicker.jsx"
+import { currencyCents, procurementLineCents, procurementSubtotalCents, quantityUnits } from "./utils/procurementAmounts.js"
 import { BridgeProvider } from "./components/bridgeContext.js"
 import { InspectionChecklist } from "./features/measurementInspections/InspectionChecklist"
 import {
@@ -180,10 +182,18 @@ const procurementStatusOptions = [
   { value: "pending_approval", label: "Aguardando aprovação" },
   { value: "approved", label: "Aprovada" },
   { value: "rejected", label: "Rejeitada" },
-  { value: "sent_to_erp", label: "Enviada ao ERP" },
+  { value: "sent_to_erp", label: "Pedido gerado" },
 ]
 
 const procurementStatusLabel = Object.fromEntries(procurementStatusOptions.map((option) => [option.value, option.label]))
+
+const erpProcurementStatusLabel = {
+  PENDING_APPROVAL: "Aguardando aprovação",
+  APPROVED: "Aprovada",
+  REJECTED: "Rejeitada",
+  ORDER_CREATED: "Pedido gerado",
+  PENDING_REVIEW: "Envio anterior; aguardando atualização",
+}
 
 const projectDetailTabs = [
   { id: "overview", label: "Visão geral", icon: Building2 },
@@ -665,7 +675,8 @@ const defaultProcurementForm = {
   code: "",
   title: "",
   description: "",
-  estimatedAmount: "",
+  items: [],
+  discountAmount: "0,00",
   neededByDate: "",
   supplierPersonId: "",
 }
@@ -803,10 +814,16 @@ function toFormProcurement(procurementRequest) {
     code: procurementRequest.code ?? "",
     title: procurementRequest.title ?? "",
     description: procurementRequest.description ?? "",
-    estimatedAmount:
-      procurementRequest.estimatedAmount === null || procurementRequest.estimatedAmount === undefined
-        ? ""
-        : String(procurementRequest.estimatedAmount),
+    items: (procurementRequest.items ?? []).map((item, index) => ({
+      key: item.id ?? `item-${index}`,
+      productId: item.productId,
+      productCode: item.productCode,
+      productDescription: item.productDescription,
+      quantity: String(item.quantity ?? "1"),
+      unitOfMeasure: item.unitOfMeasure ?? "UN",
+      unitPrice: formatCurrencyFromNumber(item.unitPrice),
+    })),
+    discountAmount: formatCurrencyFromNumber(procurementRequest.discountAmount ?? 0),
     neededByDate: procurementRequest.neededByDate ? String(procurementRequest.neededByDate).slice(0, 10) : "",
     supplierPersonId: procurementRequest.supplierPersonId ?? "",
   }
@@ -1093,13 +1110,23 @@ function requiredMeasurementFieldError(formMeasurement) {
 }
 
 function requiredProcurementFieldError(formProcurement) {
+  if (!formProcurement.supplierPersonId) {
+    return "Selecione o fornecedor da requisição."
+  }
   if (!String(formProcurement.title ?? "").trim()) {
     return "Informe o título da requisição."
   }
 
-  const estimatedAmount = Number(formProcurement.estimatedAmount || 0)
-  if (Number.isNaN(estimatedAmount) || estimatedAmount <= 0) {
-    return "Informe o valor estimado da requisição."
+  if (!formProcurement.items?.length) {
+    return "Adicione pelo menos um produto à requisição."
+  }
+  if (formProcurement.items.some((item) => quantityUnits(item.quantity) === null)) {
+    return "Informe quantidade positiva com até quatro casas decimais em cada produto."
+  }
+  const subtotalCents = procurementSubtotalCents(formProcurement.items)
+  const discountCents = currencyCents(formProcurement.discountAmount)
+  if (subtotalCents - discountCents <= 0n) {
+    return "O total da requisição, após o desconto, precisa ser maior que zero."
   }
 
   return null
@@ -4191,6 +4218,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
               }
               content={
                 <ProcurementList
+                  bridge={bridge}
                   procurementRequests={procurementRequests}
                   loading={loadingProcurement}
                   error={procurementError}
@@ -4466,11 +4494,13 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
       {isProcurementModalOpen ? (
         <ProcurementModal
+          bridge={bridge}
           mode={procurementModalMode}
           procurementForm={procurementForm}
           people={personSummaries}
           onClose={closeProcurementModal}
           onChange={handleProcurementFieldChange}
+          onItemsChange={(items) => handleProcurementFieldChange("items", items)}
           onSubmit={handleProcurementSubmit}
           loading={submittingProcurement}
         />
@@ -7428,6 +7458,7 @@ function MeasurementsList({
 }
 
 function ProcurementList({
+  bridge,
   procurementRequests,
   loading,
   error,
@@ -7488,8 +7519,8 @@ function ProcurementList({
         <tbody>
           {procurementRequests.map((procurementRequest) => {
             const canSubmit = ["draft", "rejected"].includes(procurementRequest.status)
-            const canApprove = procurementRequest.status === "pending_approval"
-            const canReject = ["pending_approval", "draft"].includes(procurementRequest.status)
+            const canApprove = false
+            const canReject = false
             const canEdit = ["draft", "rejected"].includes(procurementRequest.status)
             const canDelete = ["draft", "rejected"].includes(procurementRequest.status)
 
@@ -7502,7 +7533,7 @@ function ProcurementList({
                 </td>
                 <td>
                   <span className={`${styles.statusPill} ${styles[`status${procurementRequest.status}`] || ""}`}>
-                    {procurementStatusLabel[procurementRequest.status] ?? procurementRequest.status}
+                    {procurementStatusLabel[procurementRequest.status] ?? "Situação não reconhecida"}
                   </span>
                 </td>
                 <td>{formatMoney(procurementRequest.estimatedAmount)}</td>
@@ -7510,8 +7541,8 @@ function ProcurementList({
                 <td>
                   {procurementRequest.externalProcurementId ? (
                     <div>
-                      <div className={styles.rowSecondaryText}>{procurementRequest.externalProcurementStatus || "ativa"}</div>
-                      <span className={styles.badgeSuccess}>Vinculada</span>
+                      <div className={styles.rowSecondaryText}>{erpProcurementStatusLabel[procurementRequest.externalProcurementStatus] ?? "Vinculada ao ERP"}</div>
+                      {procurementRequest.externalOrderNumber ? <span className={styles.badgeSuccess}>{procurementRequest.externalOrderNumber}</span> : <span className={styles.badgeMuted}>Na central de compras</span>}
                     </div>
                   ) : (
                     <span className={styles.badgeMuted}>Pendente</span>
@@ -7529,11 +7560,18 @@ function ProcurementList({
                       },
                       {
                         key: "submit",
-                        label: "Enviar ao ERP",
+                        label: "Enviar para aprovação",
                         icon: Send,
                         visible: canSubmit,
                         dividerBefore: true,
                         onSelect: () => onSubmit(procurementRequest),
+                      },
+                      {
+                        key: "central",
+                        label: "Abrir central de compras",
+                        icon: PackageSearch,
+                        visible: Boolean(procurementRequest.externalProcurementId),
+                        onSelect: () => bridge?.navigate?.("/purchases/requisitions"),
                       },
                       {
                         key: "approve",
@@ -7571,11 +7609,36 @@ function ProcurementList({
   )
 }
 
-function ProcurementModal({ mode, procurementForm, people, onClose, onChange, onSubmit, loading }) {
+function ProcurementModal({ bridge, mode, procurementForm, people, onClose, onChange, onItemsChange, onSubmit, loading }) {
+  const subtotalCents = procurementSubtotalCents(procurementForm.items)
+  const discountCents = currencyCents(procurementForm.discountAmount)
+  const subtotal = Number(subtotalCents) / 100
+  const discount = Number(discountCents) / 100
+  const total = Math.max(0, Number(subtotalCents - discountCents) / 100)
+
+  const addProduct = (product) => {
+    onItemsChange([
+      ...(procurementForm.items ?? []),
+      {
+        key: `${product.id}-${Date.now()}-${Math.random()}`,
+        productId: product.id,
+        productCode: product.code,
+        productDescription: product.description,
+        quantity: "1",
+        unitOfMeasure: product.unitOfMeasure || "UN",
+        unitPrice: formatCurrencyFromNumber(product.costPrice ?? 0),
+      },
+    ])
+  }
+
+  const updateItem = (key, field, value) => {
+    onItemsChange((procurementForm.items ?? []).map((item) => item.key === key ? { ...item, [field]: value } : item))
+  }
+
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
       <section
-        className={styles.modalCard}
+        className={`${styles.modalCard} ${styles.procurementModal}`}
         role="dialog"
         aria-modal="true"
         aria-label={mode === "create" ? "Nova requisição" : "Editar requisição"}
@@ -7608,17 +7671,6 @@ function ProcurementModal({ mode, procurementForm, people, onClose, onChange, on
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Valor estimado*</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={procurementForm.estimatedAmount}
-                onChange={(event) => onChange("estimatedAmount", event.target.value)}
-                required
-              />
-            </label>
-            <label className={styles.filterControl}>
               <span>Necessário até</span>
               <input
                 type="date"
@@ -7627,7 +7679,7 @@ function ProcurementModal({ mode, procurementForm, people, onClose, onChange, on
               />
             </label>
             <PersonPicker
-              label="Fornecedor"
+              label="Fornecedor*"
               value={procurementForm.supplierPersonId}
               onChange={(value) => onChange("supplierPersonId", value)}
               knownPeople={people}
@@ -7643,6 +7695,36 @@ function ProcurementModal({ mode, procurementForm, people, onClose, onChange, on
                 onChange={(event) => onChange("description", event.target.value)}
               />
             </label>
+            <section className={`${styles.filterControl} ${styles.spanTwoColumns} ${styles.procurementSection}`} aria-label="Itens da requisição">
+              <span>Produtos da requisição*</span>
+              <ProductPicker bridge={bridge} onSelect={addProduct} disabled={loading} />
+              {procurementForm.items?.length ? (
+                <div className={styles.procurementItems}>
+                  {procurementForm.items.map((item) => {
+                    const lineTotal = Number(procurementLineCents(item)) / 100
+                    return (
+                      <div className={styles.procurementItem} key={item.key}>
+                        <strong>{item.productCode} — {item.productDescription}</strong>
+                        <label><span>Quantidade</span><input type="number" min="0.0001" step="0.0001" value={item.quantity} onChange={(event) => updateItem(item.key, "quantity", event.target.value)} /></label>
+                        <label><span>Unidade</span><input type="text" maxLength="10" size="3" value={item.unitOfMeasure} onChange={(event) => updateItem(item.key, "unitOfMeasure", event.target.value)} /></label>
+                        <label><span>Valor unitário</span><input type="text" inputMode="decimal" value={item.unitPrice} onChange={(event) => updateItem(item.key, "unitPrice", formatCurrencyInput(event.target.value))} /></label>
+                        <span className={styles.procurementLineTotal}>Total: {moneyFormatter.format(lineTotal)}</span>
+                        <button type="button" className={styles.iconButton} title="Remover produto" aria-label="Remover produto" onClick={() => onItemsChange(procurementForm.items.filter((entry) => entry.key !== item.key))} disabled={loading}><Trash2 size={16} aria-hidden="true" /></button>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : <p className={styles.fieldHint}>Adicione os produtos, quantidades e valores unitários.</p>}
+            </section>
+            <label className={styles.filterControl}>
+              <span>Desconto</span>
+              <input type="text" inputMode="decimal" value={procurementForm.discountAmount} onChange={(event) => onChange("discountAmount", formatCurrencyInput(event.target.value))} />
+            </label>
+            <div className={styles.procurementTotals}>
+              <span>Subtotal: {moneyFormatter.format(subtotal)}</span>
+              <span>Desconto: {moneyFormatter.format(discount)}</span>
+              <strong>Total estimado: {moneyFormatter.format(total)}</strong>
+            </div>
           </div>
           <footer className={styles.modalFooter}>
             <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>

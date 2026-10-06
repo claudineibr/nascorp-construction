@@ -1406,7 +1406,7 @@ async def list_procurement_requests(
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionProcurementRequestListResponse:
     try:
-        items = await service.list_procurement_requests(company_id=ctx.company_id, project_id=project_id)
+        items = await service.list_procurement_requests(company_id=ctx.company_id, project_id=project_id, actor_user_id=ctx.user_id)
         return ConstructionProcurementRequestListResponse(
             items=[ConstructionProcurementRequestResponse.model_validate(item) for item in items],
             total=len(items),
@@ -1443,6 +1443,7 @@ async def update_procurement_request(
             company_id=ctx.company_id,
             procurement_request_id=procurement_request_id,
             request=request_data,
+            actor_user_id=ctx.user_id,
         )
         return ConstructionProcurementRequestResponse.model_validate(procurement_request)
     except ConstructionDomainError as exc:

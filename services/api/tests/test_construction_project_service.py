@@ -48,6 +48,7 @@ from app.schemas.construction import (
     ConstructionMeasurementItemOccurrenceUpdate,
     ConstructionMeasurementItemUpdate,
     ConstructionProcurementRequestCreate,
+    ConstructionProcurementRequestUpdate,
     ConstructionProjectCreate,
     ConstructionUnitInstallmentPaymentLine,
     ConstructionUnitInstallmentPaymentRequest,
@@ -767,6 +768,15 @@ class FakeErpMeasurementClient:
     async def get_person_name(self, *, company_id, user_id, person_id):
         return self.person_names.get(person_id)
 
+    async def get_person_qualification_status(self, *, company_id, user_id, person_id):
+        return "none"
+
+    async def validate_procurement_products(self, *, company_id, user_id, product_ids):
+        return [
+            {"id": str(product_id), "code": "MAT-001", "description": "Material", "default_unit_of_measure": "UN"}
+            for product_id in product_ids
+        ]
+
     async def create_cost_center_hierarchy(self, *, event: EventEnvelope) -> EventEnvelope:
         self.events.append(event)
         event_id = uuid4()
@@ -894,7 +904,7 @@ class FakeErpMeasurementClient:
             payload={
                 "construction_procurement_request_id": str(event.aggregate_id),
                 "external_procurement_id": str(event.aggregate_id),
-                "external_procurement_status": "PENDING_REVIEW",
+                "external_procurement_status": "PENDING_APPROVAL",
             },
         )
 
@@ -2856,7 +2866,8 @@ async def test_apply_contract_status_updated_event_cancellation_reverts_unit_to_
 
 
 @pytest.mark.asyncio
-async def test_submit_procurement_request_over_threshold_requires_approval() -> None:
+@pytest.mark.parametrize("amount", ["15000.00", "75000.00"])
+async def test_submit_procurement_request_always_requires_central_approval(amount) -> None:
     company_id = uuid4()
     repository = FakeConstructionRepository()
     project = ConstructionProject(
@@ -2867,14 +2878,15 @@ async def test_submit_procurement_request_over_threshold_requires_approval() -> 
         status=ConstructionProjectStatus.ACTIVE,
     )
     repository.projects[(company_id, project.id)] = project
-    service = ConstructionProjectService(repository=repository)
+    service = ConstructionProjectService(repository=repository, erp_client=FakeErpMeasurementClient())
 
     procurement_request = await service.create_procurement_request(
         company_id=company_id,
         project_id=project.id,
         request=ConstructionProcurementRequestCreate(
+            supplier_person_id=uuid4(),
             title="Elevator package",
-            estimated_amount=Decimal("75000.00"),
+            items=[{"product_id": uuid4(), "quantity": Decimal("1"), "unit_of_measure": "UN", "unit_price": Decimal(amount)}],
         ),
     )
     submitted = await service.submit_procurement_request(
@@ -2884,11 +2896,113 @@ async def test_submit_procurement_request_over_threshold_requires_approval() -> 
     )
 
     assert submitted.status == ConstructionProcurementStatus.PENDING_APPROVAL
-    assert submitted.external_procurement_id is None
+    assert submitted.external_procurement_id == procurement_request.id
+    assert submitted.external_procurement_status == "PENDING_APPROVAL"
+    assert submitted.approved_by_user_id is None
 
 
 @pytest.mark.asyncio
-async def test_approve_procurement_request_sends_demand_once() -> None:
+async def test_procurement_amount_is_calculated_from_lines_and_discount() -> None:
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-050A",
+        name="Procurement totals",
+        status=ConstructionProjectStatus.ACTIVE,
+    )
+    repository.projects[(company_id, project.id)] = project
+    service = ConstructionProjectService(repository=repository, erp_client=FakeErpMeasurementClient())
+
+    created = await service.create_procurement_request(
+        company_id=company_id,
+        project_id=project.id,
+        request=ConstructionProcurementRequestCreate(
+            supplier_person_id=uuid4(),
+            title="Materials",
+            items=[
+                {"product_id": uuid4(), "quantity": Decimal("2"), "unit_of_measure": "UN", "unit_price": Decimal("12.50")},
+                {"product_id": uuid4(), "quantity": Decimal("3"), "unit_of_measure": "KG", "unit_price": Decimal("10.00")},
+            ],
+            discount_amount=Decimal("5.00"),
+        ),
+    )
+
+    assert [item.line_total for item in created.items] == [Decimal("25.00"), Decimal("30.00")]
+    assert created.discount_amount == Decimal("5.00")
+    assert created.estimated_amount == Decimal("50.00")
+
+
+@pytest.mark.asyncio
+async def test_procurement_discount_cannot_reduce_total_to_zero() -> None:
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-050B",
+        name="Invalid procurement totals",
+        status=ConstructionProjectStatus.ACTIVE,
+    )
+    repository.projects[(company_id, project.id)] = project
+    service = ConstructionProjectService(repository=repository, erp_client=FakeErpMeasurementClient())
+
+    with pytest.raises(ConstructionInvalidValueError, match="total da requisição"):
+        await service.create_procurement_request(
+            company_id=company_id,
+            project_id=project.id,
+            request=ConstructionProcurementRequestCreate(
+                supplier_person_id=uuid4(),
+                title="Zero total",
+                items=[{"product_id": uuid4(), "quantity": Decimal("1"), "unit_of_measure": "UN", "unit_price": Decimal("5.00")}],
+                discount_amount=Decimal("5.00"),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["items", "discount"])
+async def test_edit_procurement_reuses_existing_item_sequence(change):
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    project = ConstructionProject(id=uuid4(), company_id=company_id, code="EDIT-REQ", name="Edit request", status=ConstructionProjectStatus.ACTIVE)
+    repository.projects[(company_id, project.id)] = project
+    service = ConstructionProjectService(repository=repository, erp_client=FakeErpMeasurementClient())
+    product_id = uuid4()
+    created = await service.create_procurement_request(
+        company_id=company_id, project_id=project.id,
+        request=ConstructionProcurementRequestCreate(
+            title="Materials", supplier_person_id=uuid4(),
+            items=[{"product_id": product_id, "quantity": "2", "unit_of_measure": "UN", "unit_price": "10.00"}],
+        ),
+    )
+    original = created.items[0]
+    updates = {"discount_amount": "1.00"} if change == "discount" else {
+        "items": [{"product_id": product_id, "quantity": "1.005", "unit_of_measure": "KG", "unit_price": "1.00"}]
+    }
+    updated = await service.update_procurement_request(
+        company_id=company_id, procurement_request_id=created.id,
+        request=ConstructionProcurementRequestUpdate(**updates),
+    )
+    assert updated.items[0] is original
+    assert updated.items[0].sequence_number == 1
+    assert updated.estimated_amount == Decimal("19.00" if change == "discount" else "1.01")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["approve_procurement_request", "reject_procurement_request"])
+async def test_procurement_decisions_require_central(method):
+    service = make_service()
+    kwargs = {"company_id": uuid4(), "procurement_request_id": uuid4()}
+    if method == "approve_procurement_request":
+        kwargs["actor_user_id"] = uuid4()
+    with pytest.raises(ConstructionInvalidValueError, match="Compras > Requisições"):
+        await getattr(service, method)(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_submit_procurement_request_sends_demand_once() -> None:
     company_id = uuid4()
     repository = FakeConstructionRepository()
     event_repository = FakeEventRepository()
@@ -2911,26 +3025,31 @@ async def test_approve_procurement_request_sends_demand_once() -> None:
         company_id=company_id,
         project_id=project.id,
         request=ConstructionProcurementRequestCreate(
+            supplier_person_id=uuid4(),
             title="Facade structure",
-            estimated_amount=Decimal("80000.00"),
+            items=[{"product_id": uuid4(), "quantity": Decimal("2"), "unit_of_measure": "M2", "unit_price": Decimal("40000.00")}],
         ),
     )
-    await service.submit_procurement_request(
+    submitted = await service.submit_procurement_request(
         company_id=company_id,
         procurement_request_id=procurement_request.id,
         actor_user_id=uuid4(),
     )
-    approved = await service.approve_procurement_request(
-        company_id=company_id,
-        procurement_request_id=procurement_request.id,
-        actor_user_id=uuid4(),
-    )
+    with pytest.raises(ConstructionInvalidValueError):
+        await service.submit_procurement_request(
+            company_id=company_id,
+            procurement_request_id=procurement_request.id,
+            actor_user_id=uuid4(),
+        )
 
-    assert approved.status == ConstructionProcurementStatus.SENT_TO_ERP
-    assert approved.external_procurement_id == procurement_request.id
-    assert approved.external_procurement_status == "PENDING_REVIEW"
+    assert submitted.status == ConstructionProcurementStatus.PENDING_APPROVAL
+    assert submitted.external_procurement_id == procurement_request.id
+    assert submitted.external_procurement_status == "PENDING_APPROVAL"
     assert any(event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED for event in event_repository.outbox_events)
     assert len([event for event in erp_client.events if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED]) == 1
+    sent_event = next(event for event in erp_client.events if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED)
+    assert sent_event.payload["estimated_amount"] == "80000.00"
+    assert sent_event.payload["items"][0]["line_total"] == "80000.00"
 
 
 @pytest.mark.asyncio

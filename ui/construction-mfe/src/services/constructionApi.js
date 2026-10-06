@@ -1,3 +1,5 @@
+import { currencyDecimal } from "../utils/procurementAmounts.js"
+
 const DEFAULT_CONSTRUCTION_API_URL = "http://127.0.0.1:8010"
 const DEFAULT_ERP_API_URL = "http://127.0.0.1:8000"
 
@@ -303,6 +305,17 @@ const toProcurementView = (procurementRequest) => ({
   title: procurementRequest.title,
   description: procurementRequest.description ?? "",
   estimatedAmount: procurementRequest.estimated_amount,
+  discountAmount: procurementRequest.discount_amount ?? "0.00",
+  items: (procurementRequest.items ?? []).map((item) => ({
+    id: item.id,
+    productId: item.product_id,
+    productCode: item.product_code,
+    productDescription: item.product_description,
+    quantity: item.quantity,
+    unitOfMeasure: item.unit_of_measure,
+    unitPrice: item.unit_price,
+    lineTotal: item.line_total,
+  })),
   neededByDate: procurementRequest.needed_by_date ?? null,
   supplierPersonId: procurementRequest.supplier_person_id ?? null,
   status: procurementRequest.status,
@@ -311,6 +324,7 @@ const toProcurementView = (procurementRequest) => ({
   approvedAt: procurementRequest.approved_at ?? null,
   externalProcurementId: procurementRequest.external_procurement_id ?? null,
   externalProcurementStatus: procurementRequest.external_procurement_status ?? null,
+  externalOrderNumber: procurementRequest.external_order_number ?? null,
   createdAt: procurementRequest.created_at ?? null,
   updatedAt: procurementRequest.updated_at ?? null,
 })
@@ -408,8 +422,11 @@ const describeValidationErrors = (detail) => {
 
   const described = detail
     .map((item) => {
-      const field = (item?.loc ?? []).filter((part) => part !== "body").join(".")
-      return field ? `${field}: ${item?.msg ?? "inválido"}` : item?.msg
+      const labels = { supplier_person_id: "Fornecedor", estimated_amount: "Total estimado", items: "Produtos", quantity: "Quantidade", unit_price: "Valor unitário", unit_of_measure: "Unidade", discount_amount: "Desconto", title: "Título", product_id: "Produto" }
+      const field = (item?.loc ?? []).filter((part) => part !== "body").map((part) => labels[part] ?? part).join(" · ")
+      const messages = { missing: "campo obrigatório", uuid_parsing: "selecione um cadastro válido", greater_than: "informe um valor maior que zero", greater_than_equal: "informe um valor igual ou maior que zero", decimal_parsing: "informe um número válido", string_too_long: "texto acima do limite permitido", too_short: "informe pelo menos um item", decimal_max_places: "número com mais casas decimais que o permitido", decimal_max_digits: "valor acima do limite permitido" }
+      const message = messages[item?.type] ?? "valor inválido; confira o preenchimento"
+      return field ? `${field}: ${message}` : message
     })
     .filter(Boolean)
 
@@ -468,10 +485,36 @@ const toProcurementPayload = (procurementData = {}) => ({
   code: toNullableString(procurementData.code),
   title: String(procurementData.title ?? "").trim(),
   description: toNullableString(procurementData.description),
-  estimated_amount: toNullableNumber(procurementData.estimatedAmount),
+  items: (procurementData.items ?? []).map((item) => ({
+    product_id: item.productId,
+    quantity: String(item.quantity ?? ""),
+    unit_of_measure: toNullableString(item.unitOfMeasure),
+    unit_price: currencyInputToDecimal(item.unitPrice),
+  })),
+  discount_amount: currencyInputToDecimal(procurementData.discountAmount),
   needed_by_date: toNullableString(procurementData.neededByDate),
   supplier_person_id: toNullableString(procurementData.supplierPersonId),
 })
+
+export async function searchConstructionProducts({ bridge, search }) {
+  const query = new URLSearchParams({ active: "true", nature: "MATERIAL", page: "1", page_size: "30" })
+  if (String(search ?? "").trim()) query.set("search", String(search).trim())
+  const erpApiBaseUrl = bridge?.erpApiBaseUrl || import.meta.env.VITE_ERP_API_URL || DEFAULT_ERP_API_URL
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/product?${query.toString()}`,
+    baseUrl: erpApiBaseUrl,
+  })
+  return (payload.items ?? []).map((product) => ({
+    id: product.id,
+    code: product.code,
+    description: product.description,
+    unitOfMeasure: product.unit_of_measure?.code ?? "UN",
+    costPrice: product.cost_price ?? null,
+  }))
+}
+
+const currencyInputToDecimal = currencyDecimal
 
 const toMeasurementItemPayload = (itemData = {}) => ({
   description: toNullableString(itemData.description),
