@@ -999,6 +999,8 @@ class ConstructionProjectService:
                 unit_of_measure=item["unit_of_measure"],
                 unit_price=item["unit_price"],
                 line_total=item["line_total"],
+                schedule_phase_id=item["schedule_phase_id"],
+                construction_unit_id=item["construction_unit_id"],
             )
             for index, item in enumerate(items, start=1)
         ]
@@ -1060,11 +1062,6 @@ class ConstructionProjectService:
             )
 
         updates = request.model_dump(exclude_unset=True, exclude={"items", "discount_amount"})
-        if not updates.get("supplier_person_id", procurement_request.supplier_person_id):
-            raise ConstructionInvalidValueError(
-                message="Selecione o fornecedor da requisição.",
-                error_code="CONSTRUCTION_PROCUREMENT_SUPPLIER_REQUIRED",
-            )
         next_code = updates.get("code")
         if next_code is not None:
             next_code = next_code.strip()
@@ -1100,6 +1097,8 @@ class ConstructionProjectService:
                         quantity=item.quantity,
                         unit_of_measure=item.unit_of_measure,
                         unit_price=item.unit_price,
+                        schedule_phase_id=item.schedule_phase_id,
+                        construction_unit_id=item.construction_unit_id,
                     )
                     for item in procurement_request.items
                 ]
@@ -1165,6 +1164,7 @@ class ConstructionProjectService:
             )
 
         procurement_request.rejection_reason = None
+        procurement_request.submission_revision += 1
         try:
             await self._dispatch_procurement_request_to_erp(
                 procurement_request=procurement_request,
@@ -4471,11 +4471,11 @@ class ConstructionProjectService:
                 item = by_id.get(snapshot.get("source_id"))
                 if item is None:
                     continue
-                before = (item.status, item.external_procurement_id, item.external_procurement_status, item.external_order_number, item.rejection_reason)
+                before = (item.status, item.external_procurement_id, item.external_procurement_status, item.external_order_number, tuple(item.external_order_numbers or []), item.rejection_reason)
                 self._apply_procurement_snapshot_from_payload(procurement_request=item, payload=snapshot)
                 if snapshot.get("external_procurement_status") == "REJECTED":
                     item.rejection_reason = snapshot.get("rejection_reason")
-                changed = changed or before != (item.status, item.external_procurement_id, item.external_procurement_status, item.external_order_number, item.rejection_reason)
+                changed = changed or before != (item.status, item.external_procurement_id, item.external_procurement_status, item.external_order_number, tuple(item.external_order_numbers or []), item.rejection_reason)
         if changed:
             await self.repository.commit()
 
@@ -4549,8 +4549,10 @@ class ConstructionProjectService:
                     "product_description": item.product_description,
                     "quantity": ConstructionProjectService._format_event_decimal(value=item.quantity),
                     "unit_of_measure": item.unit_of_measure,
-                    "unit_price": ConstructionProjectService._format_event_decimal(value=item.unit_price),
-                    "line_total": ConstructionProjectService._format_event_decimal(value=item.line_total),
+                    "unit_price": ConstructionProjectService._format_event_decimal(value=item.unit_price) if item.unit_price is not None else None,
+                    "line_total": ConstructionProjectService._format_event_decimal(value=item.line_total) if item.line_total is not None else None,
+                    "schedule_phase_id": str(item.schedule_phase_id) if item.schedule_phase_id else None,
+                    "construction_unit_id": str(item.construction_unit_id) if item.construction_unit_id else None,
                 }
                 for item in procurement_request.items
             ],
@@ -4559,6 +4561,7 @@ class ConstructionProjectService:
                 str(procurement_request.supplier_person_id) if procurement_request.supplier_person_id else None
             ),
             "approval_threshold": CONSTRUCTION_PROCUREMENT_APPROVAL_THRESHOLD,
+            "source_revision": procurement_request.submission_revision,
         }
         if actor_user_id is not None:
             payload["user_id"] = str(actor_user_id)
@@ -4569,7 +4572,7 @@ class ConstructionProjectService:
         return EventEnvelope(
             event_id=event_id,
             event_type=ConstructionEventType.PROCUREMENT_REQUESTED,
-            event_version=1,
+            event_version=2,
             company_id=procurement_request.company_id,
             aggregate_id=procurement_request.id,
             aggregate_type=ConstructionAggregateType.PROCUREMENT_REQUEST,
@@ -4625,9 +4628,9 @@ class ConstructionProjectService:
                     message="Um ou mais produtos não existem, estão inativos ou pertencem a outra empresa.",
                     error_code="CONSTRUCTION_PROCUREMENT_PRODUCT_UNAVAILABLE",
                 )
-            if item.quantity <= 0 or item.unit_price < 0:
+            if item.quantity <= 0 or (item.unit_price is not None and item.unit_price < 0):
                 raise ConstructionInvalidValueError(
-                    message="Informe quantidade maior que zero e preço unitário igual ou maior que zero.",
+                    message="Informe quantidade maior que zero e, quando informado, preço unitário igual ou maior que zero.",
                     error_code="CONSTRUCTION_PROCUREMENT_ITEM_VALUE_INVALID",
                 )
             if not item.unit_of_measure.strip():
@@ -4635,8 +4638,9 @@ class ConstructionProjectService:
                     message="Informe a unidade de medida de cada produto.",
                     error_code="CONSTRUCTION_PROCUREMENT_UNIT_REQUIRED",
                 )
-            line_total = (item.quantity * item.unit_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            subtotal += line_total
+            line_total = (item.quantity * item.unit_price).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if item.unit_price is not None else None
+            if line_total is not None:
+                subtotal += line_total
             prepared.append(
                 {
                     "product_id": item.product_id,
@@ -4646,6 +4650,8 @@ class ConstructionProjectService:
                     "unit_of_measure": item.unit_of_measure.strip(),
                     "unit_price": item.unit_price,
                     "line_total": line_total,
+                    "schedule_phase_id": item.schedule_phase_id,
+                    "construction_unit_id": item.construction_unit_id,
                 }
             )
         total = (subtotal - discount_amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -4654,9 +4660,9 @@ class ConstructionProjectService:
                 message="O desconto não pode ser maior que o subtotal dos produtos.",
                 error_code="CONSTRUCTION_PROCUREMENT_DISCOUNT_INVALID",
             )
-        if total <= 0:
+        if total < 0:
             raise ConstructionInvalidValueError(
-                message="O total da requisição, após o desconto, precisa ser maior que zero.",
+                message="O desconto não pode gerar um total estimado negativo.",
                 error_code="CONSTRUCTION_PROCUREMENT_TOTAL_INVALID",
             )
         return prepared, subtotal, total
@@ -4677,10 +4683,21 @@ class ConstructionProjectService:
         external_procurement_status = payload.get("external_procurement_status")
         if external_procurement_status is not None:
             procurement_request.external_procurement_status = str(external_procurement_status)
-            statuses = {"PENDING_APPROVAL": ConstructionProcurementStatus.PENDING_APPROVAL, "APPROVED": ConstructionProcurementStatus.APPROVED, "REJECTED": ConstructionProcurementStatus.REJECTED, "ORDER_CREATED": ConstructionProcurementStatus.SENT_TO_ERP}
+            statuses = {
+                "PENDING_APPROVAL": ConstructionProcurementStatus.PENDING_APPROVAL,
+                "APPROVED": ConstructionProcurementStatus.APPROVED,
+                "REJECTED": ConstructionProcurementStatus.REJECTED,
+                "PARTIALLY_ORDERED": ConstructionProcurementStatus.SENT_TO_ERP,
+                "ORDERED": ConstructionProcurementStatus.SENT_TO_ERP,
+                "CLOSED": ConstructionProcurementStatus.CLOSED,
+            }
             if external_procurement_status in statuses:
                 procurement_request.status = statuses[external_procurement_status]
-            if payload.get("order_number"):
+            if payload.get("order_numbers") is not None:
+                procurement_request.external_order_numbers = list(payload["order_numbers"])
+                procurement_request.external_order_number = procurement_request.external_order_numbers[0] if procurement_request.external_order_numbers else None
+            elif payload.get("order_number"):
+                procurement_request.external_order_numbers = [payload["order_number"]]
                 procurement_request.external_order_number = payload["order_number"]
 
     @staticmethod

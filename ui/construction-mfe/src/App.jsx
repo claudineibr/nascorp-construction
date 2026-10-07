@@ -181,6 +181,7 @@ const procurementStatusOptions = [
   { value: "approved", label: "Aprovada" },
   { value: "rejected", label: "Rejeitada" },
   { value: "sent_to_erp", label: "Pedido gerado" },
+  { value: "closed", label: "Encerrada" },
 ]
 
 const procurementStatusLabel = Object.fromEntries(procurementStatusOptions.map((option) => [option.value, option.label]))
@@ -189,6 +190,9 @@ const erpProcurementStatusLabel = {
   PENDING_APPROVAL: "Aguardando aprovação",
   APPROVED: "Aprovada",
   REJECTED: "Rejeitada",
+  PARTIALLY_ORDERED: "Pedido gerado parcialmente",
+  ORDERED: "Pedido gerado",
+  CLOSED: "Encerrada",
   ORDER_CREATED: "Pedido gerado",
   PENDING_REVIEW: "Envio anterior; aguardando atualização",
 }
@@ -821,6 +825,8 @@ function toFormProcurement(procurementRequest) {
       quantity: String(item.quantity ?? "1"),
       unitOfMeasure: item.unitOfMeasure ?? "UN",
       unitPrice: formatCurrencyFromNumber(item.unitPrice),
+      schedulePhaseId: item.schedulePhaseId ?? "",
+      constructionUnitId: item.constructionUnitId ?? "",
     })),
     discountAmount: formatCurrencyFromNumber(procurementRequest.discountAmount ?? 0),
     neededByDate: procurementRequest.neededByDate ? String(procurementRequest.neededByDate).slice(0, 10) : "",
@@ -1109,9 +1115,6 @@ function requiredMeasurementFieldError(formMeasurement) {
 }
 
 function requiredProcurementFieldError(formProcurement) {
-  if (!formProcurement.supplierPersonId) {
-    return "Selecione o fornecedor da requisição."
-  }
   if (!String(formProcurement.title ?? "").trim()) {
     return "Informe o título da requisição."
   }
@@ -1124,8 +1127,8 @@ function requiredProcurementFieldError(formProcurement) {
   }
   const subtotalCents = procurementSubtotalCents(formProcurement.items)
   const discountCents = currencyCents(formProcurement.discountAmount)
-  if (subtotalCents - discountCents <= 0n) {
-    return "O total da requisição, após o desconto, precisa ser maior que zero."
+  if (subtotalCents - discountCents < 0n) {
+    return "O desconto não pode ser maior que o total informado dos produtos."
   }
 
   return null
@@ -4443,6 +4446,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           mode={procurementModalMode}
           procurementForm={procurementForm}
           people={personSummaries}
+          schedulePhases={schedulePhases}
+          units={units}
           onClose={closeProcurementModal}
           onChange={handleProcurementFieldChange}
           onItemsChange={(items) => handleProcurementFieldChange("items", items)}
@@ -7470,10 +7475,10 @@ function ProcurementList({
                     {procurementRequest.externalProcurementId ? (
                       <>
                         <span className={styles.procurementIntegrationStatus}>{erpProcurementStatusLabel[procurementRequest.externalProcurementStatus] ?? "Vinculada ao ERP"}</span>
-                        {procurementRequest.externalOrderNumber ? (
+                        {procurementRequest.externalOrderNumbers?.length ? (
                           <span className={`${styles.badgeSuccess} ${styles.procurementOrderReference}`}>
                             <ShoppingCart size={13} aria-hidden="true" />
-                            {procurementRequest.externalOrderNumber}
+                            {procurementRequest.externalOrderNumbers.join(", ")}
                           </span>
                         ) : <span className={styles.procurementIntegrationContext}>Na central de compras</span>}
                       </>
@@ -7505,7 +7510,7 @@ function ProcurementList({
                         key: "view-order",
                         label: "Ver pedido de compra",
                         icon: ShoppingCart,
-                        visible: Boolean(procurementRequest.externalOrderNumber && procurementRequest.externalProcurementId &&
+                        visible: Boolean(procurementRequest.externalOrderNumbers?.length && procurementRequest.externalProcurementId &&
                           bridge?.canRead?.("purchase_orders") && bridge?.viewPurchaseOrder),
                         onSelect: () => onViewOrder(procurementRequest),
                       },
@@ -7537,7 +7542,7 @@ function ProcurementList({
   )
 }
 
-function ProcurementModal({ bridge, mode, procurementForm, people, onClose, onChange, onItemsChange, onSubmit, loading }) {
+function ProcurementModal({ bridge, mode, procurementForm, people, schedulePhases, units, onClose, onChange, onItemsChange, onSubmit, loading }) {
   const subtotalCents = procurementSubtotalCents(procurementForm.items)
   const discountCents = currencyCents(procurementForm.discountAmount)
   const subtotal = Number(subtotalCents) / 100
@@ -7555,6 +7560,8 @@ function ProcurementModal({ bridge, mode, procurementForm, people, onClose, onCh
         quantity: "1",
         unitOfMeasure: product.unitOfMeasure || "UN",
         unitPrice: formatCurrencyFromNumber(product.costPrice ?? 0),
+        schedulePhaseId: "",
+        constructionUnitId: "",
       },
     ])
   }
@@ -7607,7 +7614,7 @@ function ProcurementModal({ bridge, mode, procurementForm, people, onClose, onCh
               />
             </label>
             <PersonPicker
-              label="Fornecedor*"
+              label="Fornecedor sugerido (opcional)"
               value={procurementForm.supplierPersonId}
               onChange={(value) => onChange("supplierPersonId", value)}
               knownPeople={people}
@@ -7635,14 +7642,16 @@ function ProcurementModal({ bridge, mode, procurementForm, people, onClose, onCh
                         <strong>{item.productCode} — {item.productDescription}</strong>
                         <label><span>Quantidade</span><input type="number" min="0.0001" step="0.0001" value={item.quantity} onChange={(event) => updateItem(item.key, "quantity", event.target.value)} /></label>
                         <label><span>Unidade</span><input type="text" maxLength="10" size="3" value={item.unitOfMeasure} onChange={(event) => updateItem(item.key, "unitOfMeasure", event.target.value)} /></label>
-                        <label><span>Valor unitário</span><input type="text" inputMode="decimal" value={item.unitPrice} onChange={(event) => updateItem(item.key, "unitPrice", formatCurrencyInput(event.target.value))} /></label>
+                        <label><span>Valor estimado (opcional)</span><input type="text" inputMode="decimal" value={item.unitPrice} onChange={(event) => updateItem(item.key, "unitPrice", formatCurrencyInput(event.target.value))} /></label>
+                        <label><span>Etapa (opcional)</span><select value={item.schedulePhaseId} onChange={(event) => updateItem(item.key, "schedulePhaseId", event.target.value)}><option value="">Sem etapa</option>{schedulePhases.map((phase) => <option key={phase.id} value={phase.id}>{phase.name}</option>)}</select></label>
+                        <label><span>Unidade construtiva (opcional)</span><select value={item.constructionUnitId} onChange={(event) => updateItem(item.key, "constructionUnitId", event.target.value)}><option value="">Sem unidade</option>{units.map((unit) => <option key={unit.id} value={unit.id}>{unit.code} — {unit.description}</option>)}</select></label>
                         <span className={styles.procurementLineTotal}>Total: {moneyFormatter.format(lineTotal)}</span>
                         <button type="button" className={styles.iconButton} title="Remover produto" aria-label="Remover produto" onClick={() => onItemsChange(procurementForm.items.filter((entry) => entry.key !== item.key))} disabled={loading}><Trash2 size={16} aria-hidden="true" /></button>
                       </div>
                     )
                   })}
                 </div>
-              ) : <p className={styles.fieldHint}>Adicione os produtos, quantidades e valores unitários.</p>}
+              ) : <p className={styles.fieldHint}>Adicione produtos e quantidades. O preço estimado é opcional.</p>}
             </section>
             <label className={styles.filterControl}>
               <span>Desconto</span>

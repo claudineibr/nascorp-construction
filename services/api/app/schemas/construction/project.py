@@ -926,7 +926,9 @@ class ConstructionProcurementItemInput(BaseModel):
     product_id: UUID
     quantity: Decimal = Field(..., gt=0, max_digits=14, decimal_places=4)
     unit_of_measure: str = Field(..., min_length=1, max_length=10)
-    unit_price: Decimal = Field(..., ge=0, max_digits=14, decimal_places=2)
+    unit_price: Decimal | None = Field(default=None, ge=0, max_digits=15, decimal_places=4)
+    schedule_phase_id: UUID | None = None
+    construction_unit_id: UUID | None = None
 
 
 class ConstructionProcurementItemResponse(BaseModel):
@@ -939,8 +941,10 @@ class ConstructionProcurementItemResponse(BaseModel):
     product_description: str
     quantity: Decimal
     unit_of_measure: str
-    unit_price: Decimal
-    line_total: Decimal
+    unit_price: Decimal | None
+    line_total: Decimal | None
+    schedule_phase_id: UUID | None = None
+    construction_unit_id: UUID | None = None
 
 
 class ConstructionProcurementRequestCreate(BaseModel):
@@ -950,7 +954,7 @@ class ConstructionProcurementRequestCreate(BaseModel):
     items: list[ConstructionProcurementItemInput] = Field(..., min_length=1)
     discount_amount: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
     needed_by_date: date | None = None
-    supplier_person_id: UUID
+    supplier_person_id: UUID | None = None
 
 
 class ConstructionProcurementRequestUpdate(BaseModel):
@@ -985,6 +989,7 @@ class ConstructionProcurementRequestResponse(BaseModel):
     external_procurement_id: UUID | None = None
     external_procurement_status: str | None = None
     external_order_number: str | None = None
+    external_order_numbers: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

@@ -995,6 +995,8 @@ class ConstructionProcurementRequest(Base):
     external_procurement_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     external_procurement_status: Mapped[str | None] = mapped_column(String(60), nullable=True)
     external_order_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    external_order_numbers: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    submission_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -1032,7 +1034,9 @@ class ConstructionProcurementItem(Base):
     product_description: Mapped[str] = mapped_column(String(500), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
     unit_of_measure: Mapped[str] = mapped_column(String(10), nullable=False)
-    unit_price: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
-    line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    unit_price: Mapped[Decimal | None] = mapped_column(Numeric(15, 4), nullable=True)
+    line_total: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    schedule_phase_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    construction_unit_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
 
     procurement_request: Mapped[ConstructionProcurementRequest] = relationship(back_populates="items")

@@ -150,6 +150,7 @@ class ConstructionProcurementStatus:
     APPROVED = "approved"
     REJECTED = "rejected"
     SENT_TO_ERP = "sent_to_erp"
+    CLOSED = "closed"
 
 
 PROJECT_STATUS_TRANSITIONS = {
