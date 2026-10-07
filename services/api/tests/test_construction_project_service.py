@@ -2991,17 +2991,6 @@ async def test_edit_procurement_reuses_existing_item_sequence(change):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["approve_procurement_request", "reject_procurement_request"])
-async def test_procurement_decisions_require_central(method):
-    service = make_service()
-    kwargs = {"company_id": uuid4(), "procurement_request_id": uuid4()}
-    if method == "approve_procurement_request":
-        kwargs["actor_user_id"] = uuid4()
-    with pytest.raises(ConstructionInvalidValueError, match="Compras > Requisições"):
-        await getattr(service, method)(**kwargs)
-
-
-@pytest.mark.asyncio
 async def test_submit_procurement_request_sends_demand_once() -> None:
     company_id = uuid4()
     repository = FakeConstructionRepository()

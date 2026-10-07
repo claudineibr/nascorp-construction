@@ -1089,10 +1089,10 @@ export async function getConstructionProjectSummary({ bridge, projectId }) {
     plannedCostAmount: payload.planned_cost_amount ?? 0,
     measuredCostAmount: payload.measured_cost_amount ?? 0,
     paidCostAmount: payload.paid_cost_amount ?? 0,
-    costDifferenceAmount: payload.cost_difference_amount ?? 0,
     measurementsCount: payload.measurements_count ?? 0,
     measurementsApprovedCount: payload.measurements_approved_count ?? 0,
     procurementRequestsCount: payload.procurement_requests_count ?? 0,
+    procurementApprovedCount: payload.procurement_approved_count ?? 0,
     receivablesCount: payload.receivables_count ?? 0,
     receivableTotalAmount: payload.receivable_total_amount ?? 0,
     receivedAmount: payload.received_amount ?? 0,
@@ -1835,29 +1835,6 @@ export async function submitConstructionProcurementRequest({ bridge, procurement
     bridge,
     path: `/v1/construction/procurement-requests/${procurementRequestId}/submit`,
     method: "POST",
-  })
-
-  return toProcurementView(payload)
-}
-
-export async function approveConstructionProcurementRequest({ bridge, procurementRequestId }) {
-  const payload = await requestJson({
-    bridge,
-    path: `/v1/construction/procurement-requests/${procurementRequestId}/approve`,
-    method: "POST",
-  })
-
-  return toProcurementView(payload)
-}
-
-export async function rejectConstructionProcurementRequest({ bridge, procurementRequestId, reason }) {
-  const payload = await requestJson({
-    bridge,
-    path: `/v1/construction/procurement-requests/${procurementRequestId}/reject`,
-    method: "POST",
-    body: {
-      reason: toNullableString(reason),
-    },
   })
 
   return toProcurementView(payload)

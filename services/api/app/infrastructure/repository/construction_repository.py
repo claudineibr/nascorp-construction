@@ -68,6 +68,9 @@ class ConstructionRepository:
     async def commit(self) -> None:
         await self.session.commit()
 
+    async def rollback(self) -> None:
+        await self.session.rollback()
+
     async def refresh(self, entity: object) -> None:
         await self.session.refresh(entity)
 

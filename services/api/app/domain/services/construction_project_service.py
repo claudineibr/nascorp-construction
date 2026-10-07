@@ -26,6 +26,7 @@ from app.domain.constants import (
 )
 from app.domain.exceptions import (
     ConstructionDomainError,
+    ConstructionIntegrationUnconfirmedError,
     ConstructionDuplicateCodeError,
     ConstructionInvalidStatusTransitionError,
     ConstructionInvalidValueError,
@@ -971,6 +972,7 @@ class ConstructionProjectService:
         procurement_request = ConstructionProcurementRequest(
             company_id=company_id,
             project_id=project_id,
+            created_by_user_id=actor_user_id,
             code=procurement_code,
             title=request.title.strip(),
             description=request.description,
@@ -1119,6 +1121,12 @@ class ConstructionProjectService:
             procurement_request.items = next_entities
             procurement_request.discount_amount = next_discount
             procurement_request.estimated_amount = total
+        if "supplier_person_id" in updates and updates["supplier_person_id"] != procurement_request.supplier_person_id:
+            procurement_request.supplier_qualification_status = await self._resolve_supplier_qualification_status(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                supplier_person_id=updates["supplier_person_id"],
+            )
         self._apply_updates(entity=procurement_request, updates=updates)
         await self.repository.commit()
         await self.repository.refresh(procurement_request)
@@ -1138,47 +1146,46 @@ class ConstructionProjectService:
             company_id=company_id,
             procurement_request_id=procurement_request_id,
         )
+        was_unconfirmed = (
+            procurement_request.status == ConstructionProcurementStatus.PENDING_APPROVAL
+            and procurement_request.external_procurement_id is None
+        )
+        await self._sync_procurement_statuses(
+            company_id=company_id, actor_user_id=actor_user_id, items=[procurement_request],
+        )
+        if was_unconfirmed and procurement_request.external_procurement_id is not None:
+            return procurement_request
+        retry_unconfirmed = (
+            procurement_request.status == ConstructionProcurementStatus.PENDING_APPROVAL
+            and procurement_request.external_procurement_id is None
+        )
         if procurement_request.status not in {
             ConstructionProcurementStatus.DRAFT,
             ConstructionProcurementStatus.REJECTED,
-        }:
+        } and not retry_unconfirmed:
             raise ConstructionInvalidValueError(
                 message="A requisição não pode ser enviada na situação atual.",
                 error_code="CONSTRUCTION_PROCUREMENT_INVALID_STATUS",
             )
 
-        await self._dispatch_procurement_request_to_erp(
-            procurement_request=procurement_request,
-            actor_user_id=actor_user_id,
-        )
+        try:
+            await self._dispatch_procurement_request_to_erp(
+                procurement_request=procurement_request,
+                actor_user_id=actor_user_id,
+            )
+        except ConstructionIntegrationUnconfirmedError:
+            # O ERP pode ter confirmado a transação. Impedir edição até o sync/reenvio.
+            procurement_request.rejection_reason = None
+            await self.repository.commit()
+            await self.repository.refresh(procurement_request)
+            raise
+        except ConstructionDomainError:
+            await self.repository.rollback()
+            raise
         procurement_request.rejection_reason = None
         await self.repository.commit()
         await self.repository.refresh(procurement_request)
         return procurement_request
-
-    async def approve_procurement_request(
-        self,
-        *,
-        company_id: UUID,
-        procurement_request_id: UUID,
-        actor_user_id: UUID | None,
-    ) -> ConstructionProcurementRequest:
-        raise ConstructionInvalidValueError(
-            message="Aprovação e rejeição são feitas em Compras > Requisições.",
-            error_code="CONSTRUCTION_PROCUREMENT_CENTRAL_APPROVAL",
-        )
-
-    async def reject_procurement_request(
-        self,
-        *,
-        company_id: UUID,
-        procurement_request_id: UUID,
-        reason: str | None = None,
-    ) -> ConstructionProcurementRequest:
-        raise ConstructionInvalidValueError(
-            message="Aprovação e rejeição são feitas em Compras > Requisições.",
-            error_code="CONSTRUCTION_PROCUREMENT_CENTRAL_APPROVAL",
-        )
 
     async def delete_procurement_request(self, *, company_id: UUID, procurement_request_id: UUID) -> None:
         procurement_request = await self.get_procurement_request(
@@ -3073,11 +3080,12 @@ class ConstructionProjectService:
         sold_total = sum((unit.sale_price or Decimal("0") for unit in sold_units), Decimal("0"))
         discount_total = sum((unit.discount_amount or Decimal("0") for unit in sold_units), Decimal("0"))
 
-        # Custo: o que as requisicoes preveem gastar contra o que as medicoes
-        # aprovadas ja reconheceram. O legado compara com o orcamento da obra,
-        # que o ONAVE ainda nao tem.
+        approved_procurements = [
+            request for request in procurement_requests
+            if request.external_procurement_status in {"APPROVED", "ORDER_CREATED"}
+        ]
         planned_cost = sum(
-            (request.estimated_amount or Decimal("0") for request in procurement_requests),
+            (request.estimated_amount or Decimal("0") for request in approved_procurements),
             Decimal("0"),
         )
         approved_statuses = {ConstructionMeasurementStatus.APPROVED, ConstructionMeasurementStatus.PAID}
@@ -3115,10 +3123,10 @@ class ConstructionProjectService:
             "planned_cost_amount": planned_cost,
             "measured_cost_amount": measured_cost,
             "paid_cost_amount": paid_cost,
-            "cost_difference_amount": planned_cost - measured_cost,
             "measurements_count": len(measurements),
             "measurements_approved_count": len(approved_measurements),
             "procurement_requests_count": len(procurement_requests),
+            "procurement_approved_count": len(approved_procurements),
             "receivables_count": 0,
             "receivable_total_amount": Decimal("0"),
             "received_amount": Decimal("0"),
@@ -4424,6 +4432,12 @@ class ConstructionProjectService:
                 user_id=actor_user_id,
                 product_ids=list(dict.fromkeys(item.product_id for item in procurement_request.items)),
             )
+        except httpx.TransportError as exc:
+            raise ConstructionDomainError(
+                message="Não foi possível conectar ao ERP para validar os produtos. Tente novamente.",
+                status_code=503,
+                error_code="CONSTRUCTION_ERP_UNAVAILABLE",
+            ) from exc
         except Exception as exc:
             raise ConstructionInvalidValueError(
                 message="Um ou mais produtos não existem, estão inativos ou não puderam ser validados no ERP.",
@@ -4436,6 +4450,9 @@ class ConstructionProjectService:
         project = await self.get_project(company_id=procurement_request.company_id, project_id=procurement_request.project_id)
         request_event.payload["source_reference"] = f"{project.code} - {project.name}"[:150]
         procurement_request.status = ConstructionProcurementStatus.PENDING_APPROVAL
+        # O vínculo anterior não confirma esta versão reenviada.
+        procurement_request.external_procurement_id = None
+        procurement_request.external_procurement_status = None
         dispatch_result = await self._dispatch_integration_event(event=request_event)
         if dispatch_result is not None and dispatch_result.response_event is not None:
             self._apply_procurement_snapshot_from_payload(
@@ -4491,6 +4508,14 @@ class ConstructionProjectService:
                 return None
 
             response_event = await self.erp_client.deliver_event(event=event)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise ConstructionDomainError(
+                message="Não foi possível conectar ao ERP. Tente novamente.",
+                status_code=503,
+                error_code="CONSTRUCTION_ERP_UNAVAILABLE",
+            ) from exc
+        except httpx.TransportError as exc:
+            raise ConstructionIntegrationUnconfirmedError() from exc
         except httpx.HTTPStatusError as request_error:
             raise self._erp_domain_error(
                 request_error=request_error,
@@ -4543,6 +4568,9 @@ class ConstructionProjectService:
         }
         if actor_user_id is not None:
             payload["user_id"] = str(actor_user_id)
+
+        creator_id = getattr(procurement_request, "created_by_user_id", None)
+        payload["created_by_user_id"] = str(creator_id) if creator_id else None
 
         return EventEnvelope(
             event_id=event_id,

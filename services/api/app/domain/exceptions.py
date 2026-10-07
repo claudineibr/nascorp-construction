@@ -48,3 +48,12 @@ class ConstructionInvalidValueError(ConstructionDomainError):
 class ConstructionResourceInUseError(ConstructionDomainError):
     def __init__(self, *, message: str, error_code: str = "CONSTRUCTION_RESOURCE_IN_USE") -> None:
         super().__init__(message=message, status_code=409, error_code=error_code)
+
+
+class ConstructionIntegrationUnconfirmedError(ConstructionDomainError):
+    def __init__(self) -> None:
+        super().__init__(
+            message="Envio não confirmado pelo ERP. Reenvie ou aguarde a confirmação.",
+            status_code=503,
+            error_code="CONSTRUCTION_INTEGRATION_UNCONFIRMED",
+        )

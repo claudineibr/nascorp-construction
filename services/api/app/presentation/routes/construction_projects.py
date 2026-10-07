@@ -37,7 +37,6 @@ from app.schemas.construction import (
     ConstructionProjectUpdate,
     ConstructionProcurementRequestCreate,
     ConstructionProcurementRequestListResponse,
-    ConstructionProcurementRequestReject,
     ConstructionProcurementRequestResponse,
     ConstructionProcurementRequestUpdate,
     ConstructionMeasurementCreate,
@@ -1426,6 +1425,9 @@ async def get_procurement_request(
             company_id=ctx.company_id,
             procurement_request_id=procurement_request_id,
         )
+        await service._sync_procurement_statuses(
+            company_id=ctx.company_id, actor_user_id=ctx.user_id, items=[procurement_request],
+        )
         return ConstructionProcurementRequestResponse.model_validate(procurement_request)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
@@ -1464,47 +1466,6 @@ async def submit_procurement_request(
             company_id=ctx.company_id,
             procurement_request_id=procurement_request_id,
             actor_user_id=ctx.user_id,
-        )
-        return ConstructionProcurementRequestResponse.model_validate(procurement_request)
-    except ConstructionDomainError as exc:
-        raise _http_error(exc=exc) from exc
-
-
-@router.post(
-    "/procurement-requests/{procurement_request_id}/approve",
-    response_model=ConstructionProcurementRequestResponse,
-)
-async def approve_procurement_request(
-    procurement_request_id: UUID,
-    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROCUREMENT, PermissionAction.UPDATE)),
-    service: ConstructionProjectService = Depends(get_project_service),
-) -> ConstructionProcurementRequestResponse:
-    try:
-        procurement_request = await service.approve_procurement_request(
-            company_id=ctx.company_id,
-            procurement_request_id=procurement_request_id,
-            actor_user_id=ctx.user_id,
-        )
-        return ConstructionProcurementRequestResponse.model_validate(procurement_request)
-    except ConstructionDomainError as exc:
-        raise _http_error(exc=exc) from exc
-
-
-@router.post(
-    "/procurement-requests/{procurement_request_id}/reject",
-    response_model=ConstructionProcurementRequestResponse,
-)
-async def reject_procurement_request(
-    procurement_request_id: UUID,
-    request_data: ConstructionProcurementRequestReject,
-    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROCUREMENT, PermissionAction.UPDATE)),
-    service: ConstructionProjectService = Depends(get_project_service),
-) -> ConstructionProcurementRequestResponse:
-    try:
-        procurement_request = await service.reject_procurement_request(
-            company_id=ctx.company_id,
-            procurement_request_id=procurement_request_id,
-            reason=request_data.reason,
         )
         return ConstructionProcurementRequestResponse.model_validate(procurement_request)
     except ConstructionDomainError as exc:

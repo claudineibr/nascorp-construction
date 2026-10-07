@@ -141,7 +141,7 @@ class ErpConstructionClient:
         headers = {"X-Service-Key": settings.erp_service_key or "", "X-Company-ID": str(company_id)}
         if user_id:
             headers["X-User-ID"] = str(user_id)
-        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=3) as client:
             response = await client.post("/v1/internal/construction/procurement-requests/status", headers=headers, json={"source_ids": [str(value) for value in source_ids]})
             response.raise_for_status()
             return list(response.json().get("items") or [])
