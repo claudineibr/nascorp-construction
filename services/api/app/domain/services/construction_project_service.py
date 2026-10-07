@@ -26,8 +26,8 @@ from app.domain.constants import (
 )
 from app.domain.exceptions import (
     ConstructionDomainError,
-    ConstructionIntegrationUnconfirmedError,
     ConstructionDuplicateCodeError,
+    ConstructionIntegrationUnconfirmedError,
     ConstructionInvalidStatusTransitionError,
     ConstructionInvalidValueError,
     ConstructionNotFoundError,
@@ -1019,7 +1019,7 @@ class ConstructionProjectService:
     ) -> list[ConstructionProcurementRequest]:
         await self.get_project(company_id=company_id, project_id=project_id)
         items = await self.repository.list_procurement_requests(company_id=company_id, project_id=project_id)
-        await self._sync_procurement_statuses(company_id=company_id, actor_user_id=actor_user_id, items=items)
+        await self.sync_procurement_statuses(company_id=company_id, actor_user_id=actor_user_id, items=items)
         return items
 
     async def get_procurement_request(
@@ -1049,7 +1049,7 @@ class ConstructionProjectService:
             company_id=company_id,
             procurement_request_id=procurement_request_id,
         )
-        await self._sync_procurement_statuses(company_id=company_id, actor_user_id=actor_user_id, items=[procurement_request])
+        await self.sync_procurement_statuses(company_id=company_id, actor_user_id=actor_user_id, items=[procurement_request])
         if procurement_request.status not in {
             ConstructionProcurementStatus.DRAFT,
             ConstructionProcurementStatus.REJECTED,
@@ -1146,28 +1146,25 @@ class ConstructionProjectService:
             company_id=company_id,
             procurement_request_id=procurement_request_id,
         )
-        was_unconfirmed = (
+        unconfirmed = (
             procurement_request.status == ConstructionProcurementStatus.PENDING_APPROVAL
             and procurement_request.external_procurement_id is None
         )
-        await self._sync_procurement_statuses(
+        await self.sync_procurement_statuses(
             company_id=company_id, actor_user_id=actor_user_id, items=[procurement_request],
         )
-        if was_unconfirmed and procurement_request.external_procurement_id is not None:
+        if unconfirmed and procurement_request.external_procurement_id is not None:
             return procurement_request
-        retry_unconfirmed = (
-            procurement_request.status == ConstructionProcurementStatus.PENDING_APPROVAL
-            and procurement_request.external_procurement_id is None
-        )
-        if procurement_request.status not in {
+        if not unconfirmed and procurement_request.status not in {
             ConstructionProcurementStatus.DRAFT,
             ConstructionProcurementStatus.REJECTED,
-        } and not retry_unconfirmed:
+        }:
             raise ConstructionInvalidValueError(
                 message="A requisição não pode ser enviada na situação atual.",
                 error_code="CONSTRUCTION_PROCUREMENT_INVALID_STATUS",
             )
 
+        procurement_request.rejection_reason = None
         try:
             await self._dispatch_procurement_request_to_erp(
                 procurement_request=procurement_request,
@@ -1175,14 +1172,11 @@ class ConstructionProjectService:
             )
         except ConstructionIntegrationUnconfirmedError:
             # O ERP pode ter confirmado a transação. Impedir edição até o sync/reenvio.
-            procurement_request.rejection_reason = None
             await self.repository.commit()
-            await self.repository.refresh(procurement_request)
             raise
         except ConstructionDomainError:
             await self.repository.rollback()
             raise
-        procurement_request.rejection_reason = None
         await self.repository.commit()
         await self.repository.refresh(procurement_request)
         return procurement_request
@@ -4460,7 +4454,7 @@ class ConstructionProjectService:
                 payload=dispatch_result.response_event.payload,
             )
 
-    async def _sync_procurement_statuses(self, *, company_id, actor_user_id, items):
+    async def sync_procurement_statuses(self, *, company_id, actor_user_id, items):
         if not items or actor_user_id is None or not hasattr(self.erp_client, "get_procurement_statuses"):
             return
         sent = [item for item in items if item.external_procurement_id or item.status == ConstructionProcurementStatus.PENDING_APPROVAL]
@@ -4569,7 +4563,7 @@ class ConstructionProjectService:
         if actor_user_id is not None:
             payload["user_id"] = str(actor_user_id)
 
-        creator_id = getattr(procurement_request, "created_by_user_id", None)
+        creator_id = procurement_request.created_by_user_id
         payload["created_by_user_id"] = str(creator_id) if creator_id else None
 
         return EventEnvelope(

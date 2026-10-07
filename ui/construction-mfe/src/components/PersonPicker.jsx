@@ -40,6 +40,8 @@ export function PersonPicker({
   const [debouncedTerm, setDebouncedTerm] = useState("")
   const [options, setOptions] = useState([])
   const [loading, setLoading] = useState(false)
+  const [searchError, setSearchError] = useState(null)
+  const [searchAttempt, setSearchAttempt] = useState(0)
   const [open, setOpen] = useState(false)
   const [highlighted, setHighlighted] = useState(0)
   const [resolved, setResolved] = useState(null)
@@ -111,8 +113,10 @@ export function PersonPicker({
     }
 
     let active = true
+    const controller = new AbortController()
     const load = async () => {
       setLoading(true)
+      setSearchError(null)
       try {
         const response = await listConstructionPersonSummaries({
           bridge,
@@ -120,14 +124,16 @@ export function PersonPicker({
           page: 1,
           pageSize: PAGE_SIZE,
           businessRole,
+          signal: controller.signal,
         })
         if (active) {
           setOptions(response.items ?? [])
           setHighlighted(0)
         }
-      } catch {
+      } catch (requestError) {
         if (active) {
           setOptions([])
+          setSearchError(requestError?.message ?? "Não foi possível buscar pessoas. Tente novamente.")
         }
       } finally {
         if (active) {
@@ -139,8 +145,9 @@ export function PersonPicker({
     void load()
     return () => {
       active = false
+      controller.abort()
     }
-  }, [bridge, businessRole, debouncedTerm, open])
+  }, [bridge, businessRole, debouncedTerm, open, searchAttempt])
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -188,7 +195,7 @@ export function PersonPicker({
     if (event.key === "Enter") {
       // Nao deixa o Enter da busca SUBMETER o formulario do modal.
       event.preventDefault()
-      const person = options[highlighted]
+      const person = loading || searchError ? null : options[highlighted]
       if (person) {
         escolher(person)
       }
@@ -253,6 +260,17 @@ export function PersonPicker({
         <ul className={styles.options} role="listbox">
           {loading ? (
             <li className={styles.hint}>Buscando...</li>
+          ) : searchError ? (
+            <li className={styles.hint}>
+              <span className={styles.error} role="alert">{searchError}</span>
+              <button
+                type="button"
+                className={styles.option}
+                onClick={() => setSearchAttempt((attempt) => attempt + 1)}
+              >
+                Tentar novamente
+              </button>
+            </li>
           ) : options.length === 0 ? (
             <li className={styles.hint}>
               {businessRole

@@ -963,10 +963,6 @@ class ConstructionProcurementRequestUpdate(BaseModel):
     supplier_person_id: UUID | None = None
 
 
-class ConstructionProcurementRequestReject(BaseModel):
-    reason: str | None = Field(default=None, max_length=500)
-
-
 class ConstructionProcurementRequestResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

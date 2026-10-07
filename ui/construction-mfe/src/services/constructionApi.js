@@ -540,7 +540,7 @@ const toSaleDocumentationPayload = (documentation = {}) => ({
   amount: toNullableNumber(documentation.amountValue),
 })
 
-async function requestJson({ bridge, path, method = "GET", body = null, baseUrl = null }) {
+async function requestJson({ bridge, path, method = "GET", body = null, baseUrl = null, signal = undefined }) {
   const apiBaseUrl = baseUrl || bridge?.constructionApiBaseUrl || DEFAULT_CONSTRUCTION_API_URL
   const headers = {
     ...(bridge?.getAuthHeaders?.() ?? {}),
@@ -559,6 +559,7 @@ async function requestJson({ bridge, path, method = "GET", body = null, baseUrl 
       method,
       headers: overrideHeaders,
       body: body === null ? undefined : JSON.stringify(body),
+      signal,
     })
 
   let response = await execute()
@@ -677,6 +678,7 @@ export async function listConstructionPersonSummaries({
   pageSize = 50,
   personId = null,
   businessRole = null,
+  signal = null,
 } = {}) {
   const query = new URLSearchParams({
     page: String(page),
@@ -701,10 +703,29 @@ export async function listConstructionPersonSummaries({
     query.set("person_id", String(personId))
   }
 
-  const payload = await requestJson({
-    bridge,
-    path: `/v1/construction/person-summaries?${query.toString()}`,
-  })
+  const controller = new AbortController()
+  const cancel = () => controller.abort()
+  signal?.addEventListener("abort", cancel, { once: true })
+  if (signal?.aborted) cancel()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, 15000)
+  let payload
+  try {
+    payload = await requestJson({
+      bridge,
+      path: `/v1/construction/person-summaries?${query.toString()}`,
+      signal: controller.signal,
+    })
+  } catch (requestError) {
+    if (timedOut) throw new Error("A busca de pessoas demorou mais que o esperado. Tente novamente.")
+    throw requestError
+  } finally {
+    clearTimeout(timer)
+    signal?.removeEventListener("abort", cancel)
+  }
 
   return {
     items: (payload.items ?? []).map(toPersonSummaryView),

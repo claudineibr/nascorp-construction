@@ -669,6 +669,11 @@ const defaultMeasurementRejectForm = {
   reason: "",
 }
 
+// Enviada sem confirmação do ERP: fica travada até o sync ou o reenvio.
+function isUnconfirmedProcurement(procurementRequest) {
+  return procurementRequest.status === "pending_approval" && !procurementRequest.externalProcurementId
+}
+
 const defaultProcurementForm = {
   code: "",
   title: "",
@@ -1265,6 +1270,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const [personLookupQuery, setPersonLookupQuery] = useState("")
   const [personSummaries, setPersonSummaries] = useState([])
+  const [viewingProcurementOrderId, setViewingProcurementOrderId] = useState(null)
   // Qual parcela esta gerando/baixando recibo. Um por vez: o PDF nasce no
   // servidor e dois cliques seguidos na mesma linha pediriam duas vezes.
   const [receiptBusyId, setReceiptBusyId] = useState(null)
@@ -3737,8 +3743,17 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }
 
+  const viewProcurementOrder = async (procurementRequest) => {
+    setViewingProcurementOrderId(procurementRequest.id)
+    try {
+      await bridge.viewPurchaseOrder({ requisitionId: procurementRequest.externalProcurementId })
+    } finally {
+      setViewingProcurementOrderId((current) => current === procurementRequest.id ? null : current)
+    }
+  }
+
   const handleSubmitProcurement = (procurementRequest) => {
-    const unconfirmed = procurementRequest.status === "pending_approval" && !procurementRequest.externalProcurementId
+    const unconfirmed = isUnconfirmedProcurement(procurementRequest)
     setConfirmRequest({
       title: `${unconfirmed ? "Reenviar" : "Enviar"} a requisição ${procurementRequest.code} para aprovação`,
       message: "A requisição sai da sua mão e vai para quem aprova. Até a resposta ela fica parada.",
@@ -3750,18 +3765,21 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const runSubmitProcurement = async (procurementRequest) => {
     try {
-      await submitConstructionProcurementRequest({
+      const result = await submitConstructionProcurementRequest({
         bridge,
         procurementRequestId: procurementRequest.id,
       })
-      bridge?.feedback?.success?.("Requisição enviada para aprovação.")
-      await loadProcurementRequests()
+      if (result.status === "rejected") {
+        bridge?.feedback?.warning?.("A requisição consta como rejeitada no ERP. Confira o motivo e envie de novo.")
+      } else {
+        bridge?.feedback?.success?.("Requisição enviada para aprovação.")
+      }
     } catch (requestError) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível enviar a requisição.")
+    } finally {
       await loadProcurementRequests()
     }
   }
-
 
   return (
     // O bridge desce por contexto para os campos de pessoa, que falam com o
@@ -4153,6 +4171,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                   onEdit={openEditProcurement}
                   onDelete={handleDeleteProcurement}
                   onSubmit={handleSubmitProcurement}
+                  onViewOrder={viewProcurementOrder}
+                  viewingOrderId={viewingProcurementOrderId}
                 />
               }
             />
@@ -7373,6 +7393,8 @@ function ProcurementList({
   onEdit,
   onDelete,
   onSubmit,
+  onViewOrder,
+  viewingOrderId,
 }) {
   if (loading) {
     return (
@@ -7423,7 +7445,7 @@ function ProcurementList({
         </thead>
         <tbody>
           {procurementRequests.map((procurementRequest) => {
-            const unconfirmed = procurementRequest.status === "pending_approval" && !procurementRequest.externalProcurementId
+            const unconfirmed = isUnconfirmedProcurement(procurementRequest)
             const canSubmit = ["draft", "rejected"].includes(procurementRequest.status) || unconfirmed
             const canEdit = ["draft", "rejected"].includes(procurementRequest.status)
             const canDelete = ["draft", "rejected"].includes(procurementRequest.status)
@@ -7444,17 +7466,25 @@ function ProcurementList({
                 <td>{formatMoney(procurementRequest.estimatedAmount)}</td>
                 <td>{formatDate(procurementRequest.neededByDate)}</td>
                 <td>
-                  {procurementRequest.externalProcurementId ? (
-                    <div>
-                      <div className={styles.rowSecondaryText}>{erpProcurementStatusLabel[procurementRequest.externalProcurementStatus] ?? "Vinculada ao ERP"}</div>
-                      {procurementRequest.externalOrderNumber ? <span className={styles.badgeSuccess}>{procurementRequest.externalOrderNumber}</span> : <span className={styles.badgeMuted}>Na central de compras</span>}
-                    </div>
-                  ) : (
-                    <span className={styles.badgeMuted}>{unconfirmed ? "Envio não confirmado" : "Pendente"}</span>
-                  )}
+                  <div className={styles.procurementIntegration}>
+                    {procurementRequest.externalProcurementId ? (
+                      <>
+                        <span className={styles.procurementIntegrationStatus}>{erpProcurementStatusLabel[procurementRequest.externalProcurementStatus] ?? "Vinculada ao ERP"}</span>
+                        {procurementRequest.externalOrderNumber ? (
+                          <span className={`${styles.badgeSuccess} ${styles.procurementOrderReference}`}>
+                            <ShoppingCart size={13} aria-hidden="true" />
+                            {procurementRequest.externalOrderNumber}
+                          </span>
+                        ) : <span className={styles.procurementIntegrationContext}>Na central de compras</span>}
+                      </>
+                    ) : (
+                      <span className={styles.badgeMuted}>{unconfirmed ? "Envio não confirmado" : "Pendente"}</span>
+                    )}
+                  </div>
                 </td>
                 <td>
                   <RowActionsMenu
+                    busy={viewingOrderId === procurementRequest.id}
                     actions={[
                       {
                         key: "edit",
@@ -7470,6 +7500,14 @@ function ProcurementList({
                         visible: canSubmit,
                         dividerBefore: true,
                         onSelect: () => onSubmit(procurementRequest),
+                      },
+                      {
+                        key: "view-order",
+                        label: "Ver pedido de compra",
+                        icon: ShoppingCart,
+                        visible: Boolean(procurementRequest.externalOrderNumber && procurementRequest.externalProcurementId &&
+                          bridge?.canRead?.("purchase_orders") && bridge?.viewPurchaseOrder),
+                        onSelect: () => onViewOrder(procurementRequest),
                       },
                       {
                         key: "central",

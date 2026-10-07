@@ -1425,7 +1425,7 @@ async def get_procurement_request(
             company_id=ctx.company_id,
             procurement_request_id=procurement_request_id,
         )
-        await service._sync_procurement_statuses(
+        await service.sync_procurement_statuses(
             company_id=ctx.company_id, actor_user_id=ctx.user_id, items=[procurement_request],
         )
         return ConstructionProcurementRequestResponse.model_validate(procurement_request)

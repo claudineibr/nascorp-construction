@@ -88,7 +88,7 @@ async def test_resubmit_links_existing_purchase_without_dispatch():
 @pytest.mark.asyncio
 async def test_empty_status_snapshot_keeps_unconfirmed_purchase_locked():
     service, _, _, _, request = scenario("pending_approval")
-    await service._sync_procurement_statuses(company_id=request.company_id,
+    await service.sync_procurement_statuses(company_id=request.company_id,
         actor_user_id=uuid4(), items=[request])
     assert request.status == ConstructionProcurementStatus.PENDING_APPROVAL
     assert request.external_procurement_id is None
