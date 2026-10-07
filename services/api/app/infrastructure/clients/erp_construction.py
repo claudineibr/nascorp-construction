@@ -142,9 +142,18 @@ class ErpConstructionClient:
         if user_id:
             headers["X-User-ID"] = str(user_id)
         async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=3) as client:
-            response = await client.post("/v1/internal/construction/procurement-requests/status", headers=headers, json={"source_ids": [str(value) for value in source_ids]})
+            response = await client.post("/v1/internal/construction/procurement-requests/reconcile", headers=headers, json={"source_ids": [str(value) for value in source_ids]})
             response.raise_for_status()
             return list(response.json().get("items") or [])
+
+    async def get_purchase_totals(self, *, company_id, project_id, user_id):
+        headers = {"X-Service-Key": settings.erp_service_key or "", "X-Company-ID": str(company_id)}
+        if user_id is not None:
+            headers["X-User-ID"] = str(user_id)
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.get(f"/v1/internal/construction/projects/{project_id}/purchase-totals", headers=headers)
+            response.raise_for_status()
+            return response.json()
 
     async def get_person_name(
         self,
@@ -532,6 +541,7 @@ class ErpConstructionClient:
         headers = {
             "X-Service-Key": settings.erp_service_key or "",
             "X-Company-ID": str(event.company_id),
+            "Idempotency-Key": str(event.event_id),
         }
         if event.payload.get("user_id"):
             headers["X-User-ID"] = str(event.payload["user_id"])

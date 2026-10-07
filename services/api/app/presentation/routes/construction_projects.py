@@ -1405,7 +1405,7 @@ async def list_procurement_requests(
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionProcurementRequestListResponse:
     try:
-        items = await service.list_procurement_requests(company_id=ctx.company_id, project_id=project_id, actor_user_id=ctx.user_id)
+        items = await service.list_procurement_requests(company_id=ctx.company_id, project_id=project_id)
         return ConstructionProcurementRequestListResponse(
             items=[ConstructionProcurementRequestResponse.model_validate(item) for item in items],
             total=len(items),

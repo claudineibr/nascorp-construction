@@ -9,6 +9,7 @@ from app.infrastructure.repository.construction_repository import ConstructionRe
 from app.infrastructure.repository.event_repository import EventRepository
 from app.schemas.construction import ConstructionMeasurementResponse, ConstructionProjectResponse, ConstructionUnitResponse
 from app.schemas.events import EventEnvelopeRequest
+from app.schemas.construction import ConstructionProcurementRequestResponse
 
 
 router = APIRouter(prefix="/internal", tags=["internal"])
@@ -26,6 +27,15 @@ async def get_project_service(session: AsyncSession = Depends(get_session)) -> C
         repository=ConstructionRepository(session=session),
         event_repository=EventRepository(session=session),
     )
+
+
+@router.post("/events/erp-procurement-updated", response_model=ConstructionProcurementRequestResponse)
+async def consume_erp_procurement_updated_event(request_data: EventEnvelopeRequest,
+    _: None = Depends(require_service_key), service: ConstructionProjectService = Depends(get_project_service)):
+    try:
+        return await service.apply_procurement_updated_event(event=request_data.to_event_envelope())
+    except ConstructionDomainError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
 @router.post("/events/erp-cost-center-created", response_model=ConstructionProjectResponse)

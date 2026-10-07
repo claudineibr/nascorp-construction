@@ -7,12 +7,12 @@ class DatabaseOutboxRelay:
         self.publisher = publisher
         self.max_attempts_before_dlq = max_attempts_before_dlq
 
-    async def relay_pending(self, *, limit: int = 100) -> int:
+    async def relay_pending(self, *, limit: int = 100, event_type: str | None = None) -> int:
         relayed_count = 0
-        outbox_events = await self.repository.list_pending_outbox_events(
-            limit=limit,
-            max_attempts_before_dlq=self.max_attempts_before_dlq,
-        )
+        arguments = {"limit": limit, "max_attempts_before_dlq": self.max_attempts_before_dlq}
+        if event_type is not None:
+            arguments["event_type"] = event_type
+        outbox_events = await self.repository.list_pending_outbox_events(**arguments)
         for outbox_event in outbox_events:
             envelope = self._to_envelope(outbox_event)
             try:

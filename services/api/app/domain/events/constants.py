@@ -34,6 +34,7 @@ class ErpEventType:
     CONTRACT_RECEIVABLE_CREATED = "erp.contract.receivable.created.v1"
     CONTRACT_STATUS_UPDATED = "erp.contract.status.updated.v1"
     PROCUREMENT_REQUEST_ACCEPTED = "erp.procurement.request.accepted.v1"
+    PROCUREMENT_REQUEST_UPDATED = "erp.procurement.request.updated.v1"
 
 
 class ConstructionAggregateType:
@@ -44,6 +45,7 @@ class ConstructionAggregateType:
 
 
 class ConstructionConsumerName:
+    PROCUREMENT_UPDATED = "construction.procurement_updated"
     COST_CENTER_CREATED = "construction.cost_center_created"
     ACCOUNTS_PAYABLE_UPDATED = "construction.accounts_payable_updated"
     CONTRACT_STATUS_UPDATED = "construction.contract_status_updated"

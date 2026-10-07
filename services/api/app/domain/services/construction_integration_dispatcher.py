@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from app.domain.events.constants import ConstructionIntegrationMode
+from app.domain.events.constants import ConstructionEventType, ConstructionIntegrationMode
 from app.domain.events.contracts import EventEnvelope
 
 
@@ -41,11 +41,14 @@ class ConstructionIntegrationDispatcher:
         self.integration_mode = integration_mode
 
     async def dispatch(self, *, event: EventEnvelope) -> ConstructionIntegrationDispatchResult:
+        deferred = event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED
+        if deferred and self.event_repository is None:
+            raise ValueError("O envio de compras exige um outbox persistente.")
         if self.event_repository is not None:
             await self.event_repository.add_outbox_event(event=event)
 
         response_event = None
-        if self.integration_mode == ConstructionIntegrationMode.SYNC_HTTP and self.event_transport is not None:
+        if not deferred and self.integration_mode == ConstructionIntegrationMode.SYNC_HTTP and self.event_transport is not None:
             response_event = await self.event_transport.deliver_event(event=event)
 
         return ConstructionIntegrationDispatchResult(

@@ -997,6 +997,10 @@ class ConstructionProcurementRequest(Base):
     external_order_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     external_order_numbers: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
     submission_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    delivery_status: Mapped[str] = mapped_column(String(20), nullable=False, default="not_sent", server_default="not_sent")
+    external_snapshot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    external_items: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    external_orders: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

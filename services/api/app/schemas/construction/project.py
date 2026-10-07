@@ -990,6 +990,9 @@ class ConstructionProcurementRequestResponse(BaseModel):
     external_procurement_status: str | None = None
     external_order_number: str | None = None
     external_order_numbers: list[str] = Field(default_factory=list)
+    delivery_status: str = "not_sent"
+    external_items: list[dict] = Field(default_factory=list)
+    external_orders: list[dict] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

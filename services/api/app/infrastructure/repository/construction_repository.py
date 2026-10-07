@@ -952,14 +952,16 @@ class ConstructionRepository:
         *,
         company_id: UUID,
         procurement_request_id: UUID,
+        lock: bool = False,
     ) -> ConstructionProcurementRequest | None:
-        result = await self.session.execute(
-            select(ConstructionProcurementRequest).options(selectinload(ConstructionProcurementRequest.items)).where(
-                ConstructionProcurementRequest.company_id == company_id,
-                ConstructionProcurementRequest.id == procurement_request_id,
-                *scope_conditions(ConstructionProcurementRequest, self.scope),
-            )
+        query = select(ConstructionProcurementRequest).options(selectinload(ConstructionProcurementRequest.items)).where(
+            ConstructionProcurementRequest.company_id == company_id,
+            ConstructionProcurementRequest.id == procurement_request_id,
+            *scope_conditions(ConstructionProcurementRequest, self.scope),
         )
+        if lock:
+            query = query.with_for_update()
+        result = await self.session.execute(query)
         return result.scalars().first()
 
     async def get_procurement_request_by_code(
@@ -995,3 +997,9 @@ class ConstructionRepository:
             .order_by(ConstructionProcurementRequest.created_at.desc())
         )
         return list(result.scalars().all())
+
+    async def procurement_for_reconciliation(self):
+        rows = await self.session.scalars(select(ConstructionProcurementRequest)
+            .options(selectinload(ConstructionProcurementRequest.items))
+            .where(ConstructionProcurementRequest.submission_revision > 0))
+        return list(rows.all())

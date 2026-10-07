@@ -714,7 +714,7 @@ class FakeConstructionRepository:
             if stored_company_id == company_id and unit.project_id == project_id
         ]
 
-    async def get_procurement_request(self, *, company_id, procurement_request_id):
+    async def get_procurement_request(self, *, company_id, procurement_request_id, lock=False):
         return self.procurement_requests.get((company_id, procurement_request_id))
 
     async def get_procurement_request_by_code(self, *, company_id, project_id, code):
@@ -747,6 +747,12 @@ class FakeEventRepository:
     async def add_outbox_event(self, *, event: EventEnvelope):
         self.outbox_events.append(event)
         return event
+
+    async def latest_procurement_event(self, *, company_id, aggregate_id):
+        from types import SimpleNamespace
+
+        events = [event for event in self.outbox_events if event.company_id == company_id and event.aggregate_id == aggregate_id]
+        return SimpleNamespace(event_id=events[-1].event_id, status="pending") if events else None
 
     async def mark_processed(self, *, consumer_name: str, event: EventEnvelope) -> bool:
         processed_key = (consumer_name, event.event_id)
@@ -2878,7 +2884,7 @@ async def test_submit_procurement_request_always_requires_central_approval(amoun
         status=ConstructionProjectStatus.ACTIVE,
     )
     repository.projects[(company_id, project.id)] = project
-    service = ConstructionProjectService(repository=repository, erp_client=FakeErpMeasurementClient())
+    service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository(), erp_client=FakeErpMeasurementClient())
 
     procurement_request = await service.create_procurement_request(
         company_id=company_id,
@@ -2896,8 +2902,8 @@ async def test_submit_procurement_request_always_requires_central_approval(amoun
     )
 
     assert submitted.status == ConstructionProcurementStatus.PENDING_APPROVAL
-    assert submitted.external_procurement_id == procurement_request.id
-    assert submitted.external_procurement_status == "PENDING_APPROVAL"
+    assert submitted.external_procurement_id is None
+    assert submitted.external_procurement_status is None
     assert submitted.approved_by_user_id is None
 
 
@@ -2935,7 +2941,7 @@ async def test_procurement_amount_is_calculated_from_lines_and_discount() -> Non
 
 
 @pytest.mark.asyncio
-async def test_procurement_discount_cannot_reduce_total_to_zero() -> None:
+async def test_procurement_discount_cannot_exceed_subtotal() -> None:
     company_id = uuid4()
     repository = FakeConstructionRepository()
     project = ConstructionProject(
@@ -2948,7 +2954,7 @@ async def test_procurement_discount_cannot_reduce_total_to_zero() -> None:
     repository.projects[(company_id, project.id)] = project
     service = ConstructionProjectService(repository=repository, erp_client=FakeErpMeasurementClient())
 
-    with pytest.raises(ConstructionInvalidValueError, match="total da requisição"):
+    with pytest.raises(ConstructionInvalidValueError, match="desconto"):
         await service.create_procurement_request(
             company_id=company_id,
             project_id=project.id,
@@ -2956,7 +2962,7 @@ async def test_procurement_discount_cannot_reduce_total_to_zero() -> None:
                 supplier_person_id=uuid4(),
                 title="Zero total",
                 items=[{"product_id": uuid4(), "quantity": Decimal("1"), "unit_of_measure": "UN", "unit_price": Decimal("5.00")}],
-                discount_amount=Decimal("5.00"),
+                discount_amount=Decimal("6.00"),
             ),
         )
 
@@ -3024,19 +3030,16 @@ async def test_submit_procurement_request_sends_demand_once() -> None:
         procurement_request_id=procurement_request.id,
         actor_user_id=uuid4(),
     )
-    with pytest.raises(ConstructionInvalidValueError):
-        await service.submit_procurement_request(
-            company_id=company_id,
-            procurement_request_id=procurement_request.id,
-            actor_user_id=uuid4(),
-        )
-
+    repeated = await service.submit_procurement_request(
+        company_id=company_id, procurement_request_id=procurement_request.id, actor_user_id=uuid4())
+    assert repeated is submitted
+    assert len(event_repository.outbox_events) == 1
     assert submitted.status == ConstructionProcurementStatus.PENDING_APPROVAL
-    assert submitted.external_procurement_id == procurement_request.id
-    assert submitted.external_procurement_status == "PENDING_APPROVAL"
+    assert submitted.external_procurement_id is None
+    assert submitted.delivery_status == "sending"
     assert any(event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED for event in event_repository.outbox_events)
-    assert len([event for event in erp_client.events if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED]) == 1
-    sent_event = next(event for event in erp_client.events if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED)
+    assert len([event for event in erp_client.events if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED]) == 0
+    sent_event = next(event for event in event_repository.outbox_events if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED)
     assert sent_event.payload["estimated_amount"] == "80000.00"
     assert sent_event.payload["items"][0]["line_total"] == "80000.00"
 

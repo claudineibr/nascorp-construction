@@ -3775,7 +3775,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       if (result.status === "rejected") {
         bridge?.feedback?.warning?.("A requisição consta como rejeitada no ERP. Confira o motivo e envie de novo.")
       } else {
-        bridge?.feedback?.success?.("Requisição enviada para aprovação.")
+        bridge?.feedback?.success?.("Envio registrado. A requisição será entregue à central de compras em segundo plano.")
       }
     } catch (requestError) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível enviar a requisição.")
@@ -4601,16 +4601,32 @@ function OverviewPanel({
         <span className={styles.summaryGroupTitle}>Custo</span>
         <div className={styles.integrationGrid}>
           <SummaryMetric
-            label="Compras aprovadas"
-            value={formatCurrencyFromNumber(summary?.plannedCostAmount ?? 0)}
+            label="Requisitado aprovado"
+            value={summary?.approvedRequisitionAmount == null ? "Indisponível" : formatCurrencyFromNumber(summary.approvedRequisitionAmount)}
             hint={`${summary?.procurementApprovedCount ?? 0} requisição(ões) de compra`}
           />
+          <SummaryMetric label="Comprometido em pedidos"
+            value={summary?.committedOrderAmount == null ? "Indisponível" : formatCurrencyFromNumber(summary.committedOrderAmount)} />
+          <SummaryMetric label="Realizado"
+            value={summary?.realizedAmount == null ? "Indisponível" : formatCurrencyFromNumber(summary.realizedAmount)} />
           <SummaryMetric
             label="Medido"
             value={formatCurrencyFromNumber(summary?.measuredCostAmount ?? 0)}
             hint={`${summary?.measurementsApprovedCount ?? 0} de ${summary?.measurementsCount ?? 0} medição(ões) aprovada(s)`}
           />
         </div>
+        {summary?.purchaseTotalsUnavailableReason && <p role="status">{summary.purchaseTotalsUnavailableReason}</p>}
+        <p>Pedidos migrados sem saldo apurado: {summary?.legacyUnknownAmount == null ? "Indisponível" : formatCurrencyFromNumber(summary.legacyUnknownAmount)}</p>
+        {summary?.purchasePhases?.length > 0 && <details><summary>Valores por etapa</summary>
+          <div className={styles.tableWrapper}><table className={styles.table}><thead><tr>
+            <th>Etapa</th><th>Requisitado aprovado</th><th>Comprometido</th><th>Realizado</th>
+          </tr></thead><tbody>{summary.purchasePhases.map((phase) => <tr key={phase.schedule_phase_id ?? "none"}>
+            <td>{schedulePhases.find((item) => item.id === phase.schedule_phase_id)?.name ?? "Sem etapa"}</td>
+            <td>{formatCurrencyFromNumber(phase.approved_requisition_amount)}</td>
+            <td>{formatCurrencyFromNumber(phase.committed_order_amount)}</td>
+            <td>{formatCurrencyFromNumber(phase.realized_amount)}</td>
+          </tr>)}</tbody></table></div>
+        </details>}
       </div>
 
       <div className={styles.summaryGroup}>
@@ -7450,8 +7466,7 @@ function ProcurementList({
         </thead>
         <tbody>
           {procurementRequests.map((procurementRequest) => {
-            const unconfirmed = isUnconfirmedProcurement(procurementRequest)
-            const canSubmit = ["draft", "rejected"].includes(procurementRequest.status) || unconfirmed
+            const canSubmit = ["draft", "rejected"].includes(procurementRequest.status) || procurementRequest.deliveryStatus === "failed"
             const canEdit = ["draft", "rejected"].includes(procurementRequest.status)
             const canDelete = ["draft", "rejected"].includes(procurementRequest.status)
 
@@ -7460,6 +7475,12 @@ function ProcurementList({
                 <td>{procurementRequest.code}</td>
                 <td>
                   <strong>{procurementRequest.title}</strong>
+                  {procurementRequest.externalItems?.length > 0 && <details><summary>Saldo por item</summary>
+                    {procurementRequest.externalItems.map((item) => <p key={item.sequence_number}>
+                      {item.description ?? `Item ${item.sequence_number}`}: solicitado {item.quantity} · pedido {item.qty_ordered}
+                      {` · reservado ${item.qty_reserved ?? 0} · saldo ${item.qty_available}`}
+                    </p>)}
+                  </details>}
                   <div className={styles.rowSecondaryText}>{procurementRequest.description || "-"}</div>
                   {procurementRequest.rejectionReason ? <div className={styles.rowSecondaryText}>Motivo da rejeição: {procurementRequest.rejectionReason}</div> : null}
                 </td>
@@ -7478,12 +7499,16 @@ function ProcurementList({
                         {procurementRequest.externalOrderNumbers?.length ? (
                           <span className={`${styles.badgeSuccess} ${styles.procurementOrderReference}`}>
                             <ShoppingCart size={13} aria-hidden="true" />
-                            {procurementRequest.externalOrderNumbers.join(", ")}
+                            {procurementRequest.externalOrders?.length ? procurementRequest.externalOrders.map((order) =>
+                              `${order.number} (${{ DRAFT: "Rascunho", OPEN: "Aberto", PARTIALLY_RECEIVED: "Recebido parcialmente",
+                                RECEIVED: "Recebido", CLOSED: "Encerrado", CANCELED: "Cancelado" }[order.status] ?? "Em andamento"})`
+                            ).join(", ") : procurementRequest.externalOrderNumbers.join(", ")}
                           </span>
                         ) : <span className={styles.procurementIntegrationContext}>Na central de compras</span>}
                       </>
                     ) : (
-                      <span className={styles.badgeMuted}>{unconfirmed ? "Envio não confirmado" : "Pendente"}</span>
+                      <span className={styles.badgeMuted}>{{ sending: "Enviando", sent: "Enviada",
+                        failed: "Falha ao enviar para Compras", not_sent: "Pendente" }[procurementRequest.deliveryStatus] ?? "Pendente"}</span>
                     )}
                   </div>
                 </td>
@@ -7500,7 +7525,7 @@ function ProcurementList({
                       },
                       {
                         key: "submit",
-                        label: unconfirmed ? "Reenviar" : "Enviar para aprovação",
+                        label: procurementRequest.deliveryStatus === "failed" ? "Tentar novamente" : "Enviar para aprovação",
                         icon: Send,
                         visible: canSubmit,
                         dividerBefore: true,

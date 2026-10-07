@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.infrastructure.events.procurement_jobs import procurement_lifespan
 from app.presentation.routes.construction_projects import router as construction_router
 from app.presentation.routes.health import router as health_router
 from app.presentation.routes.internal_events import router as internal_events_router
@@ -25,6 +26,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="NASCORP Construction API",
         version="0.1.0",
+        lifespan=procurement_lifespan,
     )
     app.add_middleware(
         CORSMiddleware,

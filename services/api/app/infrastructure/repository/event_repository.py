@@ -7,7 +7,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.events.constants import EventStatus
+from app.domain.events.constants import ConstructionEventType, EventStatus
 from app.domain.events.contracts import EventEnvelope
 from app.infrastructure.database.models import DeadLetterEvent, OutboxEvent, ProcessedEvent
 
@@ -41,9 +41,13 @@ class EventRepository:
         *,
         limit: int = 100,
         max_attempts_before_dlq: int = 3,
+        event_type: str | None = None,
     ) -> list[OutboxEvent]:
+        query = select(OutboxEvent)
+        if event_type is not None:
+            query = query.where(OutboxEvent.event_type == event_type)
         result = await self.session.execute(
-            select(OutboxEvent)
+            query
             .where(
                 or_(
                     OutboxEvent.status == EventStatus.PENDING,
@@ -55,6 +59,7 @@ class EventRepository:
             )
             .order_by(OutboxEvent.occurred_at)
             .limit(limit)
+            .with_for_update(skip_locked=True)
         )
         return list(result.scalars().all())
 
@@ -69,6 +74,7 @@ class EventRepository:
         outbox_event.last_error = error
 
     async def move_to_dead_letter(self, outbox_event: OutboxEvent, error: str) -> DeadLetterEvent:
+        outbox_event.retry_count += 1
         dead_letter_event = DeadLetterEvent(
             id=uuid4(),
             event_id=outbox_event.event_id,
@@ -89,6 +95,12 @@ class EventRepository:
         outbox_event.last_error = error
         self.session.add(dead_letter_event)
         return dead_letter_event
+
+    async def latest_procurement_event(self, *, company_id, aggregate_id):
+        return await self.session.scalar(select(OutboxEvent).where(
+            OutboxEvent.company_id == company_id, OutboxEvent.aggregate_id == aggregate_id,
+            OutboxEvent.event_type == ConstructionEventType.PROCUREMENT_REQUESTED,
+        ).order_by(OutboxEvent.occurred_at.desc()).limit(1).with_for_update())
 
     async def commit(self) -> None:
         await self.session.commit()

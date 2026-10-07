@@ -986,6 +986,7 @@ class ConstructionProjectService:
                 supplier_person_id=request.supplier_person_id,
             ),
             status=ConstructionProcurementStatus.DRAFT,
+            submission_revision=0,
             rejection_reason=None,
         )
         procurement_request.items = [
@@ -1017,11 +1018,9 @@ class ConstructionProjectService:
         *,
         company_id: UUID,
         project_id: UUID,
-        actor_user_id: UUID | None = None,
     ) -> list[ConstructionProcurementRequest]:
         await self.get_project(company_id=company_id, project_id=project_id)
         items = await self.repository.list_procurement_requests(company_id=company_id, project_id=project_id)
-        await self.sync_procurement_statuses(company_id=company_id, actor_user_id=actor_user_id, items=items)
         return items
 
     async def get_procurement_request(
@@ -1051,7 +1050,6 @@ class ConstructionProjectService:
             company_id=company_id,
             procurement_request_id=procurement_request_id,
         )
-        await self.sync_procurement_statuses(company_id=company_id, actor_user_id=actor_user_id, items=[procurement_request])
         if procurement_request.status not in {
             ConstructionProcurementStatus.DRAFT,
             ConstructionProcurementStatus.REJECTED,
@@ -1141,18 +1139,26 @@ class ConstructionProjectService:
         procurement_request_id: UUID,
         actor_user_id: UUID | None,
     ) -> ConstructionProcurementRequest:
-        procurement_request = await self.get_procurement_request(
-            company_id=company_id,
-            procurement_request_id=procurement_request_id,
-        )
+        procurement_request = await self.repository.get_procurement_request(
+            company_id=company_id, procurement_request_id=procurement_request_id, lock=True)
+        if procurement_request is None:
+            raise ConstructionNotFoundError(resource_name="a requisição de compra")
         unconfirmed = (
             procurement_request.status == ConstructionProcurementStatus.PENDING_APPROVAL
             and procurement_request.external_procurement_id is None
         )
-        await self.sync_procurement_statuses(
-            company_id=company_id, actor_user_id=actor_user_id, items=[procurement_request],
-        )
-        if unconfirmed and procurement_request.external_procurement_id is not None:
+        if unconfirmed:
+            event = await self.event_repository.latest_procurement_event(
+                company_id=company_id, aggregate_id=procurement_request.id)
+            if event is None:
+                procurement_request.submission_revision = max(procurement_request.submission_revision or 0, 1)
+                await self._dispatch_procurement_request_to_erp(procurement_request=procurement_request, actor_user_id=actor_user_id)
+                await self.repository.commit()
+                return procurement_request
+            if event.status == "dead_letter":
+                event.status, event.retry_count, event.last_error = "pending", 0, None
+                procurement_request.delivery_status = "sending"
+                await self.repository.commit()
             return procurement_request
         if not unconfirmed and procurement_request.status not in {
             ConstructionProcurementStatus.DRAFT,
@@ -1170,10 +1176,6 @@ class ConstructionProjectService:
                 procurement_request=procurement_request,
                 actor_user_id=actor_user_id,
             )
-        except ConstructionIntegrationUnconfirmedError:
-            # O ERP pode ter confirmado a transação. Impedir edição até o sync/reenvio.
-            await self.repository.commit()
-            raise
         except ConstructionDomainError:
             await self.repository.rollback()
             raise
@@ -3076,12 +3078,8 @@ class ConstructionProjectService:
 
         approved_procurements = [
             request for request in procurement_requests
-            if request.external_procurement_status in {"APPROVED", "ORDER_CREATED"}
+            if request.external_procurement_status in {"APPROVED", "PARTIALLY_ORDERED", "ORDERED"}
         ]
-        planned_cost = sum(
-            (request.estimated_amount or Decimal("0") for request in approved_procurements),
-            Decimal("0"),
-        )
         approved_statuses = {ConstructionMeasurementStatus.APPROVED, ConstructionMeasurementStatus.PAID}
         approved_measurements = [
             measurement for measurement in measurements if measurement.status in approved_statuses
@@ -3114,7 +3112,13 @@ class ConstructionProjectService:
             "units_total_amount": units_total,
             "units_sold_amount": sold_total,
             "discount_amount": discount_total,
-            "planned_cost_amount": planned_cost,
+            "planned_cost_amount": None,
+            "approved_requisition_amount": None,
+            "committed_order_amount": None,
+            "realized_amount": None,
+            "legacy_unknown_amount": None,
+            "purchase_phases": [],
+            "purchase_totals_unavailable_reason": None,
             "measured_cost_amount": measured_cost,
             "paid_cost_amount": paid_cost,
             "measurements_count": len(measurements),
@@ -3131,6 +3135,17 @@ class ConstructionProjectService:
         }
 
         receivable_ids = [unit.external_receivable_id for unit in units if unit.external_receivable_id]
+        try:
+            if self.erp_client is None:
+                raise RuntimeError("Integração com o ERP indisponível")
+            purchases = await self.erp_client.get_purchase_totals(company_id=company_id, project_id=project_id, user_id=user_id)
+            for field in ["approved_requisition_amount", "committed_order_amount", "realized_amount", "legacy_unknown_amount"]:
+                summary[field] = Decimal(str(purchases[field]))
+            summary["planned_cost_amount"] = summary["approved_requisition_amount"]
+            summary["measured_cost_amount"] = Decimal(str(purchases["measured_amount"]))
+            summary["purchase_phases"] = purchases.get("phases", [])
+        except Exception:
+            summary["purchase_totals_unavailable_reason"] = "Não foi possível consultar os compromissos no ERP agora."
         if receivable_ids and self.erp_client is not None:
             try:
                 erp_summary = await self.erp_client.get_receivables_summary(
@@ -4415,28 +4430,6 @@ class ConstructionProjectService:
         procurement_request: ConstructionProcurementRequest,
         actor_user_id: UUID | None,
     ) -> None:
-        if self.erp_client is None or not hasattr(self.erp_client, "validate_procurement_products"):
-            raise ConstructionInvalidValueError(
-                message="Não foi possível validar os produtos no ERP agora. Tente novamente.",
-                error_code="CONSTRUCTION_PROCUREMENT_PRODUCT_VALIDATION_UNAVAILABLE",
-            )
-        try:
-            await self.erp_client.validate_procurement_products(
-                company_id=procurement_request.company_id,
-                user_id=actor_user_id,
-                product_ids=list(dict.fromkeys(item.product_id for item in procurement_request.items)),
-            )
-        except httpx.TransportError as exc:
-            raise ConstructionDomainError(
-                message="Não foi possível conectar ao ERP para validar os produtos. Tente novamente.",
-                status_code=503,
-                error_code="CONSTRUCTION_ERP_UNAVAILABLE",
-            ) from exc
-        except Exception as exc:
-            raise ConstructionInvalidValueError(
-                message="Um ou mais produtos não existem, estão inativos ou não puderam ser validados no ERP.",
-                error_code="CONSTRUCTION_PROCUREMENT_PRODUCT_UNAVAILABLE",
-            ) from exc
         request_event = self._build_procurement_requested_event(
             procurement_request=procurement_request,
             actor_user_id=actor_user_id,
@@ -4445,6 +4438,8 @@ class ConstructionProjectService:
         request_event.payload["source_reference"] = f"{project.code} - {project.name}"[:150]
         procurement_request.status = ConstructionProcurementStatus.PENDING_APPROVAL
         # O vínculo anterior não confirma esta versão reenviada.
+        procurement_request.delivery_status = "sending"
+        procurement_request.external_snapshot_at = None
         procurement_request.external_procurement_id = None
         procurement_request.external_procurement_status = None
         dispatch_result = await self._dispatch_integration_event(event=request_event)
@@ -4454,8 +4449,34 @@ class ConstructionProjectService:
                 payload=dispatch_result.response_event.payload,
             )
 
+    async def apply_procurement_updated_event(self, *, event: EventEnvelope):
+        if event.event_type != ErpEventType.PROCUREMENT_REQUEST_UPDATED:
+            raise ConstructionInvalidValueError(message="Tipo de evento de compras inválido.",
+                error_code="CONSTRUCTION_UNSUPPORTED_ERP_EVENT")
+        source_id = self._read_uuid_payload(payload=event.payload, field_name="source_id")
+        if source_id != event.aggregate_id:
+            raise ConstructionInvalidValueError(message="A origem do evento não corresponde à requisição.",
+                error_code="CONSTRUCTION_PROCUREMENT_EVENT_INVALID")
+        request = await self.repository.get_procurement_request(company_id=event.company_id,
+            procurement_request_id=source_id, lock=True)
+        if request is None:
+            raise ConstructionNotFoundError(resource_name="a requisição de compra")
+        if not await self.event_repository.mark_processed(consumer_name=ConstructionConsumerName.PROCUREMENT_UPDATED, event=event):
+            return request
+        revision = event.payload.get("source_revision")
+        current_time = request.external_snapshot_at
+        if revision == request.submission_revision and (current_time is None or event.occurred_at >= current_time):
+            self._apply_procurement_snapshot_from_payload(procurement_request=request, payload=event.payload)
+            request.external_snapshot_at = event.occurred_at
+            request.delivery_status = "sent"
+            request.external_items = list(event.payload.get("items") or [])
+            request.external_orders = list(event.payload.get("orders") or [])
+            request.rejection_reason = event.payload.get("rejection_reason")
+        await self.repository.commit()
+        return request
+
     async def sync_procurement_statuses(self, *, company_id, actor_user_id, items):
-        if not items or actor_user_id is None or not hasattr(self.erp_client, "get_procurement_statuses"):
+        if not items or not hasattr(self.erp_client, "get_procurement_statuses"):
             return
         sent = [item for item in items if item.external_procurement_id or item.status == ConstructionProcurementStatus.PENDING_APPROVAL]
         changed = False
@@ -4471,8 +4492,14 @@ class ConstructionProjectService:
                 item = by_id.get(snapshot.get("source_id"))
                 if item is None:
                     continue
+                if snapshot.get("source_revision") != item.submission_revision:
+                    continue
                 before = (item.status, item.external_procurement_id, item.external_procurement_status, item.external_order_number, tuple(item.external_order_numbers or []), item.rejection_reason)
                 self._apply_procurement_snapshot_from_payload(procurement_request=item, payload=snapshot)
+                next_items, next_orders = list(snapshot.get("items") or []), list(snapshot.get("orders") or [])
+                changed = changed or item.external_items != next_items or item.external_orders != next_orders or item.delivery_status != "sent"
+                item.external_items, item.external_orders = next_items, next_orders
+                item.delivery_status = "sent"
                 if snapshot.get("external_procurement_status") == "REJECTED":
                     item.rejection_reason = snapshot.get("rejection_reason")
                 changed = changed or before != (item.status, item.external_procurement_id, item.external_procurement_status, item.external_order_number, tuple(item.external_order_numbers or []), item.rejection_reason)
@@ -4497,6 +4524,14 @@ class ConstructionProjectService:
 
             if self.event_repository is not None:
                 await self.event_repository.add_outbox_event(event=event)
+
+            if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED:
+                if self.event_repository is None:
+                    raise ConstructionInvalidValueError(
+                        message="Outbox indisponivel para registrar o envio de compras.",
+                        error_code="CONSTRUCTION_PROCUREMENT_OUTBOX_UNAVAILABLE",
+                    )
+                return ConstructionIntegrationDispatchResult(event=event, response_event=None, integration_mode="outbox")
 
             if self.erp_client is None:
                 return None
