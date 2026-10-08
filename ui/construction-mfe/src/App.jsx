@@ -1,3 +1,4 @@
+import { Pagination as StandalonePagination } from "./components/Pagination.jsx"
 import { getMeasurementApprovalActions } from "./features/measurementActions.js"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
@@ -39,6 +40,9 @@ import {
   itemStatusLabel,
 } from "./features/measurementInspections/inspectionVocabulary"
 import { ServiceTemplatesPanel } from "./features/serviceTemplates/ServiceTemplatesPanel.jsx"
+import { SubcontractsPanel } from "./features/subcontracts/SubcontractsPanel.jsx"
+import { ContractMeasurementFields, ContractItemFields } from "./features/subcontracts/ContractMeasurementFields.jsx"
+import { MeasurementFinancialPanel } from "./features/subcontracts/MeasurementFinancialPanel.jsx"
 import { resolveConstructionBridge } from "./bridge/constructionBridge.js"
 import {
   approveConstructionMeasurement,
@@ -203,6 +207,7 @@ const projectDetailTabs = [
   { id: "units", label: "Unidades", icon: Home },
   { id: "schedule", label: "Cronograma", icon: ListChecks },
   { id: "procurement", label: "Requisições", icon: PackageSearch },
+  { id: "subcontracts", label: "Empreitada", icon: FileText },
   { id: "reports", label: "Relatórios", icon: BarChart3 },
   { id: "integrations", label: "Integrações", icon: FileCog },
 ]
@@ -637,6 +642,8 @@ const occurrenceStatusLabel = {
 }
 
 const defaultMeasurementItemForm = {
+  subcontractItemId: "",
+  quantity: "",
   serviceTemplateId: "",
   description: "",
   amount: "",
@@ -652,6 +659,8 @@ const defaultOccurrenceForm = {
 }
 
 const defaultMeasurementForm = {
+  subcontractId: "",
+  retentionDetails: [],
   code: "",
   unitId: "",
   schedulePhaseId: "",
@@ -1107,7 +1116,7 @@ function requiredMeasurementFieldError(formMeasurement) {
   }
 
   const grossAmount = Number(formMeasurement.grossAmount || 0)
-  if (Number.isNaN(grossAmount) || grossAmount <= 0) {
+  if (!formMeasurement.subcontractId && (Number.isNaN(grossAmount) || grossAmount <= 0)) {
     return "Informe o valor bruto da medição."
   }
 
@@ -1136,6 +1145,7 @@ function requiredProcurementFieldError(formProcurement) {
 
 export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const bridge = useMemo(() => providedBridge ?? resolveConstructionBridge(), [providedBridge])
+  const ProjectPagination = bridge.components?.Pagination ?? StandalonePagination
   const [viewMode, setViewMode] = useState("projects")
   const [projectDetailTab, setProjectDetailTab] = useState("overview")
   const [activeProjectId, setActiveProjectId] = useState(null)
@@ -1363,8 +1373,6 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const hasActiveFilters = Object.values(filters).some(Boolean)
 
-  const projectRangeStart = projects.length ? (projectPage - 1) * projectPageSize + 1 : 0
-  const projectRangeEnd = (projectPage - 1) * projectPageSize + projects.length
 
   const summaryItems = useMemo(() => {
     const activeProjects = projects.filter((project) => project.status === "active").length
@@ -1491,6 +1499,9 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         projectId: activeProjectId,
       })
       setMeasurements(result.items)
+      setItemsTargetMeasurement((current) => current
+        ? result.items.find((item) => item.id === current.id) ?? current
+        : current)
     } catch (requestError) {
       setMeasurementError(requestError?.message ?? "Não foi possível carregar as medições.")
     } finally {
@@ -3249,7 +3260,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       return false
     }
 
-    if (parseCurrencyFormValue(itemForm.amount) <= 0) {
+    if (!itemForm.subcontractItemId && parseCurrencyFormValue(itemForm.amount) <= 0) {
       bridge?.feedback?.warning?.("Informe o valor do serviço medido.")
       return false
     }
@@ -3496,6 +3507,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           : String(measurement.measuredAmount),
       dueDate: measurement.dueDate ? String(measurement.dueDate).slice(0, 10) : "",
       supplierPersonId: measurement.supplierPersonId ?? "",
+      subcontractId: measurement.subcontractId ?? "",
+      retentionDetails: measurement.retentionDetails ?? [],
       documentType: measurement.documentType ?? "",
       documentNumber: measurement.documentNumber ?? "",
     })
@@ -3930,47 +3943,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
               />
             }
             footer={
-              <div className={styles.paginationBar}>
-                <span className={styles.paginationSummary}>
-                  {totalProjects
-                    ? `Mostrando ${projectRangeStart}-${projectRangeEnd} de ${totalProjects} obras`
-                    : "Nenhuma obra para exibir"}
-                </span>
-                <div className={styles.paginationControls}>
-                  <label className={styles.paginationPageSize}>
-                    <span>Itens por página</span>
-                    <select
-                      value={projectPageSize}
-                      onChange={(event) => handleProjectPageSizeChange(event.target.value)}
-                    >
-                      {projectPageSizeOptions.map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    type="button"
-                    className={styles.paginationButton}
-                    onClick={() => setProjectPage((current) => Math.max(1, current - 1))}
-                    disabled={loading || projectPage <= 1}
-                  >
-                    Anterior
-                  </button>
-                  <span className={styles.paginationSummary}>
-                    Página {projectPage} de {projectTotalPages || 1}
-                  </span>
-                  <button
-                    type="button"
-                    className={styles.paginationButton}
-                    onClick={() => setProjectPage((current) => current + 1)}
-                    disabled={loading || projectPage >= projectTotalPages}
-                  >
-                    Próxima
-                  </button>
-                </div>
-              </div>
+              <ProjectPagination currentPage={projectPage} totalPages={projectTotalPages}
+                totalItems={totalProjects} pageSize={projectPageSize} isLoading={loading}
+                pageSizeOptions={projectPageSizeOptions} onPageChange={setProjectPage}
+                onPageSizeChange={(size) => handleProjectPageSizeChange(size)} />
             }
           />
         </>
@@ -4180,6 +4156,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
               }
             />
           ) : null}
+
+          {projectDetailTab === "subcontracts" ? <DomainCard title="Contratos de empreitada"
+            subtitle="Planilha liberada, medições por quantidade e saldo contratado."
+            content={<SubcontractsPanel bridge={bridge} projectId={activeProjectId} />} /> : null}
 
           {projectDetailTab === "reports" ? (
             <DomainCard
@@ -4401,7 +4381,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           error={measurementItemsError}
           saving={savingMeasurementItem}
           onClose={closeMeasurementItems}
-          onRetry={() => loadMeasurementItems(itemsTargetMeasurement.id)}
+          onRetry={() => Promise.all([
+            loadMeasurementItems(itemsTargetMeasurement.id),
+            loadMeasurements(),
+          ])}
           onCreateItem={handleCreateMeasurementItem}
           onDeleteItem={handleDeleteMeasurementItem}
           onCreateInspection={handleCreateInspection}
@@ -4416,6 +4399,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
       {isMeasurementModalOpen ? (
         <MeasurementModal
+          bridge={bridge}
+          projectId={activeProjectId}
           mode={measurementModalMode}
           measurementForm={measurementForm}
           people={personSummaries}
@@ -7703,6 +7688,8 @@ function ProcurementModal({ bridge, mode, procurementForm, people, schedulePhase
 }
 
 function MeasurementModal({
+  bridge,
+  projectId,
   mode,
   measurementForm,
   people,
@@ -7730,6 +7717,7 @@ function MeasurementModal({
           </button>
         </header>
         <form className={styles.modalBody} onSubmit={onSubmit}>
+          <ContractMeasurementFields bridge={bridge} projectId={projectId} form={measurementForm} onChange={onChange} />
           <div className={styles.formGrid}>
             <label className={styles.filterControl}>
               <span>Código*</span>
@@ -7827,7 +7815,8 @@ function MeasurementModal({
                 step="0.01"
                 value={measurementForm.grossAmount}
                 onChange={(event) => onChange("grossAmount", event.target.value)}
-                required
+                required={!measurementForm.subcontractId}
+                disabled={Boolean(measurementForm.subcontractId)}
               />
             </label>
             <label className={styles.filterControl}>
@@ -7837,6 +7826,7 @@ function MeasurementModal({
                 min="0"
                 step="0.01"
                 value={measurementForm.retentionsAmount}
+                disabled={Boolean(measurementForm.subcontractId)}
                 onChange={(event) => onChange("retentionsAmount", event.target.value)}
               />
             </label>
@@ -7847,6 +7837,7 @@ function MeasurementModal({
                 min="0"
                 step="0.01"
                 value={measurementForm.netAmount}
+                disabled={Boolean(measurementForm.subcontractId)}
                 onChange={(event) => onChange("netAmount", event.target.value)}
               />
             </label>
@@ -7855,6 +7846,7 @@ function MeasurementModal({
               <input
                 type="text"
                 value={measurementForm.documentType}
+                required={Boolean(measurementForm.subcontractId)}
                 onChange={(event) => onChange("documentType", event.target.value)}
               />
             </label>
@@ -7863,6 +7855,7 @@ function MeasurementModal({
               <input
                 type="text"
                 value={measurementForm.documentNumber}
+                required={Boolean(measurementForm.subcontractId)}
                 onChange={(event) => onChange("documentNumber", event.target.value)}
               />
             </label>
@@ -9098,7 +9091,7 @@ function MeasurementItemsModal({
 
   const handleItemSubmit = async (event) => {
     event.preventDefault()
-    const created = await onCreateItem(itemForm)
+    const created = await onCreateItem(itemForm.subcontractItemId ? { ...itemForm, amount: null } : itemForm)
     if (created) {
       setItemForm(defaultMeasurementItemForm)
     }
@@ -9120,6 +9113,7 @@ function MeasurementItemsModal({
           </button>
         </header>
         <div className={styles.modalBody}>
+          <MeasurementFinancialPanel key={measurement.id} bridge={bridge} measurement={measurement} onRefresh={onRetry} />
           <div className={styles.integrationGrid}>
             <article className={styles.integrationCard}>
               <h3>Total dos itens</h3>
@@ -9146,6 +9140,7 @@ function MeasurementItemsModal({
             </p>
           ) : (
             <form className={styles.card} onSubmit={handleItemSubmit}>
+              <ContractItemFields bridge={bridge} measurement={measurement} form={itemForm} onChange={handleItemChange} />
               <div className={styles.scopeHeader}>
                 <div className={styles.scopeMeta}>
                   <strong>Novo serviço medido</strong>
@@ -9211,9 +9206,10 @@ function MeasurementItemsModal({
                     type="text"
                     inputMode="decimal"
                     value={itemForm.amount}
+                    disabled={Boolean(measurement.subcontractId)}
                     onChange={(event) => handleItemChange("amount", formatCurrencyInput(event.target.value))}
                     placeholder="0,00"
-                    required
+                    required={!measurement.subcontractId}
                   />
                 </label>
                 <label className={styles.filterControl}>

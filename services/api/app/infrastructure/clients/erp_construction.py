@@ -155,6 +155,35 @@ class ErpConstructionClient:
             response.raise_for_status()
             return response.json()
 
+    async def get_direct_billing_document(self, *, company_id, project_id, document_id, user_id):
+        headers = {"X-Service-Key": settings.erp_service_key or "", "X-Company-ID": str(company_id)}
+        if user_id:
+            headers["X-User-ID"] = str(user_id)
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.get(f"/v1/internal/construction/projects/{project_id}/direct-billing-documents/{document_id}", headers=headers)
+            response.raise_for_status()
+            return response.json()
+
+    async def list_direct_billing_documents(self, *, company_id, project_id, user_id, search=None):
+        headers = {"X-Service-Key": settings.erp_service_key or "", "X-Company-ID": str(company_id)}
+        if user_id:
+            headers["X-User-ID"] = str(user_id)
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.get(f"/v1/internal/construction/projects/{project_id}/direct-billing-documents",
+                headers=headers, params={"search": search or ""})
+            response.raise_for_status()
+            return response.json()
+
+    async def cancel_measurement_payable(self, *, company_id, measurement_id, user_id, reason):
+        headers = {"X-Service-Key": settings.erp_service_key or "", "X-Company-ID": str(company_id)}
+        if user_id:
+            headers["X-User-ID"] = str(user_id)
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=15) as client:
+            response = await client.post(f"/v1/internal/construction/measurements/{measurement_id}/cancel-payable",
+                headers=headers, json={"reason": reason})
+            response.raise_for_status()
+            return response.json()
+
     async def get_person_name(
         self,
         *,

@@ -41,7 +41,8 @@ class ConstructionIntegrationDispatcher:
         self.integration_mode = integration_mode
 
     async def dispatch(self, *, event: EventEnvelope) -> ConstructionIntegrationDispatchResult:
-        deferred = event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED
+        deferred = event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED or (
+            event.event_type == ConstructionEventType.MEASUREMENT_APPROVED and event.payload.get("subcontract_id"))
         if deferred and self.event_repository is None:
             raise ValueError("O envio de compras exige um outbox persistente.")
         if self.event_repository is not None:

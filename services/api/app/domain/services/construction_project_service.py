@@ -43,6 +43,7 @@ from app.domain.events.constants import (
 from app.domain.events.contracts import EventEnvelope
 from app.domain.services.construction_integration_dispatcher import ConstructionIntegrationDispatchResult
 from app.domain.services.construction_service_template_parser import parse_service_template_spreadsheet
+from app.domain.services.subcontract_service import SubcontractService
 from app.infrastructure.database.models import (
     ConstructionBlock,
     ConstructionDocumentationType as ConstructionDocumentationTypeModel,
@@ -1238,8 +1239,17 @@ class ConstructionProjectService:
                 project_id=project_id,
             )
 
+        subcontract = None
+        if request.subcontract_id:
+            subcontract = await SubcontractService(self).get(company_id, request.subcontract_id)
+            if subcontract.project_id != project_id or subcontract.status != "RELEASED":
+                raise ConstructionInvalidValueError(message="Selecione contrato liberado desta obra.")
+            if request.supplier_person_id and request.supplier_person_id != subcontract.supplier_person_id:
+                raise ConstructionInvalidValueError(message="O fornecedor da medição precisa corresponder ao contrato.")
         gross_amount = request.gross_amount or request.measured_amount
-        if gross_amount is None or gross_amount <= Decimal("0"):
+        if subcontract and gross_amount is None:
+            gross_amount = Decimal("0")
+        if gross_amount is None or gross_amount <= Decimal("0") and subcontract is None:
             raise ConstructionInvalidValueError(
                 message="Informe o valor bruto da medição.",
                 error_code="CONSTRUCTION_MEASUREMENT_GROSS_REQUIRED",
@@ -1247,7 +1257,7 @@ class ConstructionProjectService:
 
         retentions_amount = request.retentions_amount or Decimal("0")
         net_amount = request.net_amount or request.measured_amount or (gross_amount - retentions_amount)
-        if net_amount <= Decimal("0"):
+        if net_amount <= Decimal("0") and subcontract is None:
             raise ConstructionInvalidValueError(
                 message="O valor líquido da medição precisa ser maior que zero.",
                 error_code="CONSTRUCTION_MEASUREMENT_NET_INVALID",
@@ -1256,6 +1266,8 @@ class ConstructionProjectService:
         measurement = ConstructionMeasurement(
             company_id=company_id,
             project_id=project_id,
+            subcontract_id=subcontract.id if subcontract else None,
+            retention_details=[item.model_dump(mode="json") for item in request.retention_details],
             unit_id=request.unit_id,
             schedule_phase_id=request.schedule_phase_id,
             code=request.code.strip(),
@@ -1270,11 +1282,11 @@ class ConstructionProjectService:
             document_number=request.document_number.strip() if request.document_number else None,
             measured_amount=net_amount,
             due_date=request.due_date,
-            supplier_person_id=request.supplier_person_id,
+            supplier_person_id=subcontract.supplier_person_id if subcontract else request.supplier_person_id,
             supplier_qualification_status=await self._resolve_supplier_qualification_status(
                 company_id=company_id,
                 actor_user_id=actor_user_id,
-                supplier_person_id=request.supplier_person_id,
+                supplier_person_id=subcontract.supplier_person_id if subcontract else request.supplier_person_id,
             ),
             status=ConstructionMeasurementStatus.DRAFT,
             created_by_user_id=actor_user_id,
@@ -1303,13 +1315,17 @@ class ConstructionProjectService:
         request: ConstructionMeasurementUpdate,
     ) -> ConstructionMeasurement:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
-        if measurement.status == ConstructionMeasurementStatus.APPROVED:
+        if measurement.status in {ConstructionMeasurementStatus.APPROVED, ConstructionMeasurementStatus.PAID}:
             raise ConstructionInvalidValueError(
                 message="Medição aprovada não pode ser alterada.",
                 error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
             )
 
         updates = request.model_dump(exclude_unset=True)
+        if "subcontract_id" in updates or getattr(measurement, "subcontract_id", None):
+            await SubcontractService(self).bind_parent(measurement, updates)
+        if "retention_details" in updates:
+            updates["retention_details"] = [item.model_dump(mode="json") for item in (request.retention_details or [])]
         if "unit_id" in updates:
             unit = await self._get_unit(company_id=company_id, unit_id=updates["unit_id"])
             if unit.project_id != measurement.project_id:
@@ -1408,7 +1424,7 @@ class ConstructionProjectService:
         actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurement:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
-        if measurement.status == ConstructionMeasurementStatus.APPROVED:
+        if measurement.status in {ConstructionMeasurementStatus.APPROVED, ConstructionMeasurementStatus.PAID}:
             raise ConstructionInvalidValueError(
                 message="Medição aprovada não pode ser rejeitada.",
                 error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
@@ -1430,6 +1446,10 @@ class ConstructionProjectService:
         actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurement:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
+        if getattr(measurement, "subcontract_id", None):
+            measurement = await SubcontractService(self).repository.measurement(company_id, measurement_id, True)
+            if measurement.reversal_pending:
+                raise ConstructionInvalidValueError(message="Aguarde a confirmação do estorno financeiro da medição.")
         if (
             measurement.status == ConstructionMeasurementStatus.APPROVED
             and measurement.external_accounts_payable_id is not None
@@ -1437,6 +1457,13 @@ class ConstructionProjectService:
             return measurement
 
         retry_integration = measurement.status == ConstructionMeasurementStatus.APPROVED
+        if retry_integration and getattr(measurement, "subcontract_id", None):
+            event = await self.event_repository.latest_measurement_event(company_id, measurement.id) if self.event_repository else None
+            if event is not None:
+                if event.status == "dead_letter":
+                    event.status, event.retry_count, event.last_error, event.next_attempt_at = "pending", 0, None, None
+                    await self.repository.commit()
+                return measurement
         if measurement.status == ConstructionMeasurementStatus.PAID:
             raise ConstructionInvalidValueError(
                 message="A medição já está paga e não pode ser aprovada novamente.",
@@ -1491,6 +1518,8 @@ class ConstructionProjectService:
 
         if not retry_integration:
             await self._sync_measurement_amounts_from_items(measurement=measurement)
+            if getattr(measurement, "subcontract_id", None):
+                await SubcontractService(self).consume(measurement)
 
             measurement.status = ConstructionMeasurementStatus.APPROVED
             measurement.rejection_reason = None
@@ -1591,13 +1620,17 @@ class ConstructionProjectService:
             product_id=request.product_id or (service_template.product_id if service_template else None),
             product_description=(request.product_description or "").strip() or None,
             description=description,
-            amount=request.amount.quantize(Decimal("0.01")),
+            amount=(request.amount or Decimal("0")).quantize(Decimal("0.01")),
             start_date=request.start_date,
             end_date=request.end_date,
             inspector_person_id=request.inspector_person_id,
             inspection_status=ConstructionInspectionStatus.PENDING,
             created_by_user_id=actor_user_id,
         )
+        if getattr(measurement, "subcontract_id", None):
+            await SubcontractService(self).bind_item(measurement, item, request.subcontract_item_id, request.quantity)
+        elif request.subcontract_item_id or request.quantity is not None:
+            raise ConstructionInvalidValueError(message="Vincule a medição ao contrato antes de selecionar o item contratado.")
         self._validate_item_period(start_date=item.start_date, end_date=item.end_date)
         self._validate_not_in_the_future(start_date=item.start_date, end_date=item.end_date)
         template_has_items = service_template is not None and any(
@@ -1663,6 +1696,8 @@ class ConstructionProjectService:
             updates["amount"] = updates["amount"].quantize(Decimal("0.01"))
 
         self._apply_updates(entity=item, updates=updates)
+        if getattr(measurement, "subcontract_id", None):
+            await SubcontractService(self).bind_item(measurement, item, item.subcontract_item_id, item.quantity)
         self._validate_item_period(start_date=item.start_date, end_date=item.end_date)
         self._validate_not_in_the_future(start_date=item.start_date, end_date=item.end_date)
         if "end_date" in updates and item.end_date is not None:
@@ -1678,6 +1713,8 @@ class ConstructionProjectService:
             company_id=company_id,
             measurement_id=item.measurement_id,
         )
+        if getattr(measurement, "subcontract_id", None) and await SubcontractService(self).repository.item_has_history(company_id, item_id):
+            raise ConstructionInvalidValueError(message="O item possui histórico de consumo contratual e precisa ser preservado.")
         await self.repository.delete(item)
         await self.repository.commit()
         await self._sync_measurement_amounts_from_items(measurement=measurement)
@@ -3141,6 +3178,7 @@ class ConstructionProjectService:
             purchases = await self.erp_client.get_purchase_totals(company_id=company_id, project_id=project_id, user_id=user_id)
             for field in ["approved_requisition_amount", "committed_order_amount", "realized_amount", "legacy_unknown_amount"]:
                 summary[field] = Decimal(str(purchases[field]))
+            summary["committed_order_amount"] = Decimal(str(purchases.get("committed_total_amount", purchases["committed_order_amount"])))
             summary["planned_cost_amount"] = summary["approved_requisition_amount"]
             summary["measured_cost_amount"] = Decimal(str(purchases["measured_amount"]))
             summary["purchase_phases"] = purchases.get("phases", [])
@@ -3874,10 +3912,14 @@ class ConstructionProjectService:
             measurement_id=measurement.id,
         )
         if items_amount <= Decimal("0"):
+            if getattr(measurement, "subcontract_id", None):
+                raise ConstructionInvalidValueError(message="A medição contratual precisa de itens e valor positivo.")
             return
 
         retentions_amount = measurement.retentions_amount or Decimal("0")
         net_amount = items_amount - retentions_amount
+        if getattr(measurement, "subcontract_id", None):
+            net_amount = await SubcontractService(self).financial_amounts(measurement, items_amount)
         if net_amount <= Decimal("0"):
             raise ConstructionInvalidValueError(
                 message="As retenções da medição não podem passar da soma dos itens.",
@@ -4143,6 +4185,16 @@ class ConstructionProjectService:
             "supplier_person_id": str(measurement.supplier_person_id) if measurement.supplier_person_id else None,
             "analytic_cost_center_id": str(analytic_cost_center_id),
         }
+        if getattr(measurement, "subcontract_id", None):
+            payload.update({"subcontract_id": str(measurement.subcontract_id),
+                "approval_cycle": measurement.approval_cycle,
+                "subcontract_version_id": str(measurement.subcontract_version_id),
+                "gross_amount": str(measurement.gross_amount), "retentions_amount": str(measurement.retentions_amount),
+                "escrow_amount": str(measurement.escrow_amount),
+                "escrow_due_date": measurement.escrow_due_date.isoformat() if measurement.escrow_due_date else None,
+                "direct_billing_amount": str(measurement.direct_billing_amount),
+                "document_type": measurement.document_type, "document_number": measurement.document_number})
+            payload["retention_details"] = measurement.retention_details
         if actor_user_id is not None:
             payload["user_id"] = str(actor_user_id)
 
@@ -4525,7 +4577,8 @@ class ConstructionProjectService:
             if self.event_repository is not None:
                 await self.event_repository.add_outbox_event(event=event)
 
-            if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED:
+            if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED or (
+                event.event_type == ConstructionEventType.MEASUREMENT_APPROVED and event.payload.get("subcontract_id")):
                 if self.event_repository is None:
                     raise ConstructionInvalidValueError(
                         message="Outbox indisponivel para registrar o envio de compras.",

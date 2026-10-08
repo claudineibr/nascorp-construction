@@ -155,6 +155,9 @@ const toDocumentationTypeView = (documentationType) => ({
 })
 
 const toMeasurementItemView = (item) => ({
+  subcontractItemId: item.subcontract_item_id ?? null,
+  quantity: item.quantity ?? null,
+  contractSnapshot: item.contract_snapshot ?? null,
   id: item.id,
   companyId: item.company_id,
   measurementId: item.measurement_id,
@@ -271,6 +274,13 @@ const toMeasurementView = (measurement) => ({
   competenceDate: measurement.competence_date ?? null,
   description: measurement.description ?? "",
   grossAmount: measurement.gross_amount ?? null,
+  subcontractId: measurement.subcontract_id ?? null,
+  subcontractVersionId: measurement.subcontract_version_id ?? null,
+  retentionDetails: measurement.retention_details ?? [],
+  escrowAmount: measurement.escrow_amount ?? "0",
+  escrowDueDate: measurement.escrow_due_date ?? null,
+  directBillingAmount: measurement.direct_billing_amount ?? "0",
+  reversalPending: measurement.reversal_pending ?? false,
   retentionsAmount: measurement.retentions_amount ?? null,
   netAmount: measurement.net_amount ?? null,
   measuredAmount: measurement.measured_amount,
@@ -470,6 +480,8 @@ const toUnitPayload = (unitData = {}) => ({
 })
 
 const toMeasurementPayload = (measurementData = {}) => ({
+  subcontract_id: toNullableString(measurementData.subcontractId),
+  retention_details: measurementData.retentionDetails ?? [],
   code: String(measurementData.code ?? "").trim(),
   unit_id: toNullableString(measurementData.unitId),
   schedule_phase_id: toNullableString(measurementData.schedulePhaseId),
@@ -525,6 +537,8 @@ export async function searchConstructionProducts({ bridge, search }) {
 const currencyInputToDecimal = currencyDecimal
 
 const toMeasurementItemPayload = (itemData = {}) => ({
+  subcontract_item_id: toNullableString(itemData.subcontractItemId),
+  quantity: itemData.quantity || null,
   description: toNullableString(itemData.description),
   service_template_id: toNullableString(itemData.serviceTemplateId),
   amount: toNullableNumber(itemData.amount),
@@ -615,6 +629,9 @@ async function requestJson({ bridge, path, method = "GET", body = null, baseUrl 
 
   return response.json()
 }
+
+export const subcontractRequest = ({ bridge, path, method = "GET", body = null }) =>
+  requestJson({ bridge, path: `/v1/construction${path}`, method, body })
 
 export async function fetchConstructionAddressByZip({ bridge, zipCode }) {
   const normalizedZip = stripNonDigits(zipCode).slice(0, 8)

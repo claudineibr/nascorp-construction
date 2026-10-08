@@ -480,8 +480,16 @@ class ConstructionSchedulePhaseListResponse(BaseModel):
     total: int
 
 
+class ConstructionMeasurementRetention(BaseModel):
+    tax_type: Literal["IRRF", "INSS", "ISS", "PIS", "COFINS", "CSLL"]
+    tax_amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    due_date: date | None = None
+
+
 class ConstructionMeasurementCreate(BaseModel):
     code: str = Field(..., min_length=1, max_length=50)
+    subcontract_id: UUID | None = None
+    retention_details: list[ConstructionMeasurementRetention] = Field(default_factory=list, max_length=20)
     unit_id: UUID
     schedule_phase_id: UUID
     sequence_number: int | None = Field(default=None, ge=1)
@@ -500,6 +508,8 @@ class ConstructionMeasurementCreate(BaseModel):
 
 class ConstructionMeasurementUpdate(BaseModel):
     code: str | None = Field(default=None, min_length=1, max_length=50)
+    subcontract_id: UUID | None = None
+    retention_details: list[ConstructionMeasurementRetention] | None = Field(default=None, max_length=20)
     unit_id: UUID | None = None
     schedule_phase_id: UUID | None = None
     sequence_number: int | None = Field(default=None, ge=1)
@@ -521,6 +531,13 @@ class ConstructionMeasurementReject(BaseModel):
 
 
 class ConstructionMeasurementResponse(BaseModel):
+    reversal_pending: bool = False
+    retention_details: list[ConstructionMeasurementRetention] = Field(default_factory=list)
+    subcontract_id: UUID | None = None
+    subcontract_version_id: UUID | None = None
+    escrow_amount: Decimal = Decimal("0")
+    escrow_due_date: date | None = None
+    direct_billing_amount: Decimal = Decimal("0")
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -735,8 +752,10 @@ class ConstructionServiceTemplateImportResponse(BaseModel):
 
 
 class ConstructionMeasurementItemCreate(BaseModel):
+    subcontract_item_id: UUID | None = None
+    quantity: Decimal | None = Field(default=None, gt=0, max_digits=20, decimal_places=8)
     description: str | None = Field(default=None, min_length=1, max_length=2000)
-    amount: Decimal = Field(..., gt=0)
+    amount: Decimal | None = Field(default=None, gt=0)
     sequence_number: int | None = Field(default=None, ge=1)
     service_template_id: UUID | None = None
     product_id: UUID | None = None
@@ -745,8 +764,18 @@ class ConstructionMeasurementItemCreate(BaseModel):
     end_date: date | None = None
     inspector_person_id: UUID | None = None
 
+    @model_validator(mode="after")
+    def validate_contract_quantity(self):
+        if self.subcontract_item_id and self.quantity is None:
+            raise ValueError("Informe a quantidade do item contratado.")
+        if self.subcontract_item_id is None and self.amount is None:
+            raise ValueError("Informe o valor do item avulso.")
+        return self
+
 
 class ConstructionMeasurementItemUpdate(BaseModel):
+    subcontract_item_id: UUID | None = None
+    quantity: Decimal | None = Field(default=None, gt=0, max_digits=20, decimal_places=8)
     description: str | None = Field(default=None, min_length=1, max_length=2000)
     amount: Decimal | None = Field(default=None, gt=0)
     product_id: UUID | None = None
@@ -894,6 +923,9 @@ class ConstructionMeasurementItemOccurrenceResponse(BaseModel):
 
 
 class ConstructionMeasurementItemResponse(BaseModel):
+    subcontract_item_id: UUID | None = None
+    quantity: Decimal | None = None
+    contract_snapshot: dict | None = None
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID

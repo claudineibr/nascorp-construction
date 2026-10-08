@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import and_, or_, select
@@ -101,6 +101,28 @@ class EventRepository:
             OutboxEvent.company_id == company_id, OutboxEvent.aggregate_id == aggregate_id,
             OutboxEvent.event_type == ConstructionEventType.PROCUREMENT_REQUESTED,
         ).order_by(OutboxEvent.occurred_at.desc()).limit(1).with_for_update())
+
+    async def latest_measurement_event(self, company_id, measurement_id):
+        return await self.session.scalar(select(OutboxEvent).where(OutboxEvent.company_id == company_id,
+            OutboxEvent.aggregate_id == measurement_id, OutboxEvent.event_type == ConstructionEventType.MEASUREMENT_APPROVED)
+            .order_by(OutboxEvent.occurred_at.desc()).limit(1).with_for_update())
+
+    async def claim_contract_measurement(self, now):
+        row = await self.session.scalar(select(OutboxEvent).where(
+            OutboxEvent.event_type == ConstructionEventType.MEASUREMENT_APPROVED,
+            OutboxEvent.payload["subcontract_id"].astext.is_not(None),
+            OutboxEvent.status.in_([EventStatus.PENDING, EventStatus.FAILED]), OutboxEvent.retry_count < 3,
+            or_(OutboxEvent.next_attempt_at.is_(None), OutboxEvent.next_attempt_at <= now),
+            or_(OutboxEvent.lease_until.is_(None), OutboxEvent.lease_until <= now))
+            .order_by(OutboxEvent.occurred_at).limit(1).with_for_update(skip_locked=True))
+        if row:
+            row.lease_owner, row.lease_until = uuid4(), now + timedelta(minutes=5)
+            await self.session.commit()
+        return row
+
+    async def leased_event(self, event_id):
+        return await self.session.scalar(select(OutboxEvent).where(OutboxEvent.id == event_id)
+            .with_for_update().execution_options(populate_existing=True))
 
     async def commit(self) -> None:
         await self.session.commit()

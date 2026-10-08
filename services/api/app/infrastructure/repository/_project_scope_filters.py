@@ -35,6 +35,7 @@ from app.infrastructure.database.models import (
     ConstructionMeasurementItemInspection,
     ConstructionMeasurementItemOccurrence,
     ConstructionProcurementRequest,
+    ConstructionProcurementItem,
     ConstructionProject,
     ConstructionSchedulePhase,
     ConstructionServiceTemplate,
@@ -46,11 +47,18 @@ from app.infrastructure.database.models import (
     ConstructionUnitDocumentation,
     ConstructionUnitPaymentSource,
 )
+from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction
 
 # Tabelas que chegam na obra por um salto de chave estrangeira: (pai, coluna).
 # A recursão para nas cinco que têm `project_id` -- e em `ConstructionProject`,
 # que é a própria obra.
 _CAMINHO = {
+    ConstructionProcurementItem: (ConstructionProcurementRequest, "procurement_request_id"),
+    ConstructionSubcontractItem: (ConstructionSubcontract, "contract_id"),
+    ConstructionSubcontractVersion: (ConstructionSubcontract, "contract_id"),
+    ConstructionSubcontractConsumption: (ConstructionMeasurement, "measurement_id"),
+    ConstructionSubcontractDirectBill: (ConstructionSubcontract, "contract_id"),
+    ConstructionSubcontractDeduction: (ConstructionMeasurement, "measurement_id"),
     ConstructionUnitPaymentSource: (ConstructionUnit, "unit_id"),
     ConstructionUnitDocumentation: (ConstructionUnit, "unit_id"),
     ConstructionUnitCommission: (ConstructionUnit, "unit_id"),
@@ -64,6 +72,7 @@ _CAMINHO = {
 
 # Tabelas com `project_id` próprio: um passo só.
 _COM_OBRA = (
+    ConstructionSubcontract,
     ConstructionBlock,
     ConstructionUnit,
     ConstructionSchedulePhase,
