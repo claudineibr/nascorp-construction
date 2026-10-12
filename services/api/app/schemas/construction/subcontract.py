@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 class SubcontractItemRequest(BaseModel):
     id: UUID | None = None
     product_id: UUID | None = None
+    service_template_id: UUID | None = None
     description: str = Field(min_length=1, max_length=500)
     unit_of_measure: str = Field(min_length=1, max_length=20)
     quantity: Decimal = Field(gt=0, max_digits=20, decimal_places=8)

@@ -244,6 +244,13 @@
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
+.unitFilters {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 320px);
+  margin-bottom: 0.9rem;
+}
+
 .filterControl {
   color: var(--color-text);
   display: flex;
@@ -795,6 +802,11 @@
   width: min(920px, 100%);
 }
 
+.modalCardWide {
+  max-width: 1280px;
+  width: min(1280px, 100%);
+}
+
 .modalHeader {
   align-items: center;
   border-bottom: 1px solid var(--color-border);
@@ -882,6 +894,11 @@
   align-items: flex-end;
   display: flex;
   min-height: 64px;
+}
+
+.paginationSlot > * {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .paginationSummary {
@@ -1035,6 +1052,12 @@
 }
 
 .procurementSection {
+  color: var(--color-text);
+  display: flex;
+  flex-direction: column;
+  font-size: 0.9rem;
+  font-weight: 600;
+  gap: 0.4rem;
   min-width: 0;
 }
 
@@ -1051,6 +1074,11 @@
   z-index: 2;
 }
 
+.procurementModal .modalBody,
+.procurementModal .formGrid > * {
+  min-width: 0;
+}
+
 .procurementModal .formGrid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -1065,7 +1093,8 @@
   height: 4rem;
 }
 
-.procurementModal .filterControl > input {
+.procurementModal .filterControl > input,
+.procurementModal textarea {
   box-sizing: border-box;
   min-width: 0;
   width: 100%;
@@ -1078,14 +1107,30 @@
   box-sizing: border-box;
   display: grid;
   gap: 0.55rem;
-  grid-template-columns: minmax(0, 1fr) 6rem 4.5rem 12rem 11rem 2.25rem;
+  grid-template-columns: 6rem 4.5rem repeat(3, minmax(0, 1fr)) minmax(0, 0.8fr);
   padding: 0.7rem;
+  position: relative;
 }
 
 .procurementItem > strong {
   align-self: center;
+  grid-column: 1 / -1;
+  min-height: 2.25rem;
   min-width: 0;
   overflow-wrap: anywhere;
+  padding-right: 3rem;
+}
+
+.procurementItem > .iconButton {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  height: 2.25rem;
+  padding: 0;
+  position: absolute;
+  right: 0.7rem;
+  top: 0.7rem;
+  width: 2.25rem;
 }
 
 .procurementItem label {
@@ -1094,10 +1139,23 @@
   min-width: 0;
 }
 
-.procurementItem input {
+.procurementItem input,
+.procurementItem select {
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
   box-sizing: border-box;
+  color: var(--color-text);
   min-width: 0;
+  padding: calc(0.65rem * var(--density-control, 1)) 0.65rem;
   width: 100%;
+}
+
+.procurementItem input:focus,
+.procurementItem select:focus {
+  border-color: var(--color-primary);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--color-focus-ring);
 }
 
 .procurementItem label span,
@@ -1160,6 +1218,27 @@
   }
 }
 
+@media (max-width: 1000px) {
+  .procurementItem {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .procurementModal .modalFooter {
+    flex-wrap: wrap;
+  }
+
+  .procurementItem {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .procurementItem label:nth-of-type(n + 3),
+  .procurementLineTotal {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (max-width: 760px) {
   .procurementModal .formGrid {
     grid-template-columns: minmax(0, 1fr);
@@ -1201,10 +1280,6 @@
 
   .spanTwoColumns {
     grid-column: span 1;
-  }
-
-  .procurementItem {
-    grid-template-columns: 1fr;
   }
 
   .procurementTotals {

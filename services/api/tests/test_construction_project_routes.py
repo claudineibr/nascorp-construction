@@ -70,7 +70,7 @@ class FakeProjectService:
             id=uuid4(),
             company_id=company_id,
             project_id=project_id,
-            code=request.code,
+            code="MED-000001",
             description=request.description,
             measured_amount=request.measured_amount,
             due_date=request.due_date,
@@ -469,7 +469,6 @@ def test_create_measurement_denies_missing_create_permission() -> None:
             "X-Company-ID": str(company_id),
         },
         json={
-            "code": "MED-001",
             "measured_amount": "1200.00",
             "due_date": "2026-05-15",
         },
@@ -491,7 +490,6 @@ def test_create_measurement_accepts_valid_permission() -> None:
             "X-Company-ID": str(company_id),
         },
         json={
-            "code": "MED-001",
             "unit_id": str(uuid4()),
             "schedule_phase_id": str(uuid4()),
             "description": "Medição fase fundação",
@@ -504,7 +502,7 @@ def test_create_measurement_accepts_valid_permission() -> None:
     payload = response.json()
     assert payload["company_id"] == str(company_id)
     assert payload["project_id"] == str(project_id)
-    assert payload["code"] == "MED-001"
+    assert payload["code"] == "MED-000001"
     assert payload["status"] == "draft"
 
 

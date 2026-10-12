@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 from datetime import date
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from decimal import Decimal
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import Integer, cast, delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.domain.constants import ConstructionInspectionStatus, ConstructionOccurrenceStatus
+from app.domain.constants import (
+    ConstructionInspectionStatus,
+    ConstructionMeasurementStatus,
+    ConstructionOccurrenceStatus,
+    ConstructionUnitStatus,
+)
 from app.infrastructure.repository._project_scope_filters import scope_conditions
 
 from app.infrastructure.database.models import (
@@ -29,9 +34,26 @@ from app.infrastructure.database.models import (
     ConstructionMeasurementItemOccurrence,
     ConstructionProcurementRequest,
     ConstructionProject,
+    ConstructionProjectServiceTemplate,
     ConstructionSchedulePhase,
     ConstructionUnit,
 )
+
+BUYER_HOLDING_UNIT_STATUSES = (
+    ConstructionUnitStatus.RESERVED,
+    ConstructionUnitStatus.SOLD,
+    ConstructionUnitStatus.DELIVERED,
+)
+
+
+def _buyer_unit_conditions(buyer_person_id: UUID) -> list:
+    return [
+        or_(
+            ConstructionUnit.buyer_person_id == buyer_person_id,
+            ConstructionUnit.secondary_buyer_person_id == buyer_person_id,
+        ),
+        ConstructionUnit.status.in_(BUYER_HOLDING_UNIT_STATUSES),
+    ]
 
 
 class ConstructionRepository:
@@ -125,6 +147,7 @@ class ConstructionRepository:
         status: str | None = None,
         start_date_from: date | None = None,
         start_date_to: date | None = None,
+        buyer_person_id: UUID | None = None,
         page: int,
         page_size: int,
     ) -> tuple[list[ConstructionProject], int]:
@@ -143,6 +166,15 @@ class ConstructionRepository:
             conditions.append(ConstructionProject.start_date >= start_date_from)
         if start_date_to is not None:
             conditions.append(ConstructionProject.start_date <= start_date_to)
+        if buyer_person_id is not None:
+            conditions.append(
+                select(ConstructionUnit.id)
+                .where(
+                    ConstructionUnit.project_id == ConstructionProject.id,
+                    *_buyer_unit_conditions(buyer_person_id),
+                )
+                .exists()
+            )
 
         total_result = await self.session.execute(select(func.count()).select_from(ConstructionProject).where(*conditions))
         total = int(total_result.scalar_one())
@@ -159,6 +191,34 @@ class ConstructionRepository:
             .limit(page_size)
         )
         return list(result.scalars().all()), total
+
+    async def list_buyer_units(
+        self,
+        *,
+        company_id: UUID,
+        project_ids: list[UUID],
+        buyer_person_id: UUID,
+    ) -> list:
+        if not project_ids:
+            return []
+        result = await self.session.execute(
+            select(
+                ConstructionUnit.project_id,
+                ConstructionUnit.id.label("unit_id"),
+                ConstructionUnit.code,
+                ConstructionBlock.name.label("block_name"),
+                ConstructionUnit.status,
+                ConstructionUnit.buyer_person_id.is_distinct_from(buyer_person_id).label("is_secondary_buyer"),
+            )
+            .outerjoin(ConstructionBlock, ConstructionBlock.id == ConstructionUnit.block_id)
+            .where(
+                ConstructionUnit.company_id == company_id,
+                ConstructionUnit.project_id.in_(project_ids),
+                *_buyer_unit_conditions(buyer_person_id),
+            )
+            .order_by(ConstructionBlock.name.asc().nulls_first(), ConstructionUnit.code.asc())
+        )
+        return list(result.all())
 
     async def get_block(self, *, company_id: UUID, block_id: UUID) -> ConstructionBlock | None:
         result = await self.session.execute(
@@ -201,6 +261,27 @@ class ConstructionRepository:
             )
         )
         return result.scalars().first()
+
+    async def valid_contract_template(self, company_id, template_id):
+        result = await self.session.execute(text("SELECT id FROM public.contract_templates WHERE id=:template AND company_id=:company AND deleted_at IS NULL AND is_active=true AND file_path IS NOT NULL"),
+            {"template": template_id, "company": company_id})
+        return result.scalar_one_or_none()
+
+    async def contract_context(self, company_id, unit_id):
+        unit = await self.get_unit(company_id=company_id, unit_id=unit_id)
+        if not unit:
+            return None
+        project = await self.get_project(company_id=company_id, project_id=unit.project_id)
+        signals = await self.session.execute(select(ConstructionUnitCommission).where(
+            ConstructionUnitCommission.company_id == company_id, ConstructionUnitCommission.unit_id == unit_id))
+        documentation = await self.session.execute(select(ConstructionUnitDocumentation).where(
+            ConstructionUnitDocumentation.company_id == company_id, ConstructionUnitDocumentation.unit_id == unit_id))
+        return {"unit": {key: getattr(unit, key) for key in ("id", "project_id", "code", "description", "sale_price",
+                    "discount_amount", "buyer_person_id", "secondary_buyer_person_id", "broker_person_id", "external_contract_id")},
+                "project": {key: getattr(project, key) for key in ("id", "name", "contract_template_id", "lot",
+                    "registration", "land_area", "expected_end_date", "address_json")},
+                "signals": [{"amount": row.amount, "due_date": row.due_date} for row in signals.scalars()],
+                "documentation": [{"amount": row.amount} for row in documentation.scalars()]}
 
     async def get_unit_by_code(self, *, company_id: UUID, project_id: UUID, code: str) -> ConstructionUnit | None:
         result = await self.session.execute(
@@ -287,22 +368,6 @@ class ConstructionRepository:
         )
         return result.scalars().first()
 
-    async def get_measurement_by_code(
-        self,
-        *,
-        company_id: UUID,
-        project_id: UUID,
-        code: str,
-    ) -> ConstructionMeasurement | None:
-        result = await self.session.execute(
-            select(ConstructionMeasurement).where(
-                ConstructionMeasurement.company_id == company_id,
-                ConstructionMeasurement.project_id == project_id,
-                ConstructionMeasurement.code == code,
-            )
-        )
-        return result.scalars().first()
-
     async def _next_scoped_sequence(self, *, column, filters, lock_scope: str) -> int:
         """Reserva o proximo numero da serie, segurando quem chega junto.
 
@@ -326,14 +391,25 @@ class ConstructionRepository:
 
         return int(current_sequence) + 1
 
-    async def get_next_measurement_sequence(self, *, company_id: UUID, project_id: UUID) -> int:
+    async def get_next_measurement_sequence(self, *, company_id: UUID, unit_id: UUID) -> int:
         return await self._next_scoped_sequence(
             column=ConstructionMeasurement.sequence_number,
             filters=(
                 ConstructionMeasurement.company_id == company_id,
-                ConstructionMeasurement.project_id == project_id,
+                ConstructionMeasurement.unit_id == unit_id,
             ),
-            lock_scope=f"construction_measurements:{project_id}",
+            lock_scope=f"construction_measurements:unit:{unit_id}",
+        )
+
+    async def get_next_measurement_code_number(self, *, company_id: UUID, project_id: UUID) -> int:
+        return await self._next_scoped_sequence(
+            column=cast(func.substring(ConstructionMeasurement.code, 5), Integer),
+            filters=(
+                ConstructionMeasurement.company_id == company_id,
+                ConstructionMeasurement.project_id == project_id,
+                ConstructionMeasurement.code.regexp_match(r"^MED-[0-9]{1,9}$"),
+            ),
+            lock_scope=f"construction_measurements:code:{project_id}",
         )
 
     async def get_measurement_by_external_accounts_payable_id(
@@ -362,6 +438,145 @@ class ConstructionRepository:
             .order_by(ConstructionMeasurement.created_at.desc())
         )
         return list(result.scalars().all())
+
+    async def list_measurements_by_ids(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        measurement_ids: list[UUID],
+    ) -> list[ConstructionMeasurement]:
+        result = await self.session.execute(
+            select(ConstructionMeasurement).where(
+                ConstructionMeasurement.company_id == company_id,
+                ConstructionMeasurement.project_id == project_id,
+                ConstructionMeasurement.id.in_(measurement_ids),
+                *scope_conditions(ConstructionMeasurement, self.scope),
+            )
+        )
+        return list(result.scalars().all())
+
+    def _zero_value_measurement_conditions(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        supplier_person_id: UUID | None = None,
+        payable_document_id: UUID | None = None,
+        block_id: UUID | None = None,
+        unit_search: str | None = None,
+        due_from: date | None = None,
+        due_to: date | None = None,
+        search: str | None = None,
+    ) -> list:
+        amount = func.coalesce(ConstructionMeasurement.net_amount, ConstructionMeasurement.measured_amount, 0)
+        conditions = [
+            ConstructionMeasurement.company_id == company_id,
+            ConstructionMeasurement.project_id == project_id,
+            ConstructionMeasurement.status == ConstructionMeasurementStatus.APPROVED,
+            ConstructionMeasurement.subcontract_id.is_(None),
+            amount == 0,
+            *scope_conditions(ConstructionMeasurement, self.scope),
+        ]
+        if payable_document_id is None:
+            conditions.append(ConstructionMeasurement.external_accounts_payable_id.is_(None))
+        else:
+            conditions.append(ConstructionMeasurement.external_accounts_payable_id == payable_document_id)
+            conditions.append(ConstructionMeasurement.external_accounts_payable_shared.is_(True))
+        if supplier_person_id is not None:
+            conditions.append(ConstructionMeasurement.supplier_person_id == supplier_person_id)
+        if block_id is not None:
+            conditions.append(ConstructionUnit.block_id == block_id)
+        if unit_search:
+            pattern = f"%{unit_search.strip()}%"
+            conditions.append(or_(ConstructionUnit.code.ilike(pattern), ConstructionUnit.description.ilike(pattern)))
+        if due_from is not None:
+            conditions.append(ConstructionMeasurement.due_date >= due_from)
+        if due_to is not None:
+            conditions.append(ConstructionMeasurement.due_date <= due_to)
+        if search:
+            term = search.strip()
+            if term.isdigit():
+                conditions.append(
+                    or_(
+                        ConstructionMeasurement.sequence_number == int(term),
+                        ConstructionMeasurement.code == f"OS-{int(term):06d}",
+                    )
+                )
+            else:
+                conditions.append(ConstructionMeasurement.code.ilike(f"%{term}%"))
+        return conditions
+
+    async def list_zero_value_measurements(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        **filters,
+    ) -> tuple[list[dict], int]:
+        conditions = self._zero_value_measurement_conditions(**filters)
+        unit_join = ConstructionUnit.id == ConstructionMeasurement.unit_id
+        total = await self.session.scalar(
+            select(func.count())
+            .select_from(ConstructionMeasurement)
+            .outerjoin(ConstructionUnit, unit_join)
+            .where(*conditions)
+        )
+        result = await self.session.execute(
+            select(
+                ConstructionMeasurement,
+                ConstructionUnit.code.label("unit_code"),
+                ConstructionUnit.description.label("unit_description"),
+                ConstructionUnit.block_id.label("block_id"),
+                ConstructionBlock.name.label("block_name"),
+            )
+            .outerjoin(ConstructionUnit, unit_join)
+            .outerjoin(ConstructionBlock, ConstructionBlock.id == ConstructionUnit.block_id)
+            .where(*conditions)
+            .order_by(ConstructionUnit.code, ConstructionMeasurement.sequence_number, ConstructionMeasurement.code)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        rows = [
+            {
+                "id": measurement.id,
+                "code": measurement.code,
+                "sequence_number": measurement.sequence_number,
+                "unit_id": measurement.unit_id,
+                "unit_code": unit_code,
+                "unit_description": unit_description,
+                "block_id": block_id,
+                "block_name": block_name,
+                "due_date": measurement.due_date,
+                "competence_date": measurement.competence_date,
+                "description": measurement.description,
+                "supplier_person_id": measurement.supplier_person_id,
+                "external_accounts_payable_id": measurement.external_accounts_payable_id,
+            }
+            for measurement, unit_code, unit_description, block_id, block_name in result.all()
+        ]
+        return rows, int(total or 0)
+
+    async def zero_value_measurement_ids(self, *, limit: int, **filters) -> list[UUID]:
+        conditions = self._zero_value_measurement_conditions(**filters)
+        result = await self.session.execute(
+            select(ConstructionMeasurement.id)
+            .outerjoin(ConstructionUnit, ConstructionUnit.id == ConstructionMeasurement.unit_id)
+            .where(*conditions)
+            .order_by(ConstructionUnit.code, ConstructionMeasurement.sequence_number, ConstructionMeasurement.code)
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def zero_value_suppliers(self, *, company_id: UUID, project_id: UUID) -> list[tuple[UUID, int]]:
+        conditions = self._zero_value_measurement_conditions(company_id=company_id, project_id=project_id)
+        result = await self.session.execute(
+            select(ConstructionMeasurement.supplier_person_id, func.count())
+            .where(*conditions, ConstructionMeasurement.supplier_person_id.is_not(None))
+            .group_by(ConstructionMeasurement.supplier_person_id)
+            .order_by(func.count().desc())
+        )
+        return [(supplier_id, int(count)) for supplier_id, count in result.all()]
 
     async def list_unit_payment_sources(
         self,
@@ -629,6 +844,7 @@ class ConstructionRepository:
         only_active: bool = True,
         search: str | None = None,
         only_deleted: bool = False,
+        restrict_to_project_id: UUID | None = None,
     ) -> list[ConstructionServiceTemplate]:
         statement = (
             select(ConstructionServiceTemplate)
@@ -644,9 +860,114 @@ class ConstructionRepository:
 
         if search:
             statement = statement.where(ConstructionServiceTemplate.name.ilike(f"%{search}%"))
+        if restrict_to_project_id is not None:
+            statement = statement.where(
+                ConstructionServiceTemplate.id.in_(
+                    self._project_service_template_ids_query(
+                        company_id=company_id,
+                        project_id=restrict_to_project_id,
+                    )
+                )
+            )
 
         result = await self.session.execute(statement.order_by(ConstructionServiceTemplate.name))
         return list(result.scalars().all())
+
+    @staticmethod
+    def _project_service_template_ids_query(*, company_id: UUID, project_id: UUID):
+        return (
+            select(ConstructionProjectServiceTemplate.service_template_id)
+            .join(
+                ConstructionServiceTemplate,
+                ConstructionServiceTemplate.id == ConstructionProjectServiceTemplate.service_template_id,
+            )
+            .where(
+                ConstructionProjectServiceTemplate.company_id == company_id,
+                ConstructionProjectServiceTemplate.project_id == project_id,
+                ConstructionProjectServiceTemplate.deleted_at.is_(None),
+                ConstructionServiceTemplate.deleted_at.is_(None),
+            )
+        )
+
+    async def project_service_template_ids(self, *, company_id: UUID, project_id: UUID) -> set[UUID]:
+        result = await self.session.execute(
+            self._project_service_template_ids_query(company_id=company_id, project_id=project_id)
+        )
+        return set(result.scalars().all())
+
+    async def list_project_service_templates(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+    ) -> list[ConstructionServiceTemplate]:
+        result = await self.session.execute(
+            select(ConstructionServiceTemplate)
+            .options(*self._service_template_loaders())
+            .where(
+                ConstructionServiceTemplate.company_id == company_id,
+                ConstructionServiceTemplate.id.in_(
+                    self._project_service_template_ids_query(company_id=company_id, project_id=project_id)
+                ),
+            )
+            .order_by(ConstructionServiceTemplate.name)
+        )
+        return list(result.scalars().all())
+
+    async def link_project_service_templates(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        service_template_ids: list[UUID],
+        actor_user_id: UUID | None,
+    ) -> int:
+        if not service_template_ids:
+            return 0
+        statement = (
+            pg_insert(ConstructionProjectServiceTemplate)
+            .values(
+                [
+                    {
+                        "id": uuid4(),
+                        "company_id": company_id,
+                        "project_id": project_id,
+                        "service_template_id": service_template_id,
+                        "created_by_user_id": actor_user_id,
+                    }
+                    for service_template_id in dict.fromkeys(service_template_ids)
+                ]
+            )
+            .on_conflict_do_nothing(
+                index_elements=["project_id", "service_template_id"],
+                index_where=ConstructionProjectServiceTemplate.deleted_at.is_(None),
+            )
+            .returning(ConstructionProjectServiceTemplate.id)
+        )
+        result = await self.session.execute(statement)
+        return len(result.scalars().all())
+
+    async def unlink_project_service_templates(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        service_template_ids: list[UUID],
+        actor_user_id: UUID | None,
+    ) -> int:
+        if not service_template_ids:
+            return 0
+        result = await self.session.execute(
+            update(ConstructionProjectServiceTemplate)
+            .where(
+                ConstructionProjectServiceTemplate.company_id == company_id,
+                ConstructionProjectServiceTemplate.project_id == project_id,
+                ConstructionProjectServiceTemplate.service_template_id.in_(service_template_ids),
+                ConstructionProjectServiceTemplate.deleted_at.is_(None),
+            )
+            .values(deleted_at=func.now(), deleted_by_user_id=actor_user_id)
+        )
+        return result.rowcount or 0
 
     async def get_next_service_template_audit_sequence(
         self,

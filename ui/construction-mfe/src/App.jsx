@@ -1,5 +1,10 @@
 import { Pagination as StandalonePagination } from "./components/Pagination.jsx"
-import { getMeasurementApprovalActions } from "./features/measurementActions.js"
+import {
+  canLinkPayable,
+  getMeasurementApprovalActions,
+  measurementPayableBadge,
+} from "./features/measurementActions.js"
+import { MeasurementPayableLinkModal } from "./features/measurementPayable/MeasurementPayableLinkModal.jsx"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   BarChart3,
@@ -7,6 +12,7 @@ import {
   ChevronDown,
   ChevronLeft,
   CheckCircle,
+  ClipboardList,
   Clock,
   FileCog,
   FileText,
@@ -26,13 +32,15 @@ import {
   ShoppingCart,
   Trash2,
   Unlock,
+  Link2,
+  ExternalLink,
 } from "lucide-react"
 import styles from "./App.module.css"
 import CreatableCombobox from "./components/CreatableCombobox.jsx"
 import { PersonPicker } from "./components/PersonPicker.jsx"
 import { ProductPicker } from "./components/ProductPicker.jsx"
 import { currencyCents, procurementLineCents, procurementSubtotalCents, quantityUnits } from "./utils/procurementAmounts.js"
-import { BridgeProvider } from "./components/bridgeContext.js"
+import { BridgeProvider, useBridge } from "./components/bridgeContext.js"
 import { InspectionChecklist } from "./features/measurementInspections/InspectionChecklist"
 import {
   countBlockingLines,
@@ -40,8 +48,13 @@ import {
   itemStatusLabel,
 } from "./features/measurementInspections/inspectionVocabulary"
 import { ServiceTemplatesPanel } from "./features/serviceTemplates/ServiceTemplatesPanel.jsx"
-import { SubcontractsPanel } from "./features/subcontracts/SubcontractsPanel.jsx"
-import { ContractMeasurementFields, ContractItemFields } from "./features/subcontracts/ContractMeasurementFields.jsx"
+import { ProjectServicesPanel } from "./features/projectServices/ProjectServicesPanel.jsx"
+import { SubcontractsCardTitle, SubcontractsPanel } from "./features/subcontracts/SubcontractsPanel.jsx"
+import { SharedPayablesSection } from "./features/sharedPayables/SharedPayablesSection.jsx"
+import { ContractMeasurementFields } from "./features/subcontracts/ContractMeasurementFields.jsx"
+import { UnitContractPanel } from "./features/unitContracts/UnitContractPanel.jsx"
+import { ContractTemplateField } from "./features/unitContracts/ContractTemplateField.jsx"
+import { ContractMeasureItems } from "./features/subcontracts/ContractMeasureItems.jsx"
 import { MeasurementFinancialPanel } from "./features/subcontracts/MeasurementFinancialPanel.jsx"
 import { resolveConstructionBridge } from "./bridge/constructionBridge.js"
 import {
@@ -80,6 +93,7 @@ import {
   listErpPaymentMethods,
   reverseConstructionUnitInstallment,
   updateConstructionUnitInstallment,
+  importConstructionProjectServices,
   importConstructionServiceTemplates,
   listConstructionMeasurementItems,
   listConstructionMeasurements,
@@ -113,6 +127,7 @@ import {
 
 const defaultFilters = {
   search: "",
+  buyerPersonId: "",
   status: "",
   startDate: "",
   endDate: "",
@@ -167,6 +182,7 @@ const unitStatusOptions = [
 ]
 
 const unitStatusLabel = Object.fromEntries(unitStatusOptions.map((option) => [option.value, option.label]))
+const buyerHoldingUnitStatuses = ["reserved", "sold", "delivered"]
 
 const measurementStatusOptions = [
   { value: "draft", label: "Rascunho" },
@@ -206,7 +222,9 @@ const projectDetailTabs = [
   { id: "blocks", label: "Blocos/Torres", icon: Route },
   { id: "units", label: "Unidades", icon: Home },
   { id: "schedule", label: "Cronograma", icon: ListChecks },
+  { id: "services", label: "Serviços", icon: ClipboardList },
   { id: "procurement", label: "Requisições", icon: PackageSearch },
+  { id: "purchaseOrders", label: "Pedidos de compra", icon: ShoppingCart },
   { id: "subcontracts", label: "Empreitada", icon: FileText },
   { id: "reports", label: "Relatórios", icon: BarChart3 },
   { id: "integrations", label: "Integrações", icon: FileCog },
@@ -312,6 +330,10 @@ const defaultProjectForm = {
   addressZipCode: "",
   receiptTemplateId: "",
   commissionReceiptTemplateId: "",
+  contractTemplateId: "",
+  lot: "",
+  registration: "",
+  landArea: "",
 }
 
 const defaultBlockForm = {
@@ -618,15 +640,6 @@ const erpContractStatusLabel = {
   CANCELLED: "Cancelado",
 }
 
-const erpReceivableStatusLabel = {
-  OPEN: "Em aberto",
-  PARTIALLY_PAID: "Parcialmente pago",
-  PAID: "Pago",
-  OVERDUE: "Vencido",
-  CANCELED: "Cancelado",
-  CANCELLED: "Cancelado",
-}
-
 function translateErpStatus(labels, value, fallback = "") {
   if (!value) {
     return fallback
@@ -665,11 +678,10 @@ const defaultMeasurementForm = {
   unitId: "",
   schedulePhaseId: "",
   sequenceNumber: "",
-  measurementType: "",
   competenceDate: "",
   description: "",
   grossAmount: "",
-  retentionsAmount: "0",
+  retentionsAmount: "0,00",
   netAmount: "",
   measuredAmount: "",
   dueDate: "",
@@ -717,6 +729,10 @@ function toFormProject(project) {
     addressZipCode: maskZip(project.address?.zip_code ?? ""),
     receiptTemplateId: project.receiptTemplateId ?? "",
     commissionReceiptTemplateId: project.commissionReceiptTemplateId ?? "",
+    contractTemplateId: project.contractTemplateId ?? "",
+    lot: project.lot ?? "",
+    registration: project.registration ?? "",
+    landArea: project.landArea ?? "",
   }
 }
 
@@ -818,6 +834,10 @@ function toApiProject(formProject) {
     },
     receiptTemplateId: formProject.receiptTemplateId,
     commissionReceiptTemplateId: formProject.commissionReceiptTemplateId,
+    contractTemplateId: formProject.contractTemplateId,
+    lot: formProject.lot,
+    registration: formProject.registration,
+    landArea: formProject.landArea,
   }
 }
 
@@ -1099,10 +1119,6 @@ function requiredSaleFieldError(formSale, { isEditing = false } = {}) {
 }
 
 function requiredMeasurementFieldError(formMeasurement) {
-  if (!String(formMeasurement.code ?? "").trim()) {
-    return "Informe o código da medição."
-  }
-
   if (!String(formMeasurement.unitId ?? "").trim()) {
     return "Informe a unidade da medição."
   }
@@ -1113,11 +1129,6 @@ function requiredMeasurementFieldError(formMeasurement) {
 
   if (!String(formMeasurement.dueDate ?? "").trim()) {
     return "Informe a data de vencimento."
-  }
-
-  const grossAmount = Number(formMeasurement.grossAmount || 0)
-  if (!formMeasurement.subcontractId && (Number.isNaN(grossAmount) || grossAmount <= 0)) {
-    return "Informe o valor bruto da medição."
   }
 
   return null
@@ -1146,10 +1157,12 @@ function requiredProcurementFieldError(formProcurement) {
 export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const bridge = useMemo(() => providedBridge ?? resolveConstructionBridge(), [providedBridge])
   const ProjectPagination = bridge.components?.Pagination ?? StandalonePagination
+  const ProjectPurchaseOrders = bridge.canRead?.("purchase_orders") ? bridge.components?.ProjectPurchaseOrders ?? null : null
   const [viewMode, setViewMode] = useState("projects")
   const [projectDetailTab, setProjectDetailTab] = useState("overview")
   const [activeProjectId, setActiveProjectId] = useState(null)
   const [activeUnitId, setActiveUnitId] = useState(null)
+  const [unitBuyerFilter, setUnitBuyerFilter] = useState({ projectId: null, personId: "" })
   const [unitDetailTab, setUnitDetailTab] = useState("summary")
 
   const [filters, setFilters] = useState(defaultFilters)
@@ -1225,6 +1238,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const [measurementItemsError, setMeasurementItemsError] = useState(null)
   const [savingMeasurementItem, setSavingMeasurementItem] = useState(false)
   const [serviceTemplates, setServiceTemplates] = useState([])
+  const [serviceTemplatesRestricted, setServiceTemplatesRestricted] = useState(false)
   const [loadingServiceTemplates, setLoadingServiceTemplates] = useState(false)
   const [importingServiceTemplates, setImportingServiceTemplates] = useState(false)
   const [projectSummary, setProjectSummary] = useState(null)
@@ -1307,6 +1321,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
         status: filters.status,
         startDate: filters.startDate,
         endDate: filters.endDate,
+        buyerPersonId: filters.buyerPersonId,
       })
       setProjects(result.items)
       setTotalProjects(result.total)
@@ -1322,7 +1337,16 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     } finally {
       setLoading(false)
     }
-  }, [bridge, filters.search, filters.status, filters.startDate, filters.endDate, projectPage, projectPageSize])
+  }, [
+    bridge,
+    filters.search,
+    filters.status,
+    filters.startDate,
+    filters.endDate,
+    filters.buyerPersonId,
+    projectPage,
+    projectPageSize,
+  ])
 
   useEffect(() => {
     void loadProjects()
@@ -1365,6 +1389,19 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     () => units.find((unit) => unit.id === activeUnitId) ?? null,
     [activeUnitId, units]
   )
+
+  const unitBuyerPersonId = unitBuyerFilter.projectId === activeProjectId ? unitBuyerFilter.personId : ""
+
+  const visibleUnits = useMemo(() => {
+    if (!unitBuyerPersonId) {
+      return units
+    }
+    return units.filter(
+      (unit) =>
+        buyerHoldingUnitStatuses.includes(unit.status) &&
+        (unit.buyerPersonId === unitBuyerPersonId || unit.secondaryBuyerPersonId === unitBuyerPersonId)
+    )
+  }, [unitBuyerPersonId, units])
 
   const selectedUnitMeasurements = useMemo(
     () => measurements.filter((measurement) => measurement.unitId === activeUnitId),
@@ -1638,6 +1675,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }, [ensurePeopleLoaded, selectedUnit])
 
   useEffect(() => {
+    void ensurePeopleLoaded(selectedUnitMeasurements.map((measurement) => measurement.supplierPersonId))
+  }, [ensurePeopleLoaded, selectedUnitMeasurements])
+
+  useEffect(() => {
     if (viewMode !== "projectDetail" || projectDetailTab !== "blocks") {
       return
     }
@@ -1741,6 +1782,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
   const openProjectDetail = (project) => {
     setActiveProjectId(project.id)
+    setUnitBuyerFilter({ projectId: project.id, personId: filters.buyerPersonId })
     setProjectDetailTab("overview")
     setActiveUnitId(null)
     setUnitDetailTab("summary")
@@ -3178,13 +3220,15 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     }
   }, [bridge])
 
-  const loadServiceTemplates = useCallback(async () => {
+  const loadServiceTemplates = useCallback(async (projectId = null) => {
     setLoadingServiceTemplates(true)
     try {
-      const result = await listConstructionServiceTemplates({ bridge })
+      const result = await listConstructionServiceTemplates({ bridge, projectId })
       setServiceTemplates(result.items)
+      setServiceTemplatesRestricted(result.restrictedToProject)
     } catch (requestError) {
       setServiceTemplates([])
+      setServiceTemplatesRestricted(false)
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível carregar o catálogo de serviços.")
     } finally {
       setLoadingServiceTemplates(false)
@@ -3197,9 +3241,16 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       return
     }
 
+    const projectId = itemsTargetMeasurement?.projectId ?? null
+    const canUpdateProject =
+      typeof bridge?.canUpdate === "function" ? bridge.canUpdate("construction_projects") : true
+    const linkToProject = Boolean(serviceTemplatesRestricted && projectId && canUpdateProject)
+
     setImportingServiceTemplates(true)
     try {
-      const result = await importConstructionServiceTemplates({ bridge, files })
+      const result = linkToProject
+        ? await importConstructionProjectServices({ bridge, projectId, files })
+        : await importConstructionServiceTemplates({ bridge, files })
       const summary = [
         result.created ? `${result.created} serviço(s) criado(s)` : "",
         result.updated ? `${result.updated} atualizado(s)` : "",
@@ -3215,13 +3266,25 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           .map((item) => `${item.fileName}: ${item.message}`)
           .join(" | ")
         bridge?.feedback?.warning?.(`${summary}. ${failures}`)
+      } else if (serviceTemplatesRestricted && !linkToProject) {
+        bridge?.feedback?.warning?.(
+          `Importação concluída: ${summary}. O serviço foi para o catálogo; peça para incluí-lo na aba Serviços da obra.`,
+        )
       } else {
-        bridge?.feedback?.success?.(`Importação concluída: ${summary}.`)
+        bridge?.feedback?.success?.(
+          linkToProject
+            ? `Importação concluída: ${summary}. O serviço entrou na lista desta obra.`
+            : `Importação concluída: ${summary}.`,
+        )
       }
 
-      await loadServiceTemplates()
+      await loadServiceTemplates(projectId)
+      return result.results
+        .filter((item) => item.status !== "failed" && item.serviceTemplateId && (!linkToProject || item.linked))
+        .map((item) => item.serviceTemplateId)
     } catch (requestError) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível importar a planilha de serviços.")
+      return []
     } finally {
       setImportingServiceTemplates(false)
     }
@@ -3235,9 +3298,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     setItemsTargetMeasurement(measurement)
     setMeasurementItems([])
     void loadMeasurementItems(measurement.id)
-    if (!serviceTemplates.length) {
-      void loadServiceTemplates()
-    }
+    void loadServiceTemplates(measurement.projectId ?? null)
   }
 
   const closeMeasurementItems = () => {
@@ -3280,6 +3341,39 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível adicionar o item de serviço.")
       return false
     } finally {
+      setSavingMeasurementItem(false)
+    }
+  }
+
+  const handleCreateContractMeasurementItems = async (rows) => {
+    if (!itemsTargetMeasurement || !rows.length) {
+      return false
+    }
+
+    setSavingMeasurementItem(true)
+    let created = 0
+    try {
+      for (const itemData of rows) {
+        await createConstructionMeasurementItem({
+          bridge,
+          measurementId: itemsTargetMeasurement.id,
+          itemData,
+        })
+        created += 1
+      }
+      bridge?.feedback?.success?.(
+        created > 1 ? `${created} itens do contrato adicionados à medição.` : "Item do contrato adicionado à medição."
+      )
+      return true
+    } catch (requestError) {
+      const message = requestError?.message ?? "Não foi possível adicionar o item do contrato."
+      bridge?.feedback?.error?.(
+        created ? `${created} de ${rows.length} itens foram adicionados. O seguinte foi recusado: ${message}` : message
+      )
+      return false
+    } finally {
+      await loadMeasurementItems(itemsTargetMeasurement.id)
+      await loadMeasurements()
       setSavingMeasurementItem(false)
     }
   }
@@ -3460,20 +3554,12 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       void loadPersonSummaries()
     }
 
-    const measurementScope = unit
-      ? measurements.filter((measurement) => measurement.unitId === unit.id)
-      : measurements
-    const nextSequenceNumber = measurementScope.length
-      ? Math.max(...measurementScope.map((measurement) => Number(measurement.sequenceNumber || 0))) + 1
-      : 1
-
     setMeasurementModalMode("create")
     setEditingMeasurementId(null)
     setMeasurementForm({
       ...defaultMeasurementForm,
       unitId: unit?.id ?? selectedUnit?.id ?? units[0]?.id ?? "",
       schedulePhaseId: schedulePhases[0]?.id ?? "",
-      sequenceNumber: String(nextSequenceNumber),
     })
     setIsMeasurementModalOpen(true)
   }
@@ -3492,15 +3578,14 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       sequenceNumber: measurement.sequenceNumber === null || measurement.sequenceNumber === undefined
         ? ""
         : String(measurement.sequenceNumber),
-      measurementType: measurement.measurementType ?? "",
       competenceDate: measurement.competenceDate ? String(measurement.competenceDate).slice(0, 10) : "",
       description: measurement.description ?? "",
-      grossAmount: measurement.grossAmount === null || measurement.grossAmount === undefined ? "" : String(measurement.grossAmount),
+      grossAmount: formatCurrencyFromNumber(measurement.grossAmount),
       retentionsAmount:
         measurement.retentionsAmount === null || measurement.retentionsAmount === undefined
-          ? "0"
-          : String(measurement.retentionsAmount),
-      netAmount: measurement.netAmount === null || measurement.netAmount === undefined ? "" : String(measurement.netAmount),
+          ? "0,00"
+          : formatCurrencyFromNumber(measurement.retentionsAmount),
+      netAmount: formatCurrencyFromNumber(measurement.netAmount),
       measuredAmount:
         measurement.measuredAmount === null || measurement.measuredAmount === undefined
           ? ""
@@ -3891,6 +3976,14 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                   placeholder="Código, nome ou CNPJ"
                 />
               </label>
+              <PersonPicker
+                bridge={bridge}
+                label="Comprador"
+                emptyLabel="Nome do comprador"
+                constructionUnitBuyer
+                value={filters.buyerPersonId}
+                onChange={(personId) => handleFilterChange("buyerPersonId", personId ?? "")}
+              />
               <label className={styles.filterControl}>
                 <span>Status</span>
                 <select value={filters.status} onChange={(event) => handleFilterChange("status", event.target.value)}>
@@ -3934,6 +4027,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
             content={
               <ProjectList
                 projects={projects}
+                showBuyerUnits={Boolean(filters.buyerPersonId)}
                 loading={loading}
                 error={error}
                 onRetry={loadProjects}
@@ -3966,7 +4060,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
           <section className={styles.tabCard}>
             <div className={styles.tabList}>
-              {projectDetailTabs.map((tab) => {
+              {projectDetailTabs.filter((tab) => tab.id !== "purchaseOrders" || ProjectPurchaseOrders).map((tab) => {
                 const Icon = tab.icon
                 return (
                   <button
@@ -4050,6 +4144,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
               content={
                 selectedUnit ? (
                   <UnitDetailPanel
+                    bridge={bridge}
                     unit={selectedUnit}
                     blocks={blocks}
                     measurements={selectedUnitMeasurements}
@@ -4089,19 +4184,39 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                     onCreateAdjustment={openAdjustmentModal}
                   />
                 ) : (
-                  <UnitsList
-                    units={units}
-                    blocks={blocks}
-                    loading={loadingUnits}
-                    error={unitError}
-                    onRetry={loadUnits}
-                    onOpenDetails={openUnitDetail}
-                    onEdit={openEditUnit}
-                    onDelete={handleDeleteUnit}
-                    onReserve={openReserveUnitModal}
-                    onRelease={handleReleaseUnit}
-                    onSale={openSaleUnitModal}
-                  />
+                  <>
+                    <div className={styles.unitFilters}>
+                      <PersonPicker
+                        bridge={bridge}
+                        label="Comprador"
+                        emptyLabel="Nome do comprador"
+                        constructionUnitBuyer
+                        constructionProjectId={activeProjectId}
+                        value={unitBuyerPersonId}
+                        onChange={(personId) =>
+                          setUnitBuyerFilter({ projectId: activeProjectId, personId: personId ?? "" })
+                        }
+                      />
+                    </div>
+                    <UnitsList
+                      units={visibleUnits}
+                      emptyMessage={
+                        unitBuyerPersonId
+                          ? "Este comprador não tem unidade reservada, vendida ou entregue nesta obra."
+                          : "Nenhuma unidade cadastrada para a obra selecionada."
+                      }
+                      blocks={blocks}
+                      loading={loadingUnits}
+                      error={unitError}
+                      onRetry={loadUnits}
+                      onOpenDetails={openUnitDetail}
+                      onEdit={openEditUnit}
+                      onDelete={handleDeleteUnit}
+                      onReserve={openReserveUnitModal}
+                      onRelease={handleReleaseUnit}
+                      onSale={openSaleUnitModal}
+                    />
+                  </>
                 )
               }
             />
@@ -4127,6 +4242,14 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                   onDelete={handleDeleteSchedulePhase}
                 />
               }
+            />
+          ) : null}
+
+          {projectDetailTab === "services" ? (
+            <DomainCard
+              title="Serviços da obra"
+              subtitle="Serviços que esta obra vai executar. Com lista, as medições só oferecem estes serviços; sem lista, o catálogo inteiro."
+              content={<ProjectServicesPanel bridge={bridge} projectId={activeProjectId} />}
             />
           ) : null}
 
@@ -4157,9 +4280,25 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
             />
           ) : null}
 
-          {projectDetailTab === "subcontracts" ? <DomainCard title="Contratos de empreitada"
+          {projectDetailTab === "purchaseOrders" && ProjectPurchaseOrders ? (
+            <DomainCard
+              title="Pedidos de compra"
+              subtitle="Pedidos emitidos para esta obra. Abra o pedido para ver itens, recebimentos e títulos."
+              content={<ProjectPurchaseOrders projectId={activeProjectId} />}
+            />
+          ) : null}
+
+          {projectDetailTab === "subcontracts" ? <DomainCard title={<SubcontractsCardTitle />}
             subtitle="Planilha liberada, medições por quantidade e saldo contratado."
             content={<SubcontractsPanel bridge={bridge} projectId={activeProjectId} />} /> : null}
+
+          {projectDetailTab === "subcontracts" ? (
+            <DomainCard
+              title="DNFs da empreitada (OS sem valor)"
+              subtitle="Uma DNF paga várias ordens de serviço sem valor do mesmo fornecedor."
+              content={<SharedPayablesSection bridge={bridge} projectId={activeProjectId} />}
+            />
+          ) : null}
 
           {projectDetailTab === "reports" ? (
             <DomainCard
@@ -4213,6 +4352,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
       {isProjectModalOpen ? (
         <ProjectModal
+          bridge={bridge}
           mode={projectModalMode}
           projectForm={projectForm}
           people={personSummaries}
@@ -4374,6 +4514,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           items={measurementItems}
           people={personSummaries}
           serviceTemplates={serviceTemplates}
+          serviceTemplatesRestricted={serviceTemplatesRestricted}
           loadingServiceTemplates={loadingServiceTemplates}
           importingServiceTemplates={importingServiceTemplates}
           onImportServiceTemplates={handleImportServiceTemplates}
@@ -4386,6 +4527,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
             loadMeasurements(),
           ])}
           onCreateItem={handleCreateMeasurementItem}
+          onCreateContractItems={handleCreateContractMeasurementItems}
           onDeleteItem={handleDeleteMeasurementItem}
           onCreateInspection={handleCreateInspection}
           onVerifyInspection={handleVerifyInspection}
@@ -4915,7 +5057,7 @@ function DetailMetaItem({ label, value, hint = null }) {
   )
 }
 
-function ProjectList({ projects, loading, error, onRetry, onOpenDetails, onEdit, onDelete }) {
+function ProjectList({ projects, showBuyerUnits = false, loading, error, onRetry, onOpenDetails, onEdit, onDelete }) {
   if (loading) {
     return (
       <div className={styles.tableWrapper} aria-busy="true">
@@ -4956,6 +5098,7 @@ function ProjectList({ projects, loading, error, onRetry, onOpenDetails, onEdit,
           <tr>
             <th>Código</th>
             <th>Obra</th>
+            {showBuyerUnits ? <th>Unidades do comprador</th> : null}
             <th>Tipo</th>
             <th>Status</th>
             <th>Inicio</th>
@@ -4971,6 +5114,23 @@ function ProjectList({ projects, loading, error, onRetry, onOpenDetails, onEdit,
                 <strong>{project.name}</strong>
                 <div className={styles.rowSecondaryText}>{project.cnpjSpe || "-"}</div>
               </td>
+              {showBuyerUnits ? (
+                <td>
+                  {project.buyerUnits.map((unit) => (
+                    <div key={unit.unitId}>
+                      {unit.blockName ? `${unit.blockName} · ${unit.code}` : unit.code}
+                      <div className={styles.rowSecondaryText}>
+                        {[
+                          unitStatusLabel[unit.status] ?? unit.status,
+                          unit.isSecondaryBuyer ? "2º comprador" : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </div>
+                    </div>
+                  ))}
+                </td>
+              ) : null}
               <td>{projectTypeLabel[project.projectType] ?? project.projectType ?? "-"}</td>
               <td>
                 <span className={`${styles.statusPill} ${styles[`status${project.status}`] || ""}`}>
@@ -5103,6 +5263,7 @@ function BlocksList({ blocks, loading, error, onRetry, onEdit, onDelete }) {
 }
 
 function UnitDetailPanel({
+  bridge,
   unit,
   blocks,
   measurements,
@@ -5272,7 +5433,7 @@ function UnitDetailPanel({
           </div>
           <MeasurementsList
             measurements={measurements}
-            units={[unit]}
+            people={people}
             schedulePhases={schedulePhases}
             loading={loadingMeasurements}
             error={measurementError}
@@ -5324,6 +5485,8 @@ function UnitDetailPanel({
 
       {activeTab === "contract" ? (
         <UnitContractPanel
+          key={unit.id}
+          bridge={bridge}
           unit={unit}
           plan={paymentPlan}
           loading={loadingPaymentPlan}
@@ -6683,83 +6846,6 @@ function AdjustmentModal({ unit, adjustmentForm, onClose, onChange, onSubmit, lo
   )
 }
 
-function UnitContractPanel({ unit, plan, loading, error, onRetry }) {
-  if (loading) {
-    return (
-      <div className={styles.empty} aria-busy="true">
-        <RefreshCw className={styles.spinIcon} size={16} />
-        Carregando contrato...
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className={styles.empty}>
-        <span>{error}</span>
-        <button type="button" className={styles.secondaryButton} onClick={onRetry}>
-          <RefreshCw size={16} />
-          Tentar novamente
-        </button>
-      </div>
-    )
-  }
-
-  const paymentPlan = plan?.paymentPlan ?? {}
-
-  return (
-    <div className={styles.integrationPanel}>
-      <div className={styles.integrationGrid}>
-        <article className={styles.integrationCard}>
-          <h3>Contrato</h3>
-          <p className={styles.metricValue}>{paymentPlan.contractCode || "Pendente"}</p>
-          <p className={styles.metricHint}>
-            {translateErpStatus(erpContractStatusLabel, paymentPlan.contractStatus, "sem status no ERP")}
-          </p>
-        </article>
-        <article className={styles.integrationCard}>
-          <h3>Assinatura</h3>
-          <p className={styles.metricValue}>
-            {unit.contractSignatureDate ? formatDate(unit.contractSignatureDate) : "-"}
-          </p>
-          <p className={styles.metricHint}>data informada na confirmação da venda</p>
-        </article>
-        <article className={styles.integrationCard}>
-          <h3>Recebível vinculado</h3>
-          <p className={styles.metricValue}>{paymentPlan.receivableId ? "Sim" : "Pendente"}</p>
-          <p className={styles.metricHint}>
-            {translateErpStatus(erpReceivableStatusLabel, paymentPlan.receivableStatus, "sem recebível")}
-          </p>
-        </article>
-      </div>
-
-      {unit.saleNotes ? (
-        <div className={styles.card}>
-          <strong>Observação da venda</strong>
-          <p className={styles.metricHint}>{unit.saleNotes}</p>
-        </div>
-      ) : null}
-
-      <div className={styles.card}>
-        <strong>Conteúdo do contrato</strong>
-        {paymentPlan.contractContentHtml ? (
-          <div
-            className={styles.contractContent}
-            // eslint-disable-next-line react/no-danger
-            dangerouslySetInnerHTML={{ __html: paymentPlan.contractContentHtml }}
-          />
-        ) : (
-          <p className={styles.metricHint}>
-            {paymentPlan.contractId
-              ? "O contrato existe no ERP mas não trouxe conteúdo."
-              : "Nenhum contrato gerado - confirme a venda da unidade."}
-          </p>
-        )}
-      </div>
-    </div>
-  )
-}
-
 // `busy` existe porque o menu FECHA ao clicar (`setIsOpen(false)` antes do
 // `onSelect`). Desabilitar o item nao aparece para ninguem: a essa altura ele
 // ja saiu da tela. Quem precisa mostrar que algo esta em curso e o botao da
@@ -6893,7 +6979,20 @@ function RowActionsMenu({ label = "Ações", actions, busy = false, busyLabel = 
   )
 }
 
-function UnitsList({ units, blocks, loading, error, onRetry, onOpenDetails, onEdit, onDelete, onReserve, onRelease, onSale }) {
+function UnitsList({
+  units,
+  emptyMessage = "Nenhuma unidade cadastrada para a obra selecionada.",
+  blocks,
+  loading,
+  error,
+  onRetry,
+  onOpenDetails,
+  onEdit,
+  onDelete,
+  onReserve,
+  onRelease,
+  onSale,
+}) {
   const blockNameById = useMemo(() => {
     return Object.fromEntries(blocks.map((block) => [block.id, `${block.code} - ${block.name}`]))
   }, [blocks])
@@ -6926,7 +7025,7 @@ function UnitsList({ units, blocks, loading, error, onRetry, onOpenDetails, onEd
   if (!units.length) {
     return (
       <div className={styles.tableWrapper}>
-        <div className={styles.empty}>Nenhuma unidade cadastrada para a obra selecionada.</div>
+        <div className={styles.empty}>{emptyMessage}</div>
       </div>
     )
   }
@@ -7137,7 +7236,7 @@ function ScheduleList({ phases, loading, error, onRetry, onEdit, onDelete }) {
 
 function MeasurementsList({
   measurements,
-  units,
+  people,
   schedulePhases,
   loading,
   error,
@@ -7150,9 +7249,11 @@ function MeasurementsList({
   onOpenItems,
   onSubmit,
 }) {
-  const unitNameById = useMemo(() => {
-    return Object.fromEntries(units.map((unit) => [unit.id, `${unit.code} - ${unit.description || unit.unitType}`]))
-  }, [units])
+  const bridge = useBridge()
+  const canReadPayable = Boolean(bridge?.canRead?.("accounts_payable"))
+  const supplierNameById = useMemo(() => {
+    return Object.fromEntries((people ?? []).map((person) => [person.id, person.name]))
+  }, [people])
   const phaseNameById = useMemo(() => {
     return Object.fromEntries(schedulePhases.map((phase) => [phase.id, phase.name]))
   }, [schedulePhases])
@@ -7181,6 +7282,7 @@ function MeasurementsList({
         : measurements.filter((measurement) => measurement.status !== "rejected"),
     [measurements, showCancelled]
   )
+  const [payableTarget, setPayableTarget] = useState(null)
 
   if (loading) {
     return (
@@ -7253,8 +7355,8 @@ function MeasurementsList({
         <thead>
           <tr>
             <th>Código</th>
-            <th>Unidade</th>
-            <th>Tipo</th>
+            <th>Fornecedor</th>
+            <th>Documento</th>
             <th>Status</th>
             <th>Itens / inspeção</th>
             <th>Valor líquido</th>
@@ -7270,6 +7372,7 @@ function MeasurementsList({
             const canReject = ["draft", "submitted", "in_approval"].includes(measurement.status)
             const canEdit = measurement.status !== "approved" && measurement.status !== "paid"
             const canDelete = measurement.status !== "approved" && measurement.status !== "paid"
+            const payableBadge = measurementPayableBadge(measurement)
 
             return (
               <tr key={measurement.id}>
@@ -7284,14 +7387,18 @@ function MeasurementsList({
                   <div className={styles.rowSecondaryText}>{measurement.code}</div>
                 </td>
                 <td>
-                  <strong>{measurement.unitId ? unitNameById[measurement.unitId] ?? measurement.unitId : "-"}</strong>
+                  <strong>
+                    {measurement.supplierPersonId
+                      ? supplierNameById[measurement.supplierPersonId] ?? "-"
+                      : "Sem fornecedor"}
+                  </strong>
                   <div className={styles.rowSecondaryText}>
                     {measurement.schedulePhaseId ? phaseNameById[measurement.schedulePhaseId] ?? measurement.schedulePhaseId : "-"}
                   </div>
                 </td>
                 <td>
-                  {measurement.measurementType || "-"}
-                  <div className={styles.rowSecondaryText}>{measurement.documentType || "-"}</div>
+                  {measurement.documentType || "-"}
+                  <div className={styles.rowSecondaryText}>{measurement.documentNumber || "-"}</div>
                 </td>
                 <td>
                   <span className={`${styles.statusPill} ${styles[`status${measurement.status}`] || ""}`}>
@@ -7321,14 +7428,15 @@ function MeasurementsList({
                 <td>{formatMoney(measurement.netAmount ?? measurement.measuredAmount)}</td>
                 <td>{formatDate(measurement.dueDate)}</td>
                 <td>
-                  {measurement.externalAccountsPayableId ? (
-                    <div>
-                      <div className={styles.rowSecondaryText}>{measurement.externalAccountsPayableStatus || "ativo"}</div>
-                      <span className={styles.badgeSuccess}>Vinculado</span>
-                    </div>
-                  ) : (
-                    <span className={styles.badgeMuted}>Pendente</span>
-                  )}
+                  <div>
+                    {payableBadge.detail ? <div className={styles.rowSecondaryText}>{payableBadge.detail}</div> : null}
+                    <span
+                      className={payableBadge.tone === "success" ? styles.badgeSuccess : styles.badgeMuted}
+                      title={payableBadge.title}
+                    >
+                      {payableBadge.label}
+                    </span>
+                  </div>
                 </td>
                 <td>
                   <RowActionsMenu
@@ -7370,6 +7478,23 @@ function MeasurementsList({
                         onSelect: () => onReject(measurement),
                       },
                       {
+                        key: "link-payable",
+                        label: "Vincular título do ERP",
+                        icon: Link2,
+                        visible: canLinkPayable(measurement),
+                        dividerBefore: true,
+                        onSelect: () => setPayableTarget(measurement),
+                      },
+                      {
+                        key: "open-payable",
+                        label: "Ver título no ERP",
+                        icon: ExternalLink,
+                        visible: Boolean(measurement.externalAccountsPayableId) && canReadPayable,
+                        dividerBefore: true,
+                        onSelect: () =>
+                          window.open(`/accounts-payable/${measurement.externalAccountsPayableId}/edit`, "_blank", "noopener"),
+                      },
+                      {
                         key: "delete",
                         label: "Excluir",
                         icon: Trash2,
@@ -7386,6 +7511,16 @@ function MeasurementsList({
           })}
         </tbody>
       </table>
+      {payableTarget ? (
+        <MeasurementPayableLinkModal
+          measurement={payableTarget}
+          onClose={() => setPayableTarget(null)}
+          onLinked={() => {
+            setPayableTarget(null)
+            onRetry?.()
+          }}
+        />
+      ) : null}
     </div>
   )
 }
@@ -7640,8 +7775,7 @@ function ProcurementModal({ bridge, mode, procurementForm, people, schedulePhase
                 onChange={(event) => onChange("description", event.target.value)}
               />
             </label>
-            <section className={`${styles.filterControl} ${styles.spanTwoColumns} ${styles.procurementSection}`} aria-label="Itens da requisição">
-              <span>Produtos da requisição*</span>
+            <section className={`${styles.spanTwoColumns} ${styles.procurementSection}`} aria-label="Itens da requisição">
               <ProductPicker bridge={bridge} onSelect={addProduct} disabled={loading} />
               {procurementForm.items?.length ? (
                 <div className={styles.procurementItems}>
@@ -7719,24 +7853,14 @@ function MeasurementModal({
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <ContractMeasurementFields bridge={bridge} projectId={projectId} form={measurementForm} onChange={onChange} />
           <div className={styles.formGrid}>
-            <label className={styles.filterControl}>
-              <span>Código*</span>
-              <input
-                type="text"
-                value={measurementForm.code}
-                onChange={(event) => onChange("code", event.target.value)}
-                required
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Sequência</span>
-              <input
-                type="number"
-                min="1"
-                value={measurementForm.sequenceNumber}
-                onChange={(event) => onChange("sequenceNumber", event.target.value)}
-              />
-            </label>
+            {mode === "edit" && (
+              <div className={styles.detailMetaItem}>
+                <span>Código</span>
+                <strong>
+                  {measurementForm.code} · OS {measurementForm.sequenceNumber || "-"}
+                </strong>
+              </div>
+            )}
             {lockedUnit ? (
               <div className={styles.detailMetaItem}>
                 <span>Unidade*</span>
@@ -7773,15 +7897,6 @@ function MeasurementModal({
               </select>
             </label>
             <label className={styles.filterControl}>
-              <span>Tipo</span>
-              <input
-                type="text"
-                value={measurementForm.measurementType}
-                onChange={(event) => onChange("measurementType", event.target.value)}
-                placeholder="empreiteiro, fornecedor..."
-              />
-            </label>
-            <label className={styles.filterControl}>
               <span>Competência</span>
               <input
                 type="date"
@@ -7808,37 +7923,36 @@ function MeasurementModal({
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Valor bruto*</span>
+              <span>Valor bruto</span>
               <input
-                type="number"
-                min="0"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
+                placeholder="0,00"
                 value={measurementForm.grossAmount}
-                onChange={(event) => onChange("grossAmount", event.target.value)}
-                required={!measurementForm.subcontractId}
+                onChange={(event) => onChange("grossAmount", formatCurrencyInput(event.target.value))}
                 disabled={Boolean(measurementForm.subcontractId)}
               />
             </label>
             <label className={styles.filterControl}>
               <span>Retenções</span>
               <input
-                type="number"
-                min="0"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
+                placeholder="0,00"
                 value={measurementForm.retentionsAmount}
                 disabled={Boolean(measurementForm.subcontractId)}
-                onChange={(event) => onChange("retentionsAmount", event.target.value)}
+                onChange={(event) => onChange("retentionsAmount", formatCurrencyInput(event.target.value))}
               />
             </label>
             <label className={styles.filterControl}>
               <span>Valor líquido</span>
               <input
-                type="number"
-                min="0"
-                step="0.01"
+                type="text"
+                inputMode="decimal"
+                placeholder="0,00"
                 value={measurementForm.netAmount}
                 disabled={Boolean(measurementForm.subcontractId)}
-                onChange={(event) => onChange("netAmount", event.target.value)}
+                onChange={(event) => onChange("netAmount", formatCurrencyInput(event.target.value))}
               />
             </label>
             <label className={styles.filterControl}>
@@ -7991,6 +8105,7 @@ function IntegrationPanel({
 }
 
 function ProjectModal({
+  bridge,
   mode,
   projectForm,
   people,
@@ -8115,6 +8230,13 @@ function ProjectModal({
             </label>
           </div>
 
+          <h4 className={styles.sectionTitle}>Contrato de venda</h4>
+          <div className={styles.formGrid}>
+            <ContractTemplateField bridge={bridge} value={projectForm.contractTemplateId} onChange={(value) => onChange("contractTemplateId", value)} disabled={loading} />
+            <label className={styles.filterControl}><span>Lote</span><input value={projectForm.lot} maxLength={120} onChange={(event) => onChange("lot", event.target.value)} /></label>
+            <label className={styles.filterControl}><span>Matrícula</span><input value={projectForm.registration} maxLength={120} onChange={(event) => onChange("registration", event.target.value)} /></label>
+            <label className={styles.filterControl}><span>Metragem do empreendimento (m²)</span><input type="number" min="0.01" step="0.01" value={projectForm.landArea} onChange={(event) => onChange("landArea", event.target.value)} /></label>
+          </div>
           <h4 className={styles.sectionTitle}>Modelos de recibo</h4>
           <p className={styles.metricHint}>
             Escolhidos na obra e herdados pelas unidades. O modelo da venda vale para as parcelas e para
@@ -9050,6 +9172,7 @@ function MeasurementItemsModal({
   items,
   people,
   serviceTemplates,
+  serviceTemplatesRestricted = false,
   loadingServiceTemplates,
   importingServiceTemplates,
   onImportServiceTemplates,
@@ -9059,6 +9182,7 @@ function MeasurementItemsModal({
   onClose,
   onRetry,
   onCreateItem,
+  onCreateContractItems,
   onDeleteItem,
   onCreateInspection,
   onVerifyInspection,
@@ -9100,7 +9224,7 @@ function MeasurementItemsModal({
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
       <section
-        className={styles.modalCard}
+        className={`${styles.modalCard} ${styles.modalCardWide}`}
         role="dialog"
         aria-modal="true"
         aria-label={`Itens da medição ${measurement.code}`}
@@ -9113,7 +9237,6 @@ function MeasurementItemsModal({
           </button>
         </header>
         <div className={styles.modalBody}>
-          <MeasurementFinancialPanel key={measurement.id} bridge={bridge} measurement={measurement} onRefresh={onRetry} />
           <div className={styles.integrationGrid}>
             <article className={styles.integrationCard}>
               <h3>Total dos itens</h3>
@@ -9138,17 +9261,28 @@ function MeasurementItemsModal({
             <p className={styles.metricHint}>
               Medição {measurementStatusLabel[measurement.status] ?? measurement.status} - itens em somente leitura.
             </p>
+          ) : measurement.subcontractId ? (
+            <ContractMeasureItems
+              bridge={bridge}
+              measurement={measurement}
+              items={items}
+              people={people}
+              serviceTemplates={serviceTemplates}
+              saving={saving}
+              onCreateItems={onCreateContractItems}
+            />
           ) : (
             <form className={styles.card} onSubmit={handleItemSubmit}>
-              <ContractItemFields bridge={bridge} measurement={measurement} form={itemForm} onChange={handleItemChange} />
               <div className={styles.scopeHeader}>
                 <div className={styles.scopeMeta}>
                   <strong>Novo serviço medido</strong>
                   <span className={styles.metricHint}>
                     {loadingServiceTemplates
                       ? "Carregando catálogo de serviços..."
-                      : serviceTemplates.length
-                        ? `${serviceTemplates.length} serviço(s) no catálogo, com os itens de inspeção da planilha da Caixa`
+                      : serviceTemplatesRestricted
+                        ? `${serviceTemplates.length} serviço(s) da lista desta obra, definida na aba Serviços da obra`
+                        : serviceTemplates.length
+                        ? `Todo o catálogo (${serviceTemplates.length} serviço(s)). Para limitar, marque os serviços na aba Serviços da obra`
                         : "Catálogo vazio - importe a planilha de verificação de serviço (FVS) da Caixa"}
                   </span>
                 </div>
@@ -9161,23 +9295,32 @@ function MeasurementItemsModal({
                     multiple
                     hidden
                     disabled={importingServiceTemplates}
-                    onChange={(event) => {
-                      void onImportServiceTemplates(event.target.files)
+                    onChange={async (event) => {
+                      const files = Array.from(event.target.files ?? [])
                       event.target.value = ""
+                      const importedIds = await onImportServiceTemplates(files)
+                      if (importedIds?.length === 1) {
+                        handleItemChange("serviceTemplateId", importedIds[0])
+                      }
                     }}
                   />
                 </label>
               </div>
               <div className={styles.formGrid}>
                 <label className={styles.filterControl}>
-                  <span>Serviço do catálogo</span>
+                  <span>{serviceTemplatesRestricted ? "Serviço da obra*" : "Serviço do catálogo"}</span>
                   <select
                     value={itemForm.serviceTemplateId}
                     onChange={(event) => handleItemChange("serviceTemplateId", event.target.value)}
                     disabled={loadingServiceTemplates}
+                    required={serviceTemplatesRestricted}
                   >
                     <option value="">
-                      {serviceTemplates.length ? "Serviço fora do catálogo" : "Catálogo vazio"}
+                      {serviceTemplatesRestricted
+                        ? "Escolha um serviço da obra"
+                        : serviceTemplates.length
+                          ? "Serviço fora do catálogo"
+                          : "Catálogo vazio"}
                     </option>
                     {serviceTemplates.map((template) => (
                       <option key={template.id} value={template.id}>
@@ -9187,7 +9330,9 @@ function MeasurementItemsModal({
                   </select>
                 </label>
                 <label className={styles.filterControl}>
-                  <span>{itemForm.serviceTemplateId ? "Descrição (opcional)" : "Serviço medido*"}</span>
+                  <span>
+                    {itemForm.serviceTemplateId || serviceTemplatesRestricted ? "Descrição (opcional)" : "Serviço medido*"}
+                  </span>
                   <input
                     type="text"
                     value={itemForm.description}
@@ -9197,7 +9342,7 @@ function MeasurementItemsModal({
                         ? selectedTemplateName || "Usa o nome do serviço do catálogo"
                         : "Alvenaria de vedação do pavimento 3"
                     }
-                    required={!itemForm.serviceTemplateId}
+                    required={!itemForm.serviceTemplateId && !serviceTemplatesRestricted}
                   />
                 </label>
                 <label className={styles.filterControl}>
@@ -9290,6 +9435,7 @@ function MeasurementItemsModal({
                       key={item.id}
                       bridge={bridge}
                       item={item}
+                      serviceName={serviceTemplates.find((template) => template.id === item.serviceTemplateId)?.name ?? null}
                       people={people}
                       isLocked={isLocked}
                       saving={saving}
@@ -9309,6 +9455,7 @@ function MeasurementItemsModal({
               </table>
             </div>
           )}
+          <MeasurementFinancialPanel key={measurement.id} bridge={bridge} measurement={measurement} onRefresh={onRetry} />
         </div>
       </section>
     </div>
@@ -9318,6 +9465,7 @@ function MeasurementItemsModal({
 function MeasurementItemRow({
   bridge,
   item,
+  serviceName = null,
   people,
   isLocked,
   saving,
@@ -9353,8 +9501,12 @@ function MeasurementItemRow({
       <tr>
         <td>{item.sequenceNumber}</td>
         <td>
-          <strong>{item.description}</strong>
-          <div className={styles.rowSecondaryText}>{item.productDescription || "sem referência de produto"}</div>
+          <strong>{serviceName ?? item.description}</strong>
+          <div className={styles.rowSecondaryText}>
+            {serviceName && item.description !== serviceName
+              ? item.description
+              : item.productDescription || (item.subcontractItemId ? "item do contrato" : "sem referência de produto")}
+          </div>
         </td>
         <td>
           {item.startDate ? formatDate(item.startDate) : "-"}

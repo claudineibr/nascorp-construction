@@ -37,6 +37,7 @@ from app.infrastructure.database.models import (
     ConstructionProcurementRequest,
     ConstructionProcurementItem,
     ConstructionProject,
+    ConstructionProjectServiceTemplate,
     ConstructionSchedulePhase,
     ConstructionServiceTemplate,
     ConstructionServiceTemplateAudit,
@@ -78,6 +79,7 @@ _COM_OBRA = (
     ConstructionSchedulePhase,
     ConstructionMeasurement,
     ConstructionProcurementRequest,
+    ConstructionProjectServiceTemplate,
 )
 
 # Catálogos da empresa: não pertencem a obra nenhuma.

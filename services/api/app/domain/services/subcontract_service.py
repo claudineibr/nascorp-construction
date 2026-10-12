@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import uuid4
@@ -5,6 +6,8 @@ from uuid import uuid4
 from app.domain.exceptions import ConstructionDomainError, ConstructionNotFoundError
 from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction
 from app.infrastructure.repository.subcontract_repository import SubcontractRepository
+
+_logger = logging.getLogger(__name__)
 
 
 def money(value):
@@ -35,11 +38,21 @@ class SubcontractService:
         return {"id": row.id, "project_id": row.project_id, "code": row.code, "title": row.title,
             "supplier_person_id": row.supplier_person_id, "valid_from": row.valid_from, "valid_to": row.valid_to,
             "status": row.status, "retention_rate": str(row.retention_rate), "escrow_rate": str(row.escrow_rate),
-            "escrow_due_date": row.escrow_due_date, "released_version": row.released_version, "notes": row.notes}
+            "escrow_due_date": row.escrow_due_date, "released_version": row.released_version, "notes": row.notes,
+            "closure_reason": row.closure_reason}
+
+    async def list(self, company_id, project_id):
+        rows = await self.repository.list(company_id, project_id)
+        totals = await self.repository.item_totals(company_id, [row.id for row in rows])
+        return [{**self.header(row),
+            "total_amount": str(money(Decimal(totals.get(row.id, (0, 0))[0]))),
+            "remaining_amount": str(money(Decimal(totals.get(row.id, (0, 0))[1])))} for row in rows]
 
     async def detail(self, company_id, contract_id, version_id=None):
         row = await self.get(company_id, contract_id)
         items = await self.repository.items(company_id, contract_id)
+        names = await self.repository.service_template_names(company_id,
+            list({item.service_template_id for item in items if item.service_template_id}))
         if version_id is not None:
             version = await self.repository.version_by_id(company_id, contract_id, version_id)
             if version is None:
@@ -50,7 +63,9 @@ class SubcontractService:
                 "remaining_quantity": str(max(Decimal("0"), Decimal(item["quantity"]) -
                     consumed.get(item["id"], Decimal("0"))))} for item in version.sheet["items"]]}
         return {**self.header(row), "items": [{"id": item.id, "sequence_number": item.sequence_number,
-            "product_id": item.product_id, "description": item.description, "unit_of_measure": item.unit_of_measure,
+            "product_id": item.product_id, "service_template_id": item.service_template_id,
+            "service_template_name": names.get(item.service_template_id),
+            "description": item.description, "unit_of_measure": item.unit_of_measure,
             "quantity": str(item.quantity), "material_unit_price": str(item.material_unit_price),
             "labor_unit_price": str(item.labor_unit_price), "consumed_quantity": str(item.consumed_quantity),
             "remaining_quantity": str(item.quantity - item.consumed_quantity), "active": item.active}
@@ -73,6 +88,7 @@ class SubcontractService:
             products = await client.validate_procurement_products(company_id=company_id, user_id=actor_user_id, product_ids=product_ids)
             if {str(product.get("id")) for product in products} != {str(value) for value in product_ids}:
                 self.fail("Os produtos do contrato precisam pertencer à empresa.")
+        await self.validate_services(company_id, project_id, request.items)
         await self.repository.lock_code(company_id, project_id, request.code.strip())
         duplicate = await self.repository.by_code(company_id, project_id, request.code.strip())
         if duplicate is not None and duplicate.id != contract_id:
@@ -105,9 +121,10 @@ class SubcontractService:
                 self.session.add(item)
             if data.quantity < item.consumed_quantity:
                 self.fail("A quantidade contratada não pode ficar abaixo do que já foi medido.")
-            if item.consumed_quantity and (item.unit_of_measure != data.unit_of_measure or item.product_id != data.product_id):
-                self.fail("Produto e unidade de item já medido precisam ser preservados.")
-            for field in ("product_id", "description", "unit_of_measure", "quantity", "material_unit_price", "labor_unit_price"):
+            if item.consumed_quantity and (item.unit_of_measure != data.unit_of_measure
+                    or item.service_template_id != data.service_template_id):
+                self.fail("Serviço e unidade de item já medido precisam ser preservados.")
+            for field in ("product_id", "service_template_id", "description", "unit_of_measure", "quantity", "material_unit_price", "labor_unit_price"):
                 setattr(item, field, getattr(data, field))
             if not item.description.strip() or not item.unit_of_measure.strip():
                 self.fail("Descrição e unidade do item são obrigatórias.")
@@ -121,6 +138,25 @@ class SubcontractService:
         await self.session.commit()
         return await self.detail(company_id, row.id)
 
+    async def validate_services(self, company_id, project_id, items):
+        service_ids = list(dict.fromkeys(item.service_template_id for item in items if item.service_template_id))
+        templates = {}
+        for service_id in service_ids:
+            templates[service_id] = await self.projects._active_service_template(
+                company_id=company_id, service_template_id=service_id)
+        project_service_ids = await self.projects.repository.project_service_template_ids(
+            company_id=company_id, project_id=project_id)
+        if not project_service_ids:
+            return
+        if any(item.service_template_id is None for item in items):
+            _logger.info("construction.subcontract.service_rejected project_id=%s reason=free_text", project_id)
+            self.fail("Esta obra tem lista de serviços: escolha o serviço de cada item.")
+        for service_id, template in templates.items():
+            if service_id not in project_service_ids:
+                _logger.info("construction.subcontract.service_rejected project_id=%s service_template_id=%s reason=not_linked",
+                    project_id, service_id)
+                self.fail(f"O serviço {template.name} não está na lista de serviços da obra.")
+
     async def release(self, company_id, contract_id, actor_user_id):
         row = await self.get(company_id, contract_id, True)
         if row.status != "DRAFT":
@@ -133,7 +169,7 @@ class SubcontractService:
         row.released_version += 1
         row.status, row.released_by_user_id = "RELEASED", actor_user_id
         sheet = {**detail, "status": "RELEASED", "released_version": row.released_version,
-            "items": [{key: str(value) if key in {"id", "product_id"} and value else value
+            "items": [{key: str(value) if key in {"id", "product_id", "service_template_id"} and value else value
             for key, value in item.items()} for item in active]}
         sheet = {key: str(value) if key in {"id", "project_id", "supplier_person_id", "valid_from", "valid_to", "escrow_due_date"} and value else value
             for key, value in sheet.items()}

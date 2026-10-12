@@ -232,32 +232,26 @@ export function InspectionChecklist({
                         </>
                       ) : null}
 
-                      <button
-                        type="button"
-                        className={styles.iconButton}
-                        onClick={() => setHistoryFor(inspection)}
-                        disabled={!inspection.roundsCount}
-                        aria-label={`Ver as ${inspection.roundsCount} rodadas desta linha`}
-                        title={
-                          inspection.roundsCount
-                            ? `Ver as ${inspection.roundsCount} rodada(s) desta linha`
-                            : "Sem rodadas registradas"
-                        }
-                      >
-                        <History size={14} />
-                        {inspection.roundsCount || ""}
-                      </button>
-
-                      {inspection.roundsCount ? null : (
+                      {inspection.roundsCount ? (
                         <button
                           type="button"
-                          className={`${styles.iconButton} ${styles.dangerIconButton}`}
+                          className={styles.lineButton}
+                          onClick={() => setHistoryFor(inspection)}
+                          title={`Ver as ${inspection.roundsCount} rodada(s) desta linha`}
+                        >
+                          <History size={14} />
+                          Ver rodadas ({inspection.roundsCount})
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className={`${styles.lineButton} ${styles.lineButtonWarn}`}
                           onClick={() => onDeleteInspection(inspection)}
                           disabled={saving}
-                          aria-label="Excluir linha da FVS"
-                          title="Excluir linha da FVS"
+                          title="Excluir esta linha da FVS do item"
                         >
                           <Trash2 size={14} />
+                          Excluir linha
                         </button>
                       )}
                     </>

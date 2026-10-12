@@ -25,7 +25,14 @@ const resultLabel = {
 
 const formatSize = (bytes) => `${(bytes / 1024).toFixed(0)} KB`
 
-export function ServiceTemplateImportModal({ bridge, submitting, results, onClose, onImport }) {
+export function ServiceTemplateImportModal({
+  bridge,
+  submitting,
+  results,
+  onClose,
+  onImport,
+  title = "Importar planilha (FVS)",
+}) {
   const [files, setFiles] = useState([])
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState("")
@@ -102,7 +109,7 @@ export function ServiceTemplateImportModal({ bridge, submitting, results, onClos
     <div className={appStyles.modalOverlay} role="dialog" aria-modal="true">
       <div className={`${appStyles.modalCard} ${styles.importCard}`}>
         <header className={appStyles.modalHeader}>
-          <h3>Importar planilha (FVS)</h3>
+          <h3>{title}</h3>
           <button type="button" className={appStyles.closeButton} onClick={onClose}>
             Fechar
           </button>
@@ -196,6 +203,7 @@ export function ServiceTemplateImportModal({ bridge, submitting, results, onClos
                   {result.status === "created" || result.status === "updated"
                     ? ` · ${result.itemsCount} ${result.itemsCount === 1 ? "item" : "itens"}`
                     : ""}
+                  {result.linked ? " · vinculado à obra" : ""}
                   {result.message ? ` · ${result.message}` : ""}
                 </li>
               ))}

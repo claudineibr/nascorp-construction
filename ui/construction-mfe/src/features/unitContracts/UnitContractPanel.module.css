@@ -1,0 +1,20 @@
+.panel, .panel * { box-sizing: border-box; min-width: 0; }
+.panel { display: grid; gap: calc(1.25rem * var(--density)); color: var(--color-text); }
+.card { display: grid; gap: 0.8rem; padding: calc(1.25rem * var(--density)); border: 1px solid var(--color-border); border-radius: 14px; background: var(--color-surface); }
+.card h3 { margin: 0; }
+.fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 1rem; border: 0; padding: 0; }
+.field { display: flex; flex-direction: column; gap: 0.4rem; color: var(--color-text); font-size: 0.85rem; }
+.field input, .field select { width: 100%; padding: calc(0.7rem * var(--density-control)); border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface-muted); color: var(--color-text); font: inherit; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.primaryButton, .secondaryButton { display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem; padding: calc(0.7rem * var(--density-control)); border: 1px solid var(--color-border); border-radius: 12px; font: inherit; cursor: pointer; }
+.primaryButton { color: var(--color-surface); background: var(--color-primary); }
+.primaryButton:hover { background: var(--color-primary-strong); }
+.secondaryButton { color: var(--color-text); background: var(--color-surface-muted); }
+.secondaryButton:hover { background: var(--color-surface); }
+.primaryButton:disabled, .secondaryButton:disabled { opacity: 0.65; cursor: default; }
+.document { width: 100%; min-height: 36rem; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface); }
+.tableWrapper { overflow-x: auto; }
+.panel table { width: 100%; border-collapse: collapse; }
+.panel th, .panel td { padding: calc(0.7rem * var(--density)) calc(0.8rem * var(--density-control)); border-bottom: 1px solid var(--color-border); text-align: left; vertical-align: top; }
+.panel th { background: var(--color-surface-muted); font-size: 0.75rem; text-transform: uppercase; }
+@media (width <= 640px) { .document { min-height: 26rem; } }

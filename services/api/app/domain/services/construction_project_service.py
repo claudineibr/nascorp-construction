@@ -126,6 +126,8 @@ def _describe_erp_failure(error: Exception) -> str:
 
 _logger = logging.getLogger(__name__)
 
+SHARED_PAYABLE_BATCH_LIMIT = 1000
+
 class ErpMeasurementClient(Protocol):
     async def list_person_summaries(
         self,
@@ -230,6 +232,7 @@ class ConstructionProjectService:
     ) -> ConstructionProject:
         self._ensure_known_value(value=request.status, allowed_values=PROJECT_STATUSES, field_name="status")
         self._ensure_known_value(value=request.project_type, allowed_values=PROJECT_TYPES, field_name="project_type")
+        await self._validate_contract_template(company_id, request.contract_template_id)
         existing_project = await self.repository.get_project_by_code(company_id=company_id, code=request.code)
         if existing_project:
             raise ConstructionDuplicateCodeError(resource_name="a obra", code=request.code)
@@ -250,6 +253,10 @@ class ConstructionProjectService:
             actual_end_date=request.actual_end_date,
             receipt_template_id=request.receipt_template_id,
             commission_receipt_template_id=request.commission_receipt_template_id,
+            contract_template_id=request.contract_template_id,
+            lot=request.lot,
+            registration=request.registration,
+            land_area=request.land_area,
         )
         await self.repository.add(project)
         project_created_event = self._build_project_created_event(project=project, actor_user_id=actor_user_id)
@@ -346,18 +353,37 @@ class ConstructionProjectService:
         status: str | None = None,
         start_date_from: date | None = None,
         start_date_to: date | None = None,
+        buyer_person_id: UUID | None = None,
         page: int,
         page_size: int,
-    ) -> tuple[list[ConstructionProject], int]:
-        return await self.repository.list_projects(
+    ) -> tuple[list[ConstructionProject], int, dict[UUID, list]]:
+        items, total = await self.repository.list_projects(
             company_id=company_id,
             search=search,
             status=status,
             start_date_from=start_date_from,
             start_date_to=start_date_to,
+            buyer_person_id=buyer_person_id,
             page=page,
             page_size=page_size,
         )
+        if buyer_person_id is None:
+            return items, total, {}
+
+        _logger.info(
+            "construction.projects.list_by_buyer buyer_person_id=%s total=%s",
+            buyer_person_id,
+            total,
+        )
+        buyer_units = await self.repository.list_buyer_units(
+            company_id=company_id,
+            project_ids=[item.id for item in items],
+            buyer_person_id=buyer_person_id,
+        )
+        units_by_project: dict[UUID, list] = {}
+        for unit in buyer_units:
+            units_by_project.setdefault(unit.project_id, []).append(unit)
+        return items, total, units_by_project
 
     async def _resolve_supplier_qualification_status(
         self,
@@ -392,6 +418,8 @@ class ConstructionProjectService:
         page_size: int,
         person_id: UUID | None = None,
         business_role: str | None = None,
+        construction_unit_buyer: bool = False,
+        construction_project_id: UUID | None = None,
     ) -> dict[str, Any]:
         """A lista de pessoas do formulario, e o caso de UMA pessoa por id.
 
@@ -414,6 +442,8 @@ class ConstructionProjectService:
                 message="A integração com o ERP está indisponível para consultar pessoas.",
                 error_code="CONSTRUCTION_ERP_INTEGRATION_UNAVAILABLE",
             )
+        if construction_project_id is not None:
+            await self.get_project(company_id=company_id, project_id=construction_project_id)
 
         return await self.erp_client.list_person_summaries(
             company_id=company_id,
@@ -423,6 +453,8 @@ class ConstructionProjectService:
             page_size=page_size,
             person_id=person_id,
             business_role=business_role,
+            construction_unit_buyer=construction_unit_buyer,
+            construction_project_id=construction_project_id,
         )
 
     async def get_project(self, *, company_id: UUID, project_id: UUID) -> ConstructionProject:
@@ -431,6 +463,10 @@ class ConstructionProjectService:
             raise ConstructionNotFoundError(resource_name="a obra")
 
         return project
+
+    async def _validate_contract_template(self, company_id, template_id):
+        if template_id and not await self.repository.valid_contract_template(company_id, template_id):
+            raise ConstructionInvalidValueError(message="O template de contrato deve estar publicado nesta empresa e conter um arquivo Word.")
 
     async def update_project(
         self,
@@ -441,6 +477,7 @@ class ConstructionProjectService:
     ) -> ConstructionProject:
         project = await self.get_project(company_id=company_id, project_id=project_id)
         updates = request.model_dump(exclude_unset=True)
+        await self._validate_contract_template(company_id, updates.get("contract_template_id"))
         next_status = updates.get("status")
         if next_status is not None:
             self._ensure_project_status_transition(current_status=project.status, next_status=next_status)
@@ -1224,20 +1261,22 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_SCHEDULE_PROJECT_MISMATCH",
             )
 
-        existing_measurement = await self.repository.get_measurement_by_code(
+        code_number = await self.repository.get_next_measurement_code_number(
             company_id=company_id,
             project_id=project_id,
-            code=request.code,
         )
-        if existing_measurement:
-            raise ConstructionDuplicateCodeError(resource_name="a medição", code=request.code)
-
-        sequence_number = request.sequence_number
-        if sequence_number is None:
-            sequence_number = await self.repository.get_next_measurement_sequence(
-                company_id=company_id,
-                project_id=project_id,
-            )
+        code = f"MED-{code_number:06d}"
+        sequence_number = await self.repository.get_next_measurement_sequence(
+            company_id=company_id,
+            unit_id=unit.id,
+        )
+        _logger.info(
+            "construction.measurement.code_generated project_id=%s unit_id=%s code=%s sequence_number=%s",
+            project_id,
+            unit.id,
+            code,
+            sequence_number,
+        )
 
         subcontract = None
         if request.subcontract_id:
@@ -1246,20 +1285,12 @@ class ConstructionProjectService:
                 raise ConstructionInvalidValueError(message="Selecione contrato liberado desta obra.")
             if request.supplier_person_id and request.supplier_person_id != subcontract.supplier_person_id:
                 raise ConstructionInvalidValueError(message="O fornecedor da medição precisa corresponder ao contrato.")
-        gross_amount = request.gross_amount or request.measured_amount
-        if subcontract and gross_amount is None:
-            gross_amount = Decimal("0")
-        if gross_amount is None or gross_amount <= Decimal("0") and subcontract is None:
-            raise ConstructionInvalidValueError(
-                message="Informe o valor bruto da medição.",
-                error_code="CONSTRUCTION_MEASUREMENT_GROSS_REQUIRED",
-            )
-
+        gross_amount = request.gross_amount or request.measured_amount or Decimal("0")
         retentions_amount = request.retentions_amount or Decimal("0")
         net_amount = request.net_amount or request.measured_amount or (gross_amount - retentions_amount)
-        if net_amount <= Decimal("0") and subcontract is None:
+        if net_amount < Decimal("0") and subcontract is None:
             raise ConstructionInvalidValueError(
-                message="O valor líquido da medição precisa ser maior que zero.",
+                message="As retenções da medição não podem passar do valor bruto.",
                 error_code="CONSTRUCTION_MEASUREMENT_NET_INVALID",
             )
 
@@ -1270,9 +1301,8 @@ class ConstructionProjectService:
             retention_details=[item.model_dump(mode="json") for item in request.retention_details],
             unit_id=request.unit_id,
             schedule_phase_id=request.schedule_phase_id,
-            code=request.code.strip(),
+            code=code,
             sequence_number=sequence_number,
-            measurement_type=request.measurement_type.strip() if request.measurement_type else None,
             competence_date=request.competence_date,
             description=request.description,
             gross_amount=gross_amount,
@@ -1306,6 +1336,284 @@ class ConstructionProjectService:
             raise ConstructionNotFoundError(resource_name="a medição")
 
         return measurement
+
+    async def _measurement_open_for_payable_link(self, *, company_id: UUID, measurement_id: UUID) -> ConstructionMeasurement:
+        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
+        if measurement.status != ConstructionMeasurementStatus.APPROVED:
+            raise ConstructionInvalidValueError(
+                message="Só medição aprovada pode ser vinculada a um título do ERP.",
+                error_code="CONSTRUCTION_MEASUREMENT_LINK_REQUIRES_APPROVAL",
+            )
+        if measurement.external_accounts_payable_id is not None:
+            raise ConstructionInvalidValueError(
+                message="A medição já está vinculada a um título do ERP.",
+                error_code="CONSTRUCTION_MEASUREMENT_ALREADY_LINKED",
+            )
+        if measurement.supplier_person_id is None:
+            raise ConstructionInvalidValueError(
+                message="Informe o fornecedor da medição antes de vincular um título.",
+                error_code="CONSTRUCTION_MEASUREMENT_SUPPLIER_REQUIRED",
+            )
+        amount = measurement.net_amount if measurement.net_amount is not None else measurement.measured_amount
+        if amount is None or amount <= Decimal("0"):
+            _logger.info(
+                "construction.measurement.payable_link_refused reason=zero_value measurement_id=%s", measurement.id
+            )
+            raise ConstructionInvalidValueError(
+                message="Medição sem valor não recebe título próprio: o pagamento da empreitada fica na DNF que paga o conjunto.",
+                error_code="CONSTRUCTION_MEASUREMENT_ZERO_VALUE_NO_TITLE",
+            )
+        if self.erp_client is None:
+            raise ConstructionDomainError(message="A integração com o ERP não está disponível.", status_code=502)
+        return measurement
+
+    async def list_measurement_payable_candidates(
+        self,
+        *,
+        company_id: UUID,
+        measurement_id: UUID,
+        user_id: UUID | None = None,
+        search: str | None = None,
+    ) -> list[dict[str, Any]]:
+        measurement = await self._measurement_open_for_payable_link(company_id=company_id, measurement_id=measurement_id)
+        try:
+            result = await self.erp_client.list_measurement_payable_candidates(
+                company_id=company_id,
+                measurement_id=measurement.id,
+                user_id=user_id,
+                search=search,
+            )
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message="Não foi possível buscar os títulos no ERP.",
+            ) from request_error
+        except httpx.RequestError as request_error:
+            raise ConstructionDomainError(message="Não foi possível falar com o ERP agora.", status_code=502) from request_error
+        return list(result.get("items", []))
+
+    async def link_measurement_payable(
+        self,
+        *,
+        company_id: UUID,
+        measurement_id: UUID,
+        payable_document_id: UUID,
+        user_id: UUID | None = None,
+    ) -> ConstructionMeasurement:
+        measurement = await self._measurement_open_for_payable_link(company_id=company_id, measurement_id=measurement_id)
+        _logger.info(
+            "construction.measurement.payable_link measurement_id=%s payable_document_id=%s",
+            measurement.id,
+            payable_document_id,
+        )
+        try:
+            payload = await self.erp_client.link_measurement_payable(
+                company_id=company_id,
+                measurement_id=measurement.id,
+                user_id=user_id,
+                payable_document_id=payable_document_id,
+            )
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message="Não foi possível vincular o título no ERP.",
+            ) from request_error
+        except httpx.RequestError as request_error:
+            raise ConstructionDomainError(message="Não foi possível falar com o ERP agora.", status_code=502) from request_error
+        self._apply_accounts_payable_snapshot_from_payload(measurement=measurement, payload=payload)
+        await self.repository.commit()
+        _logger.info(
+            "construction.measurement.payable_linked measurement_id=%s payable_document_id=%s",
+            measurement.id,
+            measurement.external_accounts_payable_id,
+        )
+        return measurement
+
+    async def _erp_request(self, call, *, fallback_message: str) -> Any:
+        if self.erp_client is None:
+            raise ConstructionDomainError(message="A integração com o ERP não está disponível.", status_code=502)
+        try:
+            return await call()
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(request_error=request_error, fallback_message=fallback_message) from request_error
+        except httpx.RequestError as request_error:
+            raise ConstructionDomainError(message="Não foi possível falar com o ERP agora.", status_code=502) from request_error
+
+    async def list_zero_value_suppliers(self, *, company_id: UUID, project_id: UUID) -> list[dict[str, Any]]:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        rows = await self.repository.zero_value_suppliers(company_id=company_id, project_id=project_id)
+        return [{"supplier_person_id": supplier_id, "open_count": count} for supplier_id, count in rows]
+
+    async def list_zero_value_measurements(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        page: int,
+        page_size: int,
+        **filters,
+    ) -> tuple[list[dict[str, Any]], int]:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        return await self.repository.list_zero_value_measurements(
+            company_id=company_id, project_id=project_id, page=page, page_size=page_size, **filters
+        )
+
+    async def zero_value_measurement_ids(self, *, company_id: UUID, project_id: UUID, **filters) -> list[UUID]:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        return await self.repository.zero_value_measurement_ids(
+            company_id=company_id, project_id=project_id, limit=SHARED_PAYABLE_BATCH_LIMIT, **filters
+        )
+
+    async def list_shared_payables(self, *, company_id: UUID, project_id: UUID, user_id: UUID | None) -> list[dict]:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        result = await self._erp_request(
+            lambda: self.erp_client.list_shared_payables(company_id=company_id, project_id=project_id, user_id=user_id),
+            fallback_message="Não foi possível buscar as DNFs da empreitada no ERP.",
+        )
+        return list(result.get("items", []))
+
+    async def list_shared_payable_candidates(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        supplier_person_id: UUID,
+        user_id: UUID | None,
+        search: str | None = None,
+    ) -> list[dict]:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        result = await self._erp_request(
+            lambda: self.erp_client.list_shared_payable_candidates(
+                company_id=company_id,
+                project_id=project_id,
+                user_id=user_id,
+                supplier_person_id=supplier_person_id,
+                search=search,
+            ),
+            fallback_message="Não foi possível buscar os títulos no ERP.",
+        )
+        return list(result.get("items", []))
+
+    async def _shared_payable_measurements(
+        self, *, company_id: UUID, project_id: UUID, measurement_ids: list[UUID]
+    ) -> list[ConstructionMeasurement]:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        unique_ids = list(dict.fromkeys(measurement_ids))
+        measurements = await self.repository.list_measurements_by_ids(
+            company_id=company_id, project_id=project_id, measurement_ids=unique_ids
+        )
+        if len(measurements) != len(unique_ids):
+            raise ConstructionNotFoundError(resource_name="uma ou mais medições desta obra")
+        return measurements
+
+    async def link_shared_payable(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        payable_document_id: UUID,
+        measurement_ids: list[UUID],
+        user_id: UUID | None = None,
+    ) -> int:
+        _logger.info(
+            "construction.measurement.shared_payable_link project_id=%s payable_document_id=%s requested=%s",
+            project_id,
+            payable_document_id,
+            len(measurement_ids),
+        )
+        measurements = await self._shared_payable_measurements(
+            company_id=company_id, project_id=project_id, measurement_ids=measurement_ids
+        )
+        for measurement in measurements:
+            amount = measurement.net_amount if measurement.net_amount is not None else measurement.measured_amount
+            if (
+                measurement.status != ConstructionMeasurementStatus.APPROVED
+                or measurement.subcontract_id is not None
+                or (amount is not None and amount > Decimal("0"))
+            ):
+                raise ConstructionInvalidValueError(
+                    message=f"A OS {measurement.code} não é uma medição aprovada sem valor: vincule pelo título próprio dela.",
+                    error_code="CONSTRUCTION_MEASUREMENT_SHARED_NOT_ZERO",
+                )
+            if measurement.external_accounts_payable_id is not None and not (
+                measurement.external_accounts_payable_id == payable_document_id
+                and measurement.external_accounts_payable_shared
+            ):
+                raise ConstructionInvalidValueError(
+                    message=f"A OS {measurement.code} já está vinculada a outro título do ERP.",
+                    error_code="CONSTRUCTION_MEASUREMENT_SHARED_ALREADY_LINKED",
+                )
+            if measurement.supplier_person_id is None:
+                raise ConstructionInvalidValueError(
+                    message=f"A OS {measurement.code} não tem fornecedor. Informe o fornecedor antes de vincular a DNF.",
+                    error_code="CONSTRUCTION_MEASUREMENT_SUPPLIER_REQUIRED",
+                )
+        suppliers = {measurement.supplier_person_id for measurement in measurements}
+        if len(suppliers) > 1:
+            raise ConstructionInvalidValueError(
+                message="As OS marcadas são de fornecedores diferentes. Vincule as de um fornecedor por vez.",
+                error_code="CONSTRUCTION_MEASUREMENT_SHARED_OTHER_SUPPLIER",
+            )
+        supplier_person_id = suppliers.pop()
+        payload = await self._erp_request(
+            lambda: self.erp_client.check_shared_payable(
+                company_id=company_id,
+                project_id=project_id,
+                user_id=user_id,
+                payable_document_id=payable_document_id,
+                supplier_person_id=supplier_person_id,
+            ),
+            fallback_message="Não foi possível conferir a DNF no ERP.",
+        )
+        if str(payload.get("person_id")) != str(supplier_person_id):
+            raise ConstructionInvalidValueError(
+                message="A DNF é de outro fornecedor. Escolha uma DNF do fornecedor das OS.",
+                error_code="CONSTRUCTION_MEASUREMENT_SHARED_OTHER_SUPPLIER",
+            )
+        linked = 0
+        for measurement in measurements:
+            if measurement.external_accounts_payable_id is None:
+                linked += 1
+            self._apply_accounts_payable_snapshot_from_payload(measurement=measurement, payload=payload)
+            measurement.external_accounts_payable_shared = True
+        await self.repository.commit()
+        _logger.info(
+            "construction.measurement.shared_payable_linked project_id=%s payable_document_id=%s count=%s",
+            project_id,
+            payable_document_id,
+            linked,
+        )
+        return linked
+
+    async def unlink_shared_payable(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        payable_document_id: UUID,
+        measurement_ids: list[UUID],
+    ) -> int:
+        measurements = await self._shared_payable_measurements(
+            company_id=company_id, project_id=project_id, measurement_ids=measurement_ids
+        )
+        for measurement in measurements:
+            if measurement.external_accounts_payable_id != payable_document_id or not measurement.external_accounts_payable_shared:
+                raise ConstructionInvalidValueError(
+                    message=f"A OS {measurement.code} não está vinculada a esta DNF da empreitada.",
+                    error_code="CONSTRUCTION_MEASUREMENT_SHARED_NOT_IN_PAYABLE",
+                )
+        for measurement in measurements:
+            measurement.external_accounts_payable_id = None
+            measurement.external_accounts_payable_status = None
+            measurement.external_accounts_payable_shared = False
+        await self.repository.commit()
+        _logger.info(
+            "construction.measurement.shared_payable_unlinked project_id=%s payable_document_id=%s count=%s",
+            project_id,
+            payable_document_id,
+            len(measurements),
+        )
+        return len(measurements)
 
     async def update_measurement(
         self,
@@ -1342,16 +1650,6 @@ class ConstructionProjectService:
                     error_code="CONSTRUCTION_SCHEDULE_PROJECT_MISMATCH",
                 )
 
-        next_code = updates.get("code")
-        if next_code is not None and next_code != measurement.code:
-            existing_measurement = await self.repository.get_measurement_by_code(
-                company_id=company_id,
-                project_id=measurement.project_id,
-                code=next_code,
-            )
-            if existing_measurement and existing_measurement.id != measurement.id:
-                raise ConstructionDuplicateCodeError(resource_name="a medição", code=next_code)
-
         gross_amount = updates.get("gross_amount", measurement.gross_amount)
         retentions_amount = updates.get("retentions_amount", measurement.retentions_amount)
         net_amount = updates.get("net_amount", measurement.net_amount)
@@ -1369,9 +1667,9 @@ class ConstructionProjectService:
             else:
                 net_amount = measured_amount
 
-        if net_amount is None or net_amount <= Decimal("0"):
+        if net_amount is None or net_amount < Decimal("0"):
             raise ConstructionInvalidValueError(
-                message="O valor líquido da medição precisa ser maior que zero.",
+                message="As retenções da medição não podem passar do valor bruto.",
                 error_code="CONSTRUCTION_MEASUREMENT_NET_INVALID",
             )
 
@@ -1457,6 +1755,18 @@ class ConstructionProjectService:
             return measurement
 
         retry_integration = measurement.status == ConstructionMeasurementStatus.APPROVED
+        if retry_integration and measurement.approved_at is None:
+            _logger.info(
+                "construction.measurement.retry_refused measurement_id=%s reason=imported_approved",
+                measurement.id,
+            )
+            raise ConstructionInvalidValueError(
+                message=(
+                    "Esta medição foi importada já aprovada e não é enviada ao ERP: "
+                    "o título a pagar dela vem da importação do financeiro."
+                ),
+                error_code="CONSTRUCTION_MEASUREMENT_IMPORTED_NOT_SENT",
+            )
         if retry_integration and getattr(measurement, "subcontract_id", None):
             event = await self.event_repository.latest_measurement_event(company_id, measurement.id) if self.event_repository else None
             if event is not None:
@@ -1529,6 +1839,15 @@ class ConstructionProjectService:
             if measurement.approved_at is None:
                 measurement.approved_at = datetime.now(tz=UTC)
 
+        if not getattr(measurement, "subcontract_id", None) and (measurement.measured_amount or Decimal("0")) <= Decimal("0"):
+            _logger.info(
+                "construction.measurement.approved_without_payable measurement_id=%s reason=zero_value",
+                measurement.id,
+            )
+            await self.repository.commit()
+            await self.repository.refresh(measurement)
+            return measurement
+
         approval_event = self._build_measurement_approved_event(
             measurement=measurement,
             analytic_cost_center_id=unit.analytic_cost_center_id,
@@ -1580,6 +1899,36 @@ class ConstructionProjectService:
             )
             if service_template is None:
                 raise ConstructionNotFoundError(resource_name="o serviço do catálogo")
+            if not service_template.is_active:
+                raise ConstructionInvalidValueError(
+                    message=f"O serviço {service_template.name} está desativado no catálogo.",
+                    error_code="CONSTRUCTION_SERVICE_TEMPLATE_INACTIVE",
+                )
+
+        project_service_ids = await self.repository.project_service_template_ids(
+            company_id=company_id,
+            project_id=measurement.project_id,
+        )
+        if project_service_ids:
+            if service_template is None:
+                _logger.info(
+                    "construction.project_services.rejected measurement_id=%s reason=free_text",
+                    measurement_id,
+                )
+                raise ConstructionInvalidValueError(
+                    message="Esta obra tem lista de serviços: escolha um serviço da lista.",
+                    error_code="CONSTRUCTION_MEASUREMENT_ITEM_PROJECT_SERVICE_REQUIRED",
+                )
+            if service_template.id not in project_service_ids:
+                _logger.info(
+                    "construction.project_services.rejected measurement_id=%s service_template_id=%s reason=not_linked",
+                    measurement_id,
+                    service_template.id,
+                )
+                raise ConstructionInvalidValueError(
+                    message=f"O serviço {service_template.name} não está na lista de serviços da obra.",
+                    error_code="CONSTRUCTION_MEASUREMENT_ITEM_SERVICE_NOT_IN_PROJECT",
+                )
 
         description = (request.description or "").strip()
         if not description and service_template is not None:
@@ -2073,6 +2422,179 @@ class ConstructionProjectService:
             search=search,
             only_deleted=only_deleted,
         )
+
+    async def list_service_templates_for_project(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        search: str | None = None,
+    ) -> tuple[list[ConstructionServiceTemplate], bool]:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        linked_ids = await self.repository.project_service_template_ids(company_id=company_id, project_id=project_id)
+        templates = await self.repository.list_service_templates(
+            company_id=company_id,
+            only_active=True,
+            search=search,
+            restrict_to_project_id=project_id if linked_ids else None,
+        )
+        return templates, bool(linked_ids)
+
+    async def list_project_services(self, *, company_id: UUID, project_id: UUID) -> list[ConstructionServiceTemplate]:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        return await self.repository.list_project_service_templates(company_id=company_id, project_id=project_id)
+
+    async def _active_service_template(self, *, company_id: UUID, service_template_id: UUID) -> ConstructionServiceTemplate:
+        template = await self.repository.get_service_template(
+            company_id=company_id,
+            service_template_id=service_template_id,
+        )
+        if template is None:
+            raise ConstructionNotFoundError(resource_name="o serviço do catálogo")
+        if not template.is_active:
+            raise ConstructionInvalidValueError(
+                message=f"O serviço {template.name} está desativado no catálogo. Ative-o antes de usá-lo.",
+                error_code="CONSTRUCTION_SERVICE_TEMPLATE_INACTIVE",
+            )
+        return template
+
+    async def link_project_services(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        service_template_ids: list[UUID],
+        actor_user_id: UUID | None = None,
+    ) -> list[ConstructionServiceTemplate]:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        requested = list(dict.fromkeys(service_template_ids))
+        if not requested:
+            raise ConstructionInvalidValueError(
+                message="Escolha ao menos um serviço do catálogo para vincular à obra.",
+                error_code="CONSTRUCTION_PROJECT_SERVICE_REQUIRED",
+            )
+        for service_template_id in requested:
+            await self._active_service_template(company_id=company_id, service_template_id=service_template_id)
+        linked = await self.repository.link_project_service_templates(
+            company_id=company_id,
+            project_id=project_id,
+            service_template_ids=requested,
+            actor_user_id=actor_user_id,
+        )
+        await self.repository.commit()
+        _logger.info(
+            "construction.project_services.linked project_id=%s requested=%s linked=%s",
+            project_id,
+            len(requested),
+            linked,
+        )
+        return await self.repository.list_project_service_templates(company_id=company_id, project_id=project_id)
+
+    async def unlink_project_service(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        service_template_id: UUID,
+        actor_user_id: UUID | None = None,
+    ) -> None:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        removed = await self.repository.unlink_project_service_templates(
+            company_id=company_id,
+            project_id=project_id,
+            service_template_ids=[service_template_id],
+            actor_user_id=actor_user_id,
+        )
+        if not removed:
+            raise ConstructionNotFoundError(resource_name="o serviço na lista da obra")
+        await self.repository.commit()
+        _logger.info(
+            "construction.project_services.unlinked project_id=%s service_template_id=%s",
+            project_id,
+            service_template_id,
+        )
+
+    async def replace_project_services(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        service_template_ids: list[UUID],
+        actor_user_id: UUID | None = None,
+    ) -> list[ConstructionServiceTemplate]:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        requested = list(dict.fromkeys(service_template_ids))
+        current = await self.repository.project_service_template_ids(company_id=company_id, project_id=project_id)
+        to_add = [service_template_id for service_template_id in requested if service_template_id not in current]
+        to_remove = list(current - set(requested))
+        for service_template_id in to_add:
+            await self._active_service_template(company_id=company_id, service_template_id=service_template_id)
+        await self.repository.link_project_service_templates(
+            company_id=company_id,
+            project_id=project_id,
+            service_template_ids=to_add,
+            actor_user_id=actor_user_id,
+        )
+        await self.repository.unlink_project_service_templates(
+            company_id=company_id,
+            project_id=project_id,
+            service_template_ids=to_remove,
+            actor_user_id=actor_user_id,
+        )
+        await self.repository.commit()
+        _logger.info(
+            "construction.project_services.replaced project_id=%s added=%s removed=%s",
+            project_id,
+            len(to_add),
+            len(to_remove),
+        )
+        return await self.repository.list_project_service_templates(company_id=company_id, project_id=project_id)
+
+    async def import_project_services(
+        self,
+        *,
+        company_id: UUID,
+        project_id: UUID,
+        files: list[tuple[str, bytes]],
+        actor_user_id: UUID | None = None,
+        actor_person_id: UUID | None = None,
+    ) -> list[dict[str, Any]]:
+        await self.get_project(company_id=company_id, project_id=project_id)
+        results = await self.import_service_templates(
+            company_id=company_id,
+            files=files,
+            actor_user_id=actor_user_id,
+            actor_person_id=actor_person_id,
+        )
+        to_link: list[UUID] = []
+        for result in results:
+            template_id = result.get("service_template_id")
+            result["linked"] = False
+            if template_id is None:
+                continue
+            template = await self.repository.get_service_template(
+                company_id=company_id,
+                service_template_id=template_id,
+            )
+            if template is None or not template.is_active:
+                result["message"] = "O serviço está desativado no catálogo e não foi vinculado à obra."
+                continue
+            result["linked"] = True
+            to_link.append(template_id)
+        linked = await self.repository.link_project_service_templates(
+            company_id=company_id,
+            project_id=project_id,
+            service_template_ids=to_link,
+            actor_user_id=actor_user_id,
+        )
+        await self.repository.commit()
+        _logger.info(
+            "construction.project_services.imported project_id=%s files=%s linked=%s",
+            project_id,
+            len(files),
+            linked,
+        )
+        return results
 
     async def get_service_template(
         self,

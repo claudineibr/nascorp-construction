@@ -29,6 +29,8 @@ export function PersonPicker({
   // GRAVADO continua sendo resolvido pelo id, fora do recorte: um corretor que
   // perdeu o papel nao pode sumir do campo da unidade dele.
   businessRole = null,
+  constructionUnitBuyer = false,
+  constructionProjectId = null,
   warnUnqualified = false,
   qualificationWarnings = null,
   // Nomes que a tela ja conhece, para o campo abrir preenchido sem uma ida ao
@@ -124,6 +126,8 @@ export function PersonPicker({
           page: 1,
           pageSize: PAGE_SIZE,
           businessRole,
+          constructionUnitBuyer,
+          constructionProjectId,
           signal: controller.signal,
         })
         if (active) {
@@ -147,7 +151,7 @@ export function PersonPicker({
       active = false
       controller.abort()
     }
-  }, [bridge, businessRole, debouncedTerm, open, searchAttempt])
+  }, [bridge, businessRole, constructionProjectId, constructionUnitBuyer, debouncedTerm, open, searchAttempt])
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -215,7 +219,7 @@ export function PersonPicker({
 
   return (
     <div className={styles.field} ref={wrapperRef}>
-      <span className={styles.label}>{label}</span>
+      <span className={styles.label}>{required ? `${label}*` : label}</span>
       {value ? (
         <div className={styles.chosen}>
           <span className={styles.name} title={nomeSelecionado}>
@@ -273,9 +277,13 @@ export function PersonPicker({
             </li>
           ) : options.length === 0 ? (
             <li className={styles.hint}>
-              {businessRole
-                ? "Nenhuma pessoa com este papel. Verifique o cadastro da pessoa."
-                : "Nenhuma pessoa encontrada."}
+              {constructionUnitBuyer
+                ? constructionProjectId
+                  ? "Nenhum comprador de unidade desta obra encontrado."
+                  : "Nenhum comprador de unidade encontrado."
+                : businessRole
+                  ? "Nenhuma pessoa com este papel. Verifique o cadastro da pessoa."
+                  : "Nenhuma pessoa encontrada."}
             </li>
           ) : (
             options.map((person, indice) => (

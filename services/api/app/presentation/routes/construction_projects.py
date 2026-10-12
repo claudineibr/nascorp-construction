@@ -3,20 +3,32 @@ from decimal import Decimal
 from math import ceil
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import Header, APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.context import ConstructionContext
-from app.core.security import get_construction_context, require_permission
+from app.core.security import get_construction_context, require_permission, require_service_key
 from app.domain.exceptions import ConstructionDomainError
 from app.domain.permissions import ConstructionFeature, PermissionAction
 from app.domain.services import ConstructionProjectService
+from app.domain.services.construction_contract_context_service import ConstructionContractContextService
+from app.schemas.construction.unit_contract import ConstructionUnitContractContextResponse
 from app.domain.services.construction_service_template_parser import build_service_template_example
 from app.infrastructure.clients import ErpConstructionClient
 from app.infrastructure.database.session import get_session
 from app.infrastructure.events import create_construction_integration_dispatcher
 from app.infrastructure.repository.construction_repository import ConstructionRepository
 from app.infrastructure.repository.event_repository import EventRepository
+from app.schemas.construction.project import (
+    ConstructionMeasurementPayableLink,
+    ConstructionProjectBuyerUnit,
+    ConstructionProjectServiceLinkRequest,
+    ConstructionProjectServiceReplaceRequest,
+    ConstructionSharedPayableMeasurementsRequest,
+    ConstructionSharedPayableResult,
+    ConstructionZeroValueMeasurementListResponse,
+    ConstructionZeroValueSupplier,
+)
 from app.schemas.construction import (
     ConstructionBlockCreate,
     ConstructionBlockListResponse,
@@ -87,6 +99,11 @@ from app.schemas.construction import (
 
 router = APIRouter(prefix="/construction", tags=["construction"])
 
+@router.get("/internal/units/{unit_id}/contract-context", response_model=ConstructionUnitContractContextResponse, dependencies=[Depends(require_service_key)])
+async def unit_contract_context(unit_id: UUID, company_id: UUID = Header(alias="X-Company-ID"), session=Depends(get_session)):
+    return await ConstructionContractContextService(session).get_context(company_id, unit_id)
+
+
 MAX_SERVICE_TEMPLATE_FILES = 30
 MAX_SERVICE_TEMPLATE_FILE_BYTES = 5 * 1024 * 1024
 
@@ -145,6 +162,7 @@ async def list_projects(
     status: str | None = Query(default=None),
     start_date_from: date | None = Query(default=None),
     start_date_to: date | None = Query(default=None),
+    buyer_person_id: UUID | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     # O teto de 100 e o do banco, nao o da tela: a lista de obras pagina no
     # servidor e o seletor de itens por pagina para em 100 pelo mesmo motivo.
@@ -152,17 +170,27 @@ async def list_projects(
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.READ)),
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionProjectListResponse:
-    items, total = await service.list_projects(
+    items, total, buyer_units = await service.list_projects(
         company_id=ctx.company_id,
         search=search,
         status=status,
         start_date_from=start_date_from,
         start_date_to=start_date_to,
+        buyer_person_id=buyer_person_id,
         page=page,
         page_size=page_size,
     )
     return ConstructionProjectListResponse(
-        items=[ConstructionProjectResponse.model_validate(item) for item in items],
+        items=[
+            ConstructionProjectResponse.model_validate(item).model_copy(
+                update={
+                    "buyer_units": [
+                        ConstructionProjectBuyerUnit.model_validate(unit) for unit in buyer_units.get(item.id, [])
+                    ]
+                }
+            )
+            for item in items
+        ],
         total=total,
         page=page,
         page_size=page_size,
@@ -181,6 +209,8 @@ async def list_person_summaries(
     # listava as 3.116 pessoas do cadastro; com o recorte, lista as 10 que sao
     # corretoras de fato.
     business_role: str | None = Query(default=None),
+    construction_unit_buyer: bool = Query(default=False),
+    construction_project_id: UUID | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=50),
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.READ)),
@@ -195,6 +225,8 @@ async def list_person_summaries(
             page_size=page_size,
             person_id=person_id,
             business_role=business_role,
+            construction_unit_buyer=construction_unit_buyer,
+            construction_project_id=construction_project_id,
         )
         return ConstructionPersonSummaryListResponse.model_validate(payload)
     except ConstructionDomainError as exc:
@@ -546,6 +578,198 @@ async def approve_measurement(
             actor_user_id=ctx.user_id,
         )
         return await _build_measurement_response(service=service, ctx=ctx, measurement=measurement)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/measurements/{measurement_id}/payable-candidates")
+async def list_measurement_payable_candidates(
+    measurement_id: UUID,
+    search: str | None = Query(default=None, max_length=150),
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        items = await service.list_measurement_payable_candidates(
+            company_id=ctx.company_id,
+            measurement_id=measurement_id,
+            user_id=ctx.user_id,
+            search=search,
+        )
+        return {"items": items, "total": len(items)}
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/measurements/{measurement_id}/link-payable", response_model=ConstructionMeasurementResponse)
+async def link_measurement_payable(
+    measurement_id: UUID,
+    request_data: ConstructionMeasurementPayableLink,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionMeasurementResponse:
+    try:
+        measurement = await service.link_measurement_payable(
+            company_id=ctx.company_id,
+            measurement_id=measurement_id,
+            payable_document_id=request_data.payable_document_id,
+            user_id=ctx.user_id,
+        )
+        return await _build_measurement_response(service=service, ctx=ctx, measurement=measurement)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+def _zero_value_filters(
+    supplier_person_id: UUID | None = Query(default=None),
+    payable_document_id: UUID | None = Query(default=None),
+    block_id: UUID | None = Query(default=None),
+    unit_search: str | None = Query(default=None, max_length=60),
+    due_from: date | None = Query(default=None),
+    due_to: date | None = Query(default=None),
+    search: str | None = Query(default=None, max_length=60),
+) -> dict:
+    return {
+        "supplier_person_id": supplier_person_id,
+        "payable_document_id": payable_document_id,
+        "block_id": block_id,
+        "unit_search": unit_search,
+        "due_from": due_from,
+        "due_to": due_to,
+        "search": search,
+    }
+
+
+@router.get("/projects/{project_id}/zero-value-suppliers", response_model=list[ConstructionZeroValueSupplier])
+async def list_zero_value_suppliers(
+    project_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> list[ConstructionZeroValueSupplier]:
+    try:
+        rows = await service.list_zero_value_suppliers(company_id=ctx.company_id, project_id=project_id)
+        return [ConstructionZeroValueSupplier(**row) for row in rows]
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get(
+    "/projects/{project_id}/zero-value-measurements",
+    response_model=ConstructionZeroValueMeasurementListResponse,
+)
+async def list_zero_value_measurements(
+    project_id: UUID,
+    filters: dict = Depends(_zero_value_filters),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionZeroValueMeasurementListResponse:
+    try:
+        rows, total = await service.list_zero_value_measurements(
+            company_id=ctx.company_id, project_id=project_id, page=page, page_size=page_size, **filters
+        )
+        return ConstructionZeroValueMeasurementListResponse(
+            items=rows,
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=ceil(total / page_size) if total else 0,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/projects/{project_id}/zero-value-measurements/ids", response_model=list[UUID])
+async def list_zero_value_measurement_ids(
+    project_id: UUID,
+    filters: dict = Depends(_zero_value_filters),
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> list[UUID]:
+    try:
+        return await service.zero_value_measurement_ids(company_id=ctx.company_id, project_id=project_id, **filters)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/projects/{project_id}/shared-payables")
+async def list_shared_payables(
+    project_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        items = await service.list_shared_payables(company_id=ctx.company_id, project_id=project_id, user_id=ctx.user_id)
+        return {"items": items, "total": len(items)}
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/projects/{project_id}/shared-payable-candidates")
+async def list_shared_payable_candidates(
+    project_id: UUID,
+    supplier_person_id: UUID = Query(...),
+    search: str | None = Query(default=None, max_length=150),
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        items = await service.list_shared_payable_candidates(
+            company_id=ctx.company_id,
+            project_id=project_id,
+            supplier_person_id=supplier_person_id,
+            user_id=ctx.user_id,
+            search=search,
+        )
+        return {"items": items, "total": len(items)}
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post(
+    "/projects/{project_id}/shared-payables/{payable_document_id}/measurements",
+    response_model=ConstructionSharedPayableResult,
+)
+async def link_shared_payable(
+    project_id: UUID,
+    payable_document_id: UUID,
+    request_data: ConstructionSharedPayableMeasurementsRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionSharedPayableResult:
+    try:
+        affected = await service.link_shared_payable(
+            company_id=ctx.company_id,
+            project_id=project_id,
+            payable_document_id=payable_document_id,
+            measurement_ids=request_data.measurement_ids,
+            user_id=ctx.user_id,
+        )
+        return ConstructionSharedPayableResult(payable_document_id=payable_document_id, affected=affected)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post(
+    "/projects/{project_id}/shared-payables/{payable_document_id}/measurements/remove",
+    response_model=ConstructionSharedPayableResult,
+)
+async def unlink_shared_payable(
+    project_id: UUID,
+    payable_document_id: UUID,
+    request_data: ConstructionSharedPayableMeasurementsRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionSharedPayableResult:
+    try:
+        affected = await service.unlink_shared_payable(
+            company_id=ctx.company_id,
+            project_id=project_id,
+            payable_document_id=payable_document_id,
+            measurement_ids=request_data.measurement_ids,
+        )
+        return ConstructionSharedPayableResult(payable_document_id=payable_document_id, affected=affected)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 
@@ -910,8 +1134,23 @@ async def list_service_templates(
         default=False,
         description="Lista os servicos excluidos, para consultar o historico de quem os removeu.",
     ),
+    project_id: UUID | None = Query(
+        default=None,
+        description="Servicos que a medicao da obra pode usar: a lista da obra ou, sem lista, o catalogo inteiro.",
+    ),
 ) -> ConstructionServiceTemplateListResponse:
     try:
+        if project_id is not None:
+            templates, restricted = await service.list_service_templates_for_project(
+                company_id=ctx.company_id,
+                project_id=project_id,
+                search=search,
+            )
+            return ConstructionServiceTemplateListResponse(
+                items=[ConstructionServiceTemplateResponse.from_model(template) for template in templates],
+                total=len(templates),
+                restricted_to_project=restricted,
+            )
         templates = await service.list_service_templates(
             company_id=ctx.company_id,
             only_active=only_active,
@@ -1067,6 +1306,21 @@ async def import_service_templates(
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.CREATE)),
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionServiceTemplateImportResponse:
+    uploaded_files = await _read_service_template_files(files)
+    try:
+        results = await service.import_service_templates(
+            company_id=ctx.company_id,
+            files=uploaded_files,
+            actor_user_id=ctx.user_id,
+            actor_person_id=ctx.person_id,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+    return _service_template_import_response(results)
+
+
+async def _read_service_template_files(files: list[UploadFile]) -> list[tuple[str, bytes]]:
     if len(files) > MAX_SERVICE_TEMPLATE_FILES:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1083,17 +1337,10 @@ async def import_service_templates(
             )
 
         uploaded_files.append((upload.filename or "planilha.xlsx", content))
+    return uploaded_files
 
-    try:
-        results = await service.import_service_templates(
-            company_id=ctx.company_id,
-            files=uploaded_files,
-            actor_user_id=ctx.user_id,
-            actor_person_id=ctx.person_id,
-        )
-    except ConstructionDomainError as exc:
-        raise _http_error(exc=exc) from exc
 
+def _service_template_import_response(results: list[dict]) -> ConstructionServiceTemplateImportResponse:
     parsed_results = [ConstructionServiceTemplateImportResult(**result) for result in results]
     return ConstructionServiceTemplateImportResponse(
         results=parsed_results,
@@ -1502,6 +1749,119 @@ async def create_schedule_phase(
     try:
         phase = await service.create_schedule_phase(company_id=ctx.company_id, project_id=project_id, request=request_data)
         return ConstructionSchedulePhaseResponse.model_validate(phase)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/projects/{project_id}/service-templates", response_model=ConstructionServiceTemplateListResponse)
+async def list_project_services(
+    project_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionServiceTemplateListResponse:
+    try:
+        templates = await service.list_project_services(company_id=ctx.company_id, project_id=project_id)
+        return ConstructionServiceTemplateListResponse(
+            items=[ConstructionServiceTemplateResponse.from_model(template) for template in templates],
+            total=len(templates),
+            restricted_to_project=bool(templates),
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/projects/{project_id}/service-templates", response_model=ConstructionServiceTemplateListResponse)
+async def link_project_services(
+    project_id: UUID,
+    request_data: ConstructionProjectServiceLinkRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionServiceTemplateListResponse:
+    try:
+        templates = await service.link_project_services(
+            company_id=ctx.company_id,
+            project_id=project_id,
+            service_template_ids=request_data.service_template_ids,
+            actor_user_id=ctx.user_id,
+        )
+        return ConstructionServiceTemplateListResponse(
+            items=[ConstructionServiceTemplateResponse.from_model(template) for template in templates],
+            total=len(templates),
+            restricted_to_project=bool(templates),
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.put("/projects/{project_id}/service-templates", response_model=ConstructionServiceTemplateListResponse)
+async def replace_project_services(
+    project_id: UUID,
+    request_data: ConstructionProjectServiceReplaceRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionServiceTemplateListResponse:
+    try:
+        templates = await service.replace_project_services(
+            company_id=ctx.company_id,
+            project_id=project_id,
+            service_template_ids=request_data.service_template_ids,
+            actor_user_id=ctx.user_id,
+        )
+        return ConstructionServiceTemplateListResponse(
+            items=[ConstructionServiceTemplateResponse.from_model(template) for template in templates],
+            total=len(templates),
+            restricted_to_project=bool(templates),
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post(
+    "/projects/{project_id}/service-templates/import",
+    response_model=ConstructionServiceTemplateImportResponse,
+)
+async def import_project_services(
+    project_id: UUID,
+    files: list[UploadFile] = File(...),
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.UPDATE)),
+    _catalog: ConstructionContext = Depends(
+        require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.CREATE)
+    ),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionServiceTemplateImportResponse:
+    uploaded_files = await _read_service_template_files(files)
+    try:
+        results = await service.import_project_services(
+            company_id=ctx.company_id,
+            project_id=project_id,
+            files=uploaded_files,
+            actor_user_id=ctx.user_id,
+            actor_person_id=ctx.person_id,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+    return _service_template_import_response(results)
+
+
+@router.delete(
+    "/projects/{project_id}/service-templates/{service_template_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def unlink_project_service(
+    project_id: UUID,
+    service_template_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> Response:
+    try:
+        await service.unlink_project_service(
+            company_id=ctx.company_id,
+            project_id=project_id,
+            service_template_id=service_template_id,
+            actor_user_id=ctx.user_id,
+        )
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 

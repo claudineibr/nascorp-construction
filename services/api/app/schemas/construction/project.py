@@ -28,6 +28,10 @@ class ConstructionProjectCreate(BaseModel):
     actual_end_date: date | None = None
     receipt_template_id: UUID | None = None
     commission_receipt_template_id: UUID | None = None
+    contract_template_id: UUID | None = None
+    lot: str | None = Field(default=None, max_length=120)
+    registration: str | None = Field(default=None, max_length=120)
+    land_area: Decimal | None = Field(default=None, gt=0)
 
 
 class ConstructionProjectUpdate(BaseModel):
@@ -46,6 +50,20 @@ class ConstructionProjectUpdate(BaseModel):
     analytic_cost_center_id: UUID | None = None
     receipt_template_id: UUID | None = None
     commission_receipt_template_id: UUID | None = None
+    contract_template_id: UUID | None = None
+    lot: str | None = Field(default=None, max_length=120)
+    registration: str | None = Field(default=None, max_length=120)
+    land_area: Decimal | None = Field(default=None, gt=0)
+
+
+class ConstructionProjectBuyerUnit(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    unit_id: UUID
+    code: str
+    block_name: str | None = None
+    status: str
+    is_secondary_buyer: bool = False
 
 
 class ConstructionProjectResponse(BaseModel):
@@ -68,8 +86,13 @@ class ConstructionProjectResponse(BaseModel):
     analytic_cost_center_id: UUID | None = None
     receipt_template_id: UUID | None = None
     commission_receipt_template_id: UUID | None = None
+    contract_template_id: UUID | None = None
+    lot: str | None = Field(default=None, max_length=120)
+    registration: str | None = Field(default=None, max_length=120)
+    land_area: Decimal | None = Field(default=None, gt=0)
     created_at: datetime
     updated_at: datetime
+    buyer_units: list[ConstructionProjectBuyerUnit] = Field(default_factory=list)
 
 
 class ConstructionProjectListResponse(BaseModel):
@@ -487,19 +510,16 @@ class ConstructionMeasurementRetention(BaseModel):
 
 
 class ConstructionMeasurementCreate(BaseModel):
-    code: str = Field(..., min_length=1, max_length=50)
     subcontract_id: UUID | None = None
     retention_details: list[ConstructionMeasurementRetention] = Field(default_factory=list, max_length=20)
     unit_id: UUID
     schedule_phase_id: UUID
-    sequence_number: int | None = Field(default=None, ge=1)
-    measurement_type: str | None = Field(default=None, max_length=30)
     competence_date: date | None = None
     description: str | None = Field(default=None, max_length=1000)
-    gross_amount: Decimal | None = Field(default=None, gt=0)
+    gross_amount: Decimal | None = Field(default=None, ge=0)
     retentions_amount: Decimal | None = Field(default=Decimal("0"), ge=0)
-    net_amount: Decimal | None = Field(default=None, gt=0)
-    measured_amount: Decimal | None = Field(default=None, gt=0)
+    net_amount: Decimal | None = Field(default=None, ge=0)
+    measured_amount: Decimal | None = Field(default=None, ge=0)
     due_date: date
     supplier_person_id: UUID | None = None
     document_type: str | None = Field(default=None, max_length=40)
@@ -507,19 +527,16 @@ class ConstructionMeasurementCreate(BaseModel):
 
 
 class ConstructionMeasurementUpdate(BaseModel):
-    code: str | None = Field(default=None, min_length=1, max_length=50)
     subcontract_id: UUID | None = None
     retention_details: list[ConstructionMeasurementRetention] | None = Field(default=None, max_length=20)
     unit_id: UUID | None = None
     schedule_phase_id: UUID | None = None
-    sequence_number: int | None = Field(default=None, ge=1)
-    measurement_type: str | None = Field(default=None, max_length=30)
     competence_date: date | None = None
     description: str | None = Field(default=None, max_length=1000)
-    gross_amount: Decimal | None = Field(default=None, gt=0)
+    gross_amount: Decimal | None = Field(default=None, ge=0)
     retentions_amount: Decimal | None = Field(default=None, ge=0)
-    net_amount: Decimal | None = Field(default=None, gt=0)
-    measured_amount: Decimal | None = Field(default=None, gt=0)
+    net_amount: Decimal | None = Field(default=None, ge=0)
+    measured_amount: Decimal | None = Field(default=None, ge=0)
     due_date: date | None = None
     supplier_person_id: UUID | None = None
     document_type: str | None = Field(default=None, max_length=40)
@@ -547,7 +564,6 @@ class ConstructionMeasurementResponse(BaseModel):
     schedule_phase_id: UUID | None = None
     code: str
     sequence_number: int | None = None
-    measurement_type: str | None = None
     competence_date: date | None = None
     description: str | None = None
     gross_amount: Decimal | None = None
@@ -575,6 +591,7 @@ class ConstructionMeasurementResponse(BaseModel):
     open_occurrences_count: int | None = None
     external_accounts_payable_id: UUID | None = None
     external_accounts_payable_status: str | None = None
+    external_accounts_payable_shared: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -667,6 +684,57 @@ class ConstructionServiceTemplateResponse(BaseModel):
 class ConstructionServiceTemplateListResponse(BaseModel):
     items: list[ConstructionServiceTemplateResponse]
     total: int
+    restricted_to_project: bool = False
+
+
+class ConstructionMeasurementPayableLink(BaseModel):
+    payable_document_id: UUID
+
+
+class ConstructionSharedPayableMeasurementsRequest(BaseModel):
+    measurement_ids: list[UUID] = Field(min_length=1, max_length=1000)
+
+
+class ConstructionZeroValueMeasurementItem(BaseModel):
+    id: UUID
+    code: str
+    sequence_number: int | None = None
+    unit_id: UUID | None = None
+    unit_code: str | None = None
+    unit_description: str | None = None
+    block_id: UUID | None = None
+    block_name: str | None = None
+    due_date: date
+    competence_date: date | None = None
+    description: str | None = None
+    supplier_person_id: UUID | None = None
+    external_accounts_payable_id: UUID | None = None
+
+
+class ConstructionZeroValueMeasurementListResponse(BaseModel):
+    items: list[ConstructionZeroValueMeasurementItem]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class ConstructionZeroValueSupplier(BaseModel):
+    supplier_person_id: UUID
+    open_count: int
+
+
+class ConstructionSharedPayableResult(BaseModel):
+    payable_document_id: UUID
+    affected: int
+
+
+class ConstructionProjectServiceLinkRequest(BaseModel):
+    service_template_ids: list[UUID] = Field(min_length=1, max_length=200)
+
+
+class ConstructionProjectServiceReplaceRequest(BaseModel):
+    service_template_ids: list[UUID] = Field(default_factory=list, max_length=500)
 
 
 class ConstructionServiceTemplateAuditResponse(BaseModel):
@@ -741,6 +809,7 @@ class ConstructionServiceTemplateImportResult(BaseModel):
     items_count: int = 0
     sections_count: int = 0
     message: str | None = None
+    linked: bool | None = None
 
 
 class ConstructionServiceTemplateImportResponse(BaseModel):

@@ -78,6 +78,7 @@ class FakeConstructionRepository:
         self.documentation_types: dict[tuple[object, object], ConstructionDocumentationType] = {}
         self.unit_documentations: dict[tuple[object, object], ConstructionUnitDocumentation] = {}
         self.unit_commissions: dict[tuple[object, object], ConstructionUnitCommission] = {}
+        self.project_service_links: set[tuple[object, object, object]] = set()
         self.commits = 0
         self.replaced_children = 0
 
@@ -305,10 +306,58 @@ class FakeConstructionRepository:
             if item_company_id == company_id and item.service_template_id == service_template_id
         )
 
-    async def list_service_templates(self, *, company_id, only_active=True, search=None, only_deleted=False):
+    async def project_service_template_ids(self, *, company_id, project_id):
+        return {
+            template_id
+            for (link_company_id, link_project_id, template_id) in self.project_service_links
+            if link_company_id == company_id
+            and link_project_id == project_id
+            and (template := self.service_templates.get((company_id, template_id))) is not None
+            and template.deleted_at is None
+        }
+
+    async def list_project_service_templates(self, *, company_id, project_id):
+        linked = await self.project_service_template_ids(company_id=company_id, project_id=project_id)
+        return sorted(
+            (
+                self._hydrate_template(company_id=company_id, template=self.service_templates[(company_id, template_id)])
+                for template_id in linked
+            ),
+            key=lambda template: template.name,
+        )
+
+    async def link_project_service_templates(self, *, company_id, project_id, service_template_ids, actor_user_id):
+        created = 0
+        for template_id in dict.fromkeys(service_template_ids):
+            key = (company_id, project_id, template_id)
+            if key not in self.project_service_links:
+                self.project_service_links.add(key)
+                created += 1
+        return created
+
+    async def unlink_project_service_templates(self, *, company_id, project_id, service_template_ids, actor_user_id):
+        removed = 0
+        for template_id in dict.fromkeys(service_template_ids):
+            key = (company_id, project_id, template_id)
+            if key in self.project_service_links:
+                self.project_service_links.remove(key)
+                removed += 1
+        return removed
+
+    async def list_service_templates(
+        self, *, company_id, only_active=True, search=None, only_deleted=False, restrict_to_project_id=None
+    ):
+        allowed = (
+            await self.project_service_template_ids(company_id=company_id, project_id=restrict_to_project_id)
+            if restrict_to_project_id is not None
+            else None
+        )
         templates = []
         for (template_company_id, template_id), template in self.service_templates.items():
             if template_company_id != company_id:
+                continue
+
+            if allowed is not None and template_id not in allowed:
                 continue
 
             if only_deleted:
@@ -660,20 +709,6 @@ class FakeConstructionRepository:
             None,
         )
 
-    async def get_measurement_by_code(self, *, company_id, project_id, code):
-        return next(
-            (
-                measurement
-                for (stored_company_id, _), measurement in self.measurements.items()
-                if (
-                    stored_company_id == company_id
-                    and measurement.project_id == project_id
-                    and measurement.code == code
-                )
-            ),
-            None,
-        )
-
     async def get_measurement_by_external_accounts_payable_id(self, *, company_id, accounts_payable_id):
         return next(
             (
@@ -687,12 +722,12 @@ class FakeConstructionRepository:
             None,
         )
 
-    async def get_next_measurement_sequence(self, *, company_id, project_id):
+    async def get_next_measurement_sequence(self, *, company_id, unit_id):
         sequences = [
             int(measurement.sequence_number)
             for (stored_company_id, _), measurement in self.measurements.items()
             if stored_company_id == company_id
-            and measurement.project_id == project_id
+            and measurement.unit_id == unit_id
             and measurement.sequence_number is not None
         ]
         if not sequences:
@@ -700,11 +735,31 @@ class FakeConstructionRepository:
 
         return max(sequences) + 1
 
+    async def get_next_measurement_code_number(self, *, company_id, project_id):
+        numbers = [
+            int(measurement.code[4:])
+            for (stored_company_id, _), measurement in self.measurements.items()
+            if stored_company_id == company_id
+            and measurement.project_id == project_id
+            and measurement.code.startswith("MED-")
+            and measurement.code[4:].isdigit()
+        ]
+        return max(numbers, default=0) + 1
+
     async def list_measurements(self, *, company_id, project_id):
         return [
             measurement
             for (stored_company_id, _), measurement in self.measurements.items()
             if stored_company_id == company_id and measurement.project_id == project_id
+        ]
+
+    async def list_measurements_by_ids(self, *, company_id, project_id, measurement_ids):
+        return [
+            measurement
+            for (stored_company_id, measurement_id), measurement in self.measurements.items()
+            if stored_company_id == company_id
+            and measurement.project_id == project_id
+            and measurement_id in measurement_ids
         ]
 
     async def list_units(self, *, company_id, project_id):
@@ -1323,7 +1378,6 @@ async def test_approve_measurement_creates_accounts_payable_once() -> None:
         company_id=company_id,
         project_id=project.id,
         request=ConstructionMeasurementCreate(
-            code="MED-001",
             unit_id=unit.id,
             schedule_phase_id=schedule_phase.id,
             measured_amount=Decimal("12500.50"),
@@ -1378,7 +1432,6 @@ async def test_async_integration_mode_records_measurement_without_http_delivery(
         company_id=company_id,
         project_id=project.id,
         request=ConstructionMeasurementCreate(
-            code="MED-ASYNC-001",
             unit_id=unit.id,
             schedule_phase_id=schedule_phase.id,
             measured_amount=Decimal("12500.50"),
@@ -1416,7 +1469,6 @@ async def test_rejected_or_draft_measurement_does_not_create_accounts_payable() 
         company_id=company_id,
         project_id=project.id,
         request=ConstructionMeasurementCreate(
-            code="MED-002",
             unit_id=unit.id,
             schedule_phase_id=schedule_phase.id,
             measured_amount=Decimal("1000.00"),
@@ -1428,6 +1480,93 @@ async def test_rejected_or_draft_measurement_does_not_create_accounts_payable() 
     assert len(erp_client.events) == 0
     stored_measurement = await service.get_measurement(company_id=company_id, measurement_id=measurement.id)
     assert stored_measurement.status == ConstructionMeasurementStatus.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_create_measurement_generates_code_per_project_and_sequence_per_unit() -> None:
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-034",
+        name="Generated code project",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    repository.projects[(company_id, project.id)] = project
+    unit, schedule_phase = seed_measurement_axis(repository=repository, company_id=company_id, project_id=project.id)
+    other_unit = ConstructionUnit(
+        id=uuid4(),
+        company_id=company_id,
+        project_id=project.id,
+        code="A-102",
+        unit_type="apartment",
+        analytic_cost_center_id=uuid4(),
+        status="available",
+    )
+    repository.units[(company_id, other_unit.id)] = other_unit
+    service = ConstructionProjectService(repository=repository)
+
+    created = []
+    for target_unit in (unit, unit, other_unit):
+        created.append(
+            await service.create_measurement(
+                company_id=company_id,
+                project_id=project.id,
+                request=ConstructionMeasurementCreate(
+                    unit_id=target_unit.id,
+                    schedule_phase_id=schedule_phase.id,
+                    due_date=date(2026, 5, 20),
+                ),
+            )
+        )
+
+    assert [measurement.code for measurement in created] == ["MED-000001", "MED-000002", "MED-000003"]
+    assert [measurement.sequence_number for measurement in created] == [1, 2, 1]
+    assert all(measurement.measured_amount == Decimal("0") for measurement in created)
+
+
+@pytest.mark.asyncio
+async def test_zero_value_measurement_is_approved_without_accounts_payable() -> None:
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    event_repository = FakeEventRepository()
+    erp_client = FakeErpMeasurementClient()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-035",
+        name="Zero value project",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+    )
+    repository.projects[(company_id, project.id)] = project
+    unit, schedule_phase = seed_measurement_axis(repository=repository, company_id=company_id, project_id=project.id)
+    service = ConstructionProjectService(
+        repository=repository,
+        event_repository=event_repository,
+        erp_client=erp_client,
+    )
+
+    measurement = await service.create_measurement(
+        company_id=company_id,
+        project_id=project.id,
+        request=ConstructionMeasurementCreate(
+            unit_id=unit.id,
+            schedule_phase_id=schedule_phase.id,
+            due_date=date(2026, 5, 20),
+        ),
+    )
+    await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
+    approved = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
+    approved_again = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
+
+    assert approved.status == ConstructionMeasurementStatus.APPROVED
+    assert approved.external_accounts_payable_id is None
+    assert approved_again.status == ConstructionMeasurementStatus.APPROVED
+    assert len(erp_client.events) == 0
+    assert event_repository.outbox_events == []
 
 
 @pytest.mark.asyncio

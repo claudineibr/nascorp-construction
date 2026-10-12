@@ -22,8 +22,19 @@ const toProjectView = (project) => ({
   analyticCostCenterId: project.analytic_cost_center_id ?? null,
   receiptTemplateId: project.receipt_template_id ?? null,
   commissionReceiptTemplateId: project.commission_receipt_template_id ?? null,
+  contractTemplateId: project.contract_template_id ?? null,
+  lot: project.lot ?? "",
+  registration: project.registration ?? "",
+  landArea: project.land_area ?? null,
   createdAt: project.created_at ?? null,
   updatedAt: project.updated_at ?? null,
+  buyerUnits: (project.buyer_units ?? []).map((unit) => ({
+    unitId: unit.unit_id,
+    code: unit.code,
+    blockName: unit.block_name ?? null,
+    status: unit.status,
+    isSecondaryBuyer: Boolean(unit.is_secondary_buyer),
+  })),
 })
 
 const toBlockView = (block) => ({
@@ -270,7 +281,6 @@ const toMeasurementView = (measurement) => ({
   schedulePhaseId: measurement.schedule_phase_id ?? null,
   code: measurement.code,
   sequenceNumber: measurement.sequence_number ?? null,
-  measurementType: measurement.measurement_type ?? null,
   competenceDate: measurement.competence_date ?? null,
   description: measurement.description ?? "",
   grossAmount: measurement.gross_amount ?? null,
@@ -303,6 +313,7 @@ const toMeasurementView = (measurement) => ({
   openOccurrencesCount: measurement.open_occurrences_count ?? null,
   externalAccountsPayableId: measurement.external_accounts_payable_id ?? null,
   externalAccountsPayableStatus: measurement.external_accounts_payable_status ?? null,
+  externalAccountsPayableShared: Boolean(measurement.external_accounts_payable_shared),
   createdAt: measurement.created_at ?? null,
   updatedAt: measurement.updated_at ?? null,
 })
@@ -408,6 +419,10 @@ const toProjectPayload = (projectData = {}) => ({
   actual_end_date: toNullableString(projectData.actualEndDate),
   receipt_template_id: toNullableString(projectData.receiptTemplateId),
   commission_receipt_template_id: toNullableString(projectData.commissionReceiptTemplateId),
+  contract_template_id: toNullableString(projectData.contractTemplateId),
+  lot: toNullableString(projectData.lot),
+  registration: toNullableString(projectData.registration),
+  land_area: projectData.landArea ? Number(projectData.landArea) : null,
 })
 
 const toBlockPayload = (blockData = {}) => ({
@@ -482,11 +497,8 @@ const toUnitPayload = (unitData = {}) => ({
 const toMeasurementPayload = (measurementData = {}) => ({
   subcontract_id: toNullableString(measurementData.subcontractId),
   retention_details: measurementData.retentionDetails ?? [],
-  code: String(measurementData.code ?? "").trim(),
   unit_id: toNullableString(measurementData.unitId),
   schedule_phase_id: toNullableString(measurementData.schedulePhaseId),
-  sequence_number: toNullableNumber(measurementData.sequenceNumber),
-  measurement_type: toNullableString(measurementData.measurementType),
   competence_date: toNullableString(measurementData.competenceDate),
   description: toNullableString(measurementData.description),
   gross_amount: toNullableNumber(measurementData.grossAmount),
@@ -657,6 +669,7 @@ export async function listConstructionProjects({
   status = "",
   startDate = "",
   endDate = "",
+  buyerPersonId = "",
 } = {}) {
   const query = new URLSearchParams({
     page: String(page),
@@ -665,6 +678,10 @@ export async function listConstructionProjects({
 
   if (search.trim()) {
     query.set("search", search.trim())
+  }
+
+  if (buyerPersonId) {
+    query.set("buyer_person_id", buyerPersonId)
   }
 
   // Os filtros vao para o servidor porque a lista pagina no servidor: filtrar
@@ -703,6 +720,8 @@ export async function listConstructionPersonSummaries({
   pageSize = 50,
   personId = null,
   businessRole = null,
+  constructionUnitBuyer = false,
+  constructionProjectId = null,
   signal = null,
 } = {}) {
   const query = new URLSearchParams({
@@ -712,6 +731,13 @@ export async function listConstructionPersonSummaries({
 
   if (search.trim()) {
     query.set("search", search.trim())
+  }
+
+  if (constructionUnitBuyer) {
+    query.set("construction_unit_buyer", "true")
+    if (constructionProjectId) {
+      query.set("construction_project_id", String(constructionProjectId))
+    }
   }
 
   // Papel comercial: o campo Corretor listava as 3.116 pessoas da empresa.
@@ -1485,6 +1511,7 @@ export async function listConstructionServiceTemplates({
   search = null,
   onlyActive = true,
   onlyDeleted = false,
+  projectId = null,
 } = {}) {
   const params = new URLSearchParams()
   if (search) {
@@ -1493,10 +1520,40 @@ export async function listConstructionServiceTemplates({
 
   params.set("only_active", onlyActive ? "true" : "false")
   params.set("only_deleted", onlyDeleted ? "true" : "false")
+  if (projectId) {
+    params.set("project_id", projectId)
+  }
 
   const payload = await requestJson({
     bridge,
     path: `/v1/construction/service-templates?${params.toString()}`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toServiceTemplateView),
+    total: payload.total ?? 0,
+    restrictedToProject: Boolean(payload.restricted_to_project),
+  }
+}
+
+export async function listConstructionProjectServices({ bridge, projectId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/service-templates`,
+  })
+
+  return {
+    items: (payload.items ?? []).map(toServiceTemplateView),
+    total: payload.total ?? 0,
+  }
+}
+
+export async function replaceConstructionProjectServices({ bridge, projectId, serviceTemplateIds }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/service-templates`,
+    method: "PUT",
+    body: { service_template_ids: serviceTemplateIds },
   })
 
   return {
@@ -1580,6 +1637,18 @@ export async function downloadConstructionServiceTemplateExample({ bridge }) {
 }
 
 export async function importConstructionServiceTemplates({ bridge, files }) {
+  return uploadServiceTemplateFiles({ bridge, files, path: "/v1/construction/service-templates/import" })
+}
+
+export async function importConstructionProjectServices({ bridge, projectId, files }) {
+  return uploadServiceTemplateFiles({
+    bridge,
+    files,
+    path: `/v1/construction/projects/${projectId}/service-templates/import`,
+  })
+}
+
+async function uploadServiceTemplateFiles({ bridge, files, path }) {
   const apiBaseUrl = bridge?.constructionApiBaseUrl || DEFAULT_CONSTRUCTION_API_URL
   const headers = { ...(bridge?.getAuthHeaders?.() ?? {}) }
 
@@ -1592,7 +1661,7 @@ export async function importConstructionServiceTemplates({ bridge, files }) {
     formData.append("files", file, file.name)
   }
 
-  const response = await fetch(`${apiBaseUrl}/v1/construction/service-templates/import`, {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
     method: "POST",
     headers,
     body: formData,
@@ -1620,6 +1689,7 @@ export async function importConstructionServiceTemplates({ bridge, files }) {
       itemsCount: result.items_count ?? 0,
       sectionsCount: result.sections_count ?? 0,
       message: result.message ?? "",
+      linked: result.linked ?? null,
     })),
     created: payload.created ?? 0,
     updated: payload.updated ?? 0,
@@ -1822,6 +1892,157 @@ export async function approveConstructionMeasurement({ bridge, measurementId }) 
     bridge,
     path: `/v1/construction/measurements/${measurementId}/approve`,
     method: "POST",
+  })
+
+  return toMeasurementView(payload)
+}
+
+export async function listMeasurementPayableCandidates({ bridge, measurementId, search = "" }) {
+  const params = new URLSearchParams()
+  if (search) {
+    params.set("search", search)
+  }
+
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurements/${measurementId}/payable-candidates?${params.toString()}`,
+  })
+
+  return (payload.items ?? []).map((item) => ({
+    id: item.id,
+    documentNumber: item.document_number ?? null,
+    description: item.description ?? "",
+    documentTypeLabel: item.document_type_label ?? "",
+    issueDate: item.issue_date ?? null,
+    totalAmount: item.total_amount ?? null,
+    status: item.status ?? "",
+  }))
+}
+
+const toPayableDocumentView = (item) => ({
+  id: item.id,
+  documentNumber: item.document_number ?? null,
+  description: item.description ?? "",
+  documentTypeLabel: item.document_type_label ?? "",
+  issueDate: item.issue_date ?? null,
+  totalAmount: item.total_amount ?? null,
+  status: item.status ?? "",
+  coveredCount: Number(item.covered_count ?? 0),
+  personId: item.person_id ?? null,
+  personName: item.person_name ?? "",
+})
+
+const zeroValueQuery = (filters = {}) => {
+  const params = new URLSearchParams()
+  const keys = {
+    supplierPersonId: "supplier_person_id",
+    payableDocumentId: "payable_document_id",
+    blockId: "block_id",
+    unitSearch: "unit_search",
+    dueFrom: "due_from",
+    dueTo: "due_to",
+    search: "search",
+  }
+  for (const [key, param] of Object.entries(keys)) {
+    if (filters[key]) {
+      params.set(param, filters[key])
+    }
+  }
+  return params
+}
+
+export async function listZeroValueSuppliers({ bridge, projectId }) {
+  const payload = await requestJson({ bridge, path: `/v1/construction/projects/${projectId}/zero-value-suppliers` })
+  return (payload ?? []).map((item) => ({ supplierPersonId: item.supplier_person_id, openCount: item.open_count }))
+}
+
+export async function listZeroValueMeasurements({ bridge, projectId, filters, page = 1, pageSize = 50 }) {
+  const params = zeroValueQuery(filters)
+  params.set("page", String(page))
+  params.set("page_size", String(pageSize))
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/zero-value-measurements?${params.toString()}`,
+  })
+  return {
+    items: (payload.items ?? []).map((item) => ({
+      id: item.id,
+      code: item.code,
+      sequenceNumber: item.sequence_number ?? null,
+      unitId: item.unit_id ?? null,
+      unitCode: item.unit_code ?? "",
+      unitDescription: item.unit_description ?? "",
+      blockId: item.block_id ?? null,
+      blockName: item.block_name ?? "",
+      dueDate: item.due_date ?? null,
+      competenceDate: item.competence_date ?? null,
+      description: item.description ?? "",
+    })),
+    total: payload.total ?? 0,
+    page: payload.page ?? page,
+    pageSize: payload.page_size ?? pageSize,
+    totalPages: payload.total_pages ?? 0,
+  }
+}
+
+export async function listZeroValueMeasurementIds({ bridge, projectId, filters }) {
+  const params = zeroValueQuery(filters)
+  return requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/zero-value-measurements/ids?${params.toString()}`,
+  })
+}
+
+export async function listSharedPayables({ bridge, projectId }) {
+  const payload = await requestJson({ bridge, path: `/v1/construction/projects/${projectId}/shared-payables` })
+  return (payload.items ?? []).map(toPayableDocumentView)
+}
+
+export async function listSharedPayableCandidates({ bridge, projectId, supplierPersonId, search = "" }) {
+  const params = new URLSearchParams({ supplier_person_id: supplierPersonId })
+  if (search) {
+    params.set("search", search)
+  }
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/shared-payable-candidates?${params.toString()}`,
+  })
+  return (payload.items ?? []).map(toPayableDocumentView)
+}
+
+export async function linkSharedPayable({ bridge, projectId, payableDocumentId, measurementIds }) {
+  return requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/shared-payables/${payableDocumentId}/measurements`,
+    method: "POST",
+    body: { measurement_ids: measurementIds },
+  })
+}
+
+export async function unlinkSharedPayable({ bridge, projectId, payableDocumentId, measurementIds }) {
+  return requestJson({
+    bridge,
+    path: `/v1/construction/projects/${projectId}/shared-payables/${payableDocumentId}/measurements/remove`,
+    method: "POST",
+    body: { measurement_ids: measurementIds },
+  })
+}
+
+export async function getConstructionMeasurement({ bridge, measurementId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurements/${measurementId}`,
+  })
+
+  return toMeasurementView(payload)
+}
+
+export async function linkMeasurementPayable({ bridge, measurementId, payableDocumentId }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurements/${measurementId}/link-payable`,
+    method: "POST",
+    body: { payable_document_id: payableDocumentId },
   })
 
   return toMeasurementView(payload)

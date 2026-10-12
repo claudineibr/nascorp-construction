@@ -1,0 +1,62 @@
+.infoButton,
+.infoButton * {
+  box-sizing: border-box;
+}
+
+.infoButton {
+  align-items: center;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  color: var(--color-text-muted);
+  cursor: help;
+  display: inline-flex;
+  flex-shrink: 0;
+  height: 18px;
+  justify-content: center;
+  margin-left: 0.4rem;
+  min-width: 0;
+  padding: 0;
+  position: relative;
+  vertical-align: middle;
+  width: 18px;
+}
+
+.infoButton:hover,
+.infoButton:focus-visible {
+  background: color-mix(in srgb, var(--color-primary) 20%, var(--color-surface));
+  border-color: var(--color-primary);
+  color: var(--color-text);
+  outline: none;
+}
+
+.infoButton:focus-visible {
+  box-shadow: 0 0 0 2px var(--color-focus-ring);
+}
+
+.tooltip {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.25);
+  color: var(--color-text);
+  display: none;
+  font-size: 0.8rem;
+  font-weight: 400;
+  left: 0;
+  letter-spacing: normal;
+  line-height: 1.45;
+  padding: 0.6rem 0.75rem;
+  position: absolute;
+  text-align: left;
+  text-transform: none;
+  top: calc(100% + 8px);
+  white-space: normal;
+  width: min(360px, 80vw);
+  z-index: 20;
+}
+
+.infoButton:hover .tooltip,
+.infoButton:focus .tooltip {
+  display: block;
+}

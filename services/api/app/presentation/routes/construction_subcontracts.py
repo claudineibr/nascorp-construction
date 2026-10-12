@@ -28,8 +28,7 @@ async def list_contracts(project_id: UUID,
     service: SubcontractService = Depends(get_subcontracts)):
     try:
         await service.projects.get_project(company_id=ctx.company_id, project_id=project_id)
-        rows = await service.repository.list(ctx.company_id, project_id)
-        return {"items": [service.header(row) for row in rows]}
+        return {"items": await service.list(ctx.company_id, project_id)}
     except ConstructionDomainError as exc:
         raise error(exc) from exc
 

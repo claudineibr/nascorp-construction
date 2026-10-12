@@ -47,7 +47,7 @@ export function ProductPicker({ bridge, onSelect, disabled = false }) {
 
   return (
     <div className={styles.field} ref={wrapperRef}>
-      <label className={styles.label} htmlFor="procurement-product-search">Adicionar produto*</label>
+      <label className={styles.label} htmlFor="procurement-product-search">Produtos da requisição*</label>
       <div className={styles.search}>
         <Search size={15} aria-hidden="true" />
         <input

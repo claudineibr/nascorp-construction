@@ -1,0 +1,247 @@
+.notice,
+.stateBox,
+.stateBox *,
+.selector,
+.selector * {
+  box-sizing: border-box;
+}
+
+.notice {
+  margin: 0;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-surface));
+  color: var(--color-text);
+  font-size: 0.9rem;
+}
+
+.stateBox {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.selector {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+}
+
+.filterField {
+  display: flex;
+  flex: 1 1 18rem;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-width: 28rem;
+  min-width: 0;
+}
+
+.filterField label {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.counter {
+  padding-bottom: 0.6rem;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.toolbarActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.bulkActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.85rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.onlySelected {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-left: 0.35rem;
+  color: var(--color-text);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.optionList {
+  display: flex;
+  flex-direction: column;
+  max-height: 22.5rem;
+  min-height: 6rem;
+  overflow-y: auto;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 0.5rem 0.85rem;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.option:last-child {
+  border-bottom: none;
+}
+
+.option:hover {
+  background: var(--color-surface-muted);
+}
+
+.option:has(input:disabled) {
+  cursor: default;
+}
+
+.optionChecked {
+  background: color-mix(in srgb, var(--color-primary) 6%, var(--color-surface));
+}
+
+.optionName {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.optionCount {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.option input[type="checkbox"],
+.onlySelected input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: grid;
+  flex: 0 0 auto;
+  place-content: center;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  padding: 0;
+  border: 1.5px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  cursor: pointer;
+}
+
+.option input[type="checkbox"]::before,
+.onlySelected input[type="checkbox"]::before {
+  content: "";
+  width: 0.55rem;
+  height: 0.55rem;
+  transform: scale(0);
+  transition: transform var(--transition-normal);
+  box-shadow: inset 1rem 1rem var(--color-primary);
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+}
+
+.option input[type="checkbox"]:checked,
+.onlySelected input[type="checkbox"]:checked {
+  border-color: var(--color-primary);
+}
+
+.option input[type="checkbox"]:checked::before,
+.onlySelected input[type="checkbox"]:checked::before {
+  transform: scale(1);
+}
+
+.option input[type="checkbox"]:focus-visible,
+.onlySelected input[type="checkbox"]:focus-visible {
+  box-shadow: 0 0 0 3px var(--color-focus-ring);
+  outline: none;
+}
+
+.option input[type="checkbox"]:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+}
+
+.pending {
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.footerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+@media (width <= 1440px), (height <= 820px) {
+  .toolbar,
+  .footer {
+    padding: 0.55rem 0.7rem;
+  }
+
+  .option {
+    padding: 0.4rem 0.7rem;
+  }
+
+  .optionList {
+    max-height: 18rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .counter {
+    padding-bottom: 0;
+  }
+
+  .toolbarActions {
+    margin-left: 0;
+  }
+
+  .optionCount {
+    display: none;
+  }
+}

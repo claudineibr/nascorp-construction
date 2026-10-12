@@ -53,6 +53,8 @@ class ConstructionSubcontractItem(SubcontractRecord, Base):
     contract_id: Mapped[UUID] = mapped_column(ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_subcontracts.id"), index=True)
     sequence_number: Mapped[int] = mapped_column(Integer)
     product_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
+    service_template_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_service_templates.id"), index=True)
     description: Mapped[str] = mapped_column(String(500))
     unit_of_measure: Mapped[str] = mapped_column(String(20))
     quantity: Mapped[Decimal] = mapped_column(Numeric(20, 8))

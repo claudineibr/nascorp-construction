@@ -14,7 +14,7 @@ from uuid import uuid4
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app.infrastructure.database.models import ConstructionProject
+from app.infrastructure.database.models import ConstructionBlock, ConstructionProject, ConstructionUnit
 from app.infrastructure.repository.construction_repository import ConstructionRepository
 from tests.integration_database import create_reachable_engine_or_skip
 
@@ -124,6 +124,114 @@ async def test_janela_de_data_filtra_pelo_inicio_da_obra() -> None:
             assert total == len(itens)
             assert total > 0
             assert all(date(2022, 1, 1) <= item.start_date <= date(2023, 12, 31) for item in itens)
+        finally:
+            await clean_up(session, company_id=company_id)
+
+    await engine.dispose()
+
+
+async def seed_buyer_units(session, *, company_id, comprador_id):
+    projetos = await seed_projects(session, company_id=company_id, quantidade=5)
+    outro_id = uuid4()
+    bloco = ConstructionBlock(id=uuid4(), company_id=company_id, project_id=projetos[0].id, code="A", name="Bloco A")
+    session.add(bloco)
+
+    def unidade(projeto, code, status, *, buyer=None, secondary=None, block=None):
+        return ConstructionUnit(
+            id=uuid4(),
+            company_id=company_id,
+            project_id=projeto.id,
+            block_id=block.id if block else None,
+            code=code,
+            unit_type="apartment",
+            status=status,
+            buyer_person_id=buyer,
+            secondary_buyer_person_id=secondary,
+        )
+
+    session.add_all(
+        [
+            unidade(projetos[0], "102", "reserved", buyer=outro_id, secondary=comprador_id, block=bloco),
+            unidade(projetos[0], "101", "sold", buyer=comprador_id, block=bloco),
+            unidade(projetos[0], "103", "sold", buyer=outro_id, block=bloco),
+            unidade(projetos[1], "201", "delivered", buyer=comprador_id),
+            unidade(projetos[2], "301", "terminated", buyer=comprador_id),
+            unidade(projetos[3], "401", "available", secondary=comprador_id),
+            unidade(projetos[4], "501", "sold", buyer=outro_id),
+        ]
+    )
+    await session.flush()
+    return projetos
+
+
+async def test_filtro_de_comprador_traz_so_obras_com_unidade_reservada_vendida_ou_entregue() -> None:
+    engine = await create_reachable_engine_or_skip()
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    company_id = uuid4()
+    comprador_id = uuid4()
+
+    async with session_factory() as session:
+        projetos = await seed_buyer_units(session, company_id=company_id, comprador_id=comprador_id)
+        repository = ConstructionRepository(session=session)
+
+        try:
+            itens, total = await repository.list_projects(
+                company_id=company_id,
+                search=None,
+                buyer_person_id=comprador_id,
+                page=1,
+                page_size=100,
+            )
+            assert total == 2
+            assert {item.id for item in itens} == {projetos[0].id, projetos[1].id}
+
+            itens, total = await repository.list_projects(
+                company_id=company_id,
+                search=None,
+                status="active",
+                buyer_person_id=comprador_id,
+                page=1,
+                page_size=100,
+            )
+            assert total == 1
+            assert [item.id for item in itens] == [projetos[0].id]
+
+            itens, total = await repository.list_projects(
+                company_id=company_id,
+                search=None,
+                buyer_person_id=uuid4(),
+                page=1,
+                page_size=100,
+            )
+            assert (itens, total) == ([], 0)
+        finally:
+            await clean_up(session, company_id=company_id)
+
+    await engine.dispose()
+
+
+async def test_unidades_do_comprador_listam_titular_e_segundo_comprador() -> None:
+    engine = await create_reachable_engine_or_skip()
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
+    company_id = uuid4()
+    comprador_id = uuid4()
+
+    async with session_factory() as session:
+        projetos = await seed_buyer_units(session, company_id=company_id, comprador_id=comprador_id)
+        repository = ConstructionRepository(session=session)
+
+        try:
+            unidades = await repository.list_buyer_units(
+                company_id=company_id,
+                project_ids=[projeto.id for projeto in projetos],
+                buyer_person_id=comprador_id,
+            )
+
+            assert [(u.project_id, u.code, u.block_name, u.status, u.is_secondary_buyer) for u in unidades] == [
+                (projetos[1].id, "201", None, "delivered", False),
+                (projetos[0].id, "101", "Bloco A", "sold", False),
+                (projetos[0].id, "102", "Bloco A", "reserved", True),
+            ]
         finally:
             await clean_up(session, company_id=company_id)
 

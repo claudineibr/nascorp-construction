@@ -49,6 +49,8 @@ class ErpConstructionClient:
         page_size: int,
         person_id: UUID | None = None,
         business_role: str | None = None,
+        construction_unit_buyer: bool = False,
+        construction_project_id: UUID | None = None,
     ) -> dict[str, object]:
         if not settings.erp_service_key:
             raise RuntimeError("ERP service key is not configured for Construction person lookup integration.")
@@ -70,6 +72,10 @@ class ErpConstructionClient:
             params["person_id"] = str(person_id)
         if business_role:
             params["business_role"] = business_role
+        if construction_unit_buyer:
+            params["construction_unit_buyer"] = "true"
+            if construction_project_id is not None:
+                params["construction_project_id"] = str(construction_project_id)
 
         async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
             response = await client.get(
@@ -171,6 +177,57 @@ class ErpConstructionClient:
         async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
             response = await client.get(f"/v1/internal/construction/projects/{project_id}/direct-billing-documents",
                 headers=headers, params={"search": search or ""})
+            response.raise_for_status()
+            return response.json()
+
+    async def list_measurement_payable_candidates(self, *, company_id, measurement_id, user_id, search=None):
+        headers = {"X-Service-Key": settings.erp_service_key or "", "X-Company-ID": str(company_id)}
+        if user_id:
+            headers["X-User-ID"] = str(user_id)
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.get(f"/v1/internal/construction/measurements/{measurement_id}/payable-candidates",
+                headers=headers, params={"search": search or ""})
+            response.raise_for_status()
+            return response.json()
+
+    async def link_measurement_payable(self, *, company_id, measurement_id, user_id, payable_document_id):
+        headers = {"X-Service-Key": settings.erp_service_key or "", "X-Company-ID": str(company_id)}
+        if user_id:
+            headers["X-User-ID"] = str(user_id)
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=15) as client:
+            response = await client.post(f"/v1/internal/construction/measurements/{measurement_id}/link-payable",
+                headers=headers, json={"payable_document_id": str(payable_document_id)})
+            response.raise_for_status()
+            return response.json()
+
+    async def list_shared_payable_candidates(self, *, company_id, project_id, user_id, supplier_person_id, search=None):
+        headers = {"X-Service-Key": settings.erp_service_key or "", "X-Company-ID": str(company_id)}
+        if user_id:
+            headers["X-User-ID"] = str(user_id)
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.get(f"/v1/internal/construction/projects/{project_id}/shared-payable-candidates",
+                headers=headers, params={"supplier_person_id": str(supplier_person_id), "search": search or ""})
+            response.raise_for_status()
+            return response.json()
+
+    async def list_shared_payables(self, *, company_id, project_id, user_id):
+        headers = {"X-Service-Key": settings.erp_service_key or "", "X-Company-ID": str(company_id)}
+        if user_id:
+            headers["X-User-ID"] = str(user_id)
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.get(f"/v1/internal/construction/projects/{project_id}/shared-payables",
+                headers=headers)
+            response.raise_for_status()
+            return response.json()
+
+    async def check_shared_payable(self, *, company_id, project_id, user_id, payable_document_id, supplier_person_id):
+        headers = {"X-Service-Key": settings.erp_service_key or "", "X-Company-ID": str(company_id)}
+        if user_id:
+            headers["X-User-ID"] = str(user_id)
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.post(
+                f"/v1/internal/construction/projects/{project_id}/shared-payables/{payable_document_id}/check",
+                headers=headers, json={"supplier_person_id": str(supplier_person_id)})
             response.raise_for_status()
             return response.json()
 

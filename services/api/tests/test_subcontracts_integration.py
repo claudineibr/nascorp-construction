@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from app.domain.exceptions import ConstructionDomainError, ConstructionNotFoundError
 from app.domain.services.construction_project_service import ConstructionProjectService
 from app.domain.services.subcontract_service import SubcontractService
-from app.infrastructure.database.models import ConstructionProject, ConstructionMeasurement, ConstructionMeasurementItem
+from app.infrastructure.database.models import ConstructionProject, ConstructionMeasurement, ConstructionMeasurementItem, ConstructionProjectServiceTemplate, ConstructionServiceTemplate
 from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction
 from app.infrastructure.repository.construction_repository import ConstructionRepository
 from app.schemas.construction.subcontract import SubcontractRequest, SubcontractDirectBillRequest, SubcontractDeductionRequest
@@ -52,7 +52,7 @@ async def cleanup(factory, company_id):
     async with factory() as session:
         for model in [ConstructionSubcontractDeduction, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill,
             ConstructionMeasurementItem, ConstructionMeasurement, ConstructionSubcontractVersion, ConstructionSubcontractItem,
-            ConstructionSubcontract, ConstructionProject]:
+            ConstructionSubcontract, ConstructionProjectServiceTemplate, ConstructionServiceTemplate, ConstructionProject]:
             await session.execute(delete(model).where(model.company_id == company_id))
         await session.commit()
 
@@ -170,6 +170,57 @@ async def test_amendment_preserves_measurement_prices_and_rejects_foreign_compan
                 await service.get(uuid4(), contract["id"])
             with pytest.raises(ConstructionDomainError):
                 await service.bind_parent(parent, {"supplier_person_id": uuid4()})
+    finally:
+        await cleanup(factory, company_id)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_items_follow_the_project_service_list_and_keep_service_once_measured():
+    engine = await create_reachable_engine_or_skip()
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    company_id = uuid4()
+    try:
+        async with factory() as session:
+            service, project, supplier, contract = await setup(session, company_id)
+            masonry = ConstructionServiceTemplate(id=uuid4(), company_id=company_id, name="Alvenaria")
+            painting = ConstructionServiceTemplate(id=uuid4(), company_id=company_id, name="Pintura")
+            session.add_all([masonry, painting])
+            await session.flush()
+            session.add(ConstructionProjectServiceTemplate(id=uuid4(), company_id=company_id,
+                project_id=project.id, service_template_id=masonry.id))
+            await session.commit()
+            original = contract["items"][0]
+
+            def request(**item):
+                return SubcontractRequest(code="CT-1", title="Alvenaria", supplier_person_id=supplier,
+                    valid_from=contract["valid_from"], valid_to=contract["valid_to"],
+                    items=[{"id": original["id"], "description": "Parede", "unit_of_measure": "M2",
+                        "quantity": "10", "material_unit_price": "2", "labor_unit_price": "3", **item}])
+
+            with pytest.raises(ConstructionDomainError, match="lista de serviços"):
+                await service.save(company_id, project.id, request(), uuid4(), contract_id=contract["id"])
+            with pytest.raises(ConstructionDomainError, match="Pintura não está na lista"):
+                await service.save(company_id, project.id, request(service_template_id=painting.id), uuid4(),
+                    contract_id=contract["id"])
+            saved = await service.save(company_id, project.id, request(service_template_id=masonry.id), uuid4(),
+                contract_id=contract["id"])
+            assert saved["items"][0]["service_template_id"] == masonry.id
+            assert saved["items"][0]["service_template_name"] == "Alvenaria"
+            released = await service.release(company_id, contract["id"], uuid4())
+            listed = await service.list(company_id, project.id)
+            assert listed[0]["total_amount"] == "50.00"
+
+            await measurement(session, service, company_id, project, supplier, released, "2", "M1")
+            await session.execute(ConstructionSubcontractItem.__table__.update()
+                .where(ConstructionSubcontractItem.id == original["id"]).values(consumed_quantity=Decimal("2")))
+            await session.commit()
+            await session.execute(delete(ConstructionProjectServiceTemplate).where(
+                ConstructionProjectServiceTemplate.company_id == company_id))
+            await session.commit()
+            with pytest.raises(ConstructionDomainError, match="Serviço e unidade"):
+                await service.save(company_id, project.id, request(service_template_id=painting.id), uuid4(),
+                    contract_id=contract["id"])
     finally:
         await cleanup(factory, company_id)
         await engine.dispose()

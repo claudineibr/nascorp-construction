@@ -71,6 +71,10 @@ class ConstructionProject(Base):
     analytic_cost_center_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     receipt_template_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     commission_receipt_template_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    contract_template_id = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
+    lot = mapped_column(String(120), nullable=True)
+    registration = mapped_column(String(120), nullable=True)
+    land_area = mapped_column(Numeric(14, 2), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -308,6 +312,9 @@ class ConstructionMeasurement(Base):
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     external_accounts_payable_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     external_accounts_payable_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    external_accounts_payable_shared: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -402,6 +409,41 @@ class ConstructionServiceTemplate(Base):
         viewonly=True,
         order_by="ConstructionServiceTemplateItem.sequence_number",
     )
+
+
+class ConstructionProjectServiceTemplate(Base):
+    __tablename__ = "construction_project_service_templates"
+    __table_args__ = (
+        Index(
+            "uq_construction_project_service_templates_live",
+            "project_id",
+            "service_template_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_construction_project_service_templates_company_project", "company_id", "project_id"),
+        Index("ix_construction_project_service_templates_template_id", "service_template_id"),
+        {"schema": CONSTRUCTION_SCHEMA},
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    service_template_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_service_templates.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    deleted_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    service_template: Mapped[ConstructionServiceTemplate] = relationship()
 
 
 class ConstructionServiceTemplateSection(Base):

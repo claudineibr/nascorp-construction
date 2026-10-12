@@ -1,6 +1,6 @@
 from sqlalchemy import func, select, text
 
-from app.infrastructure.database.models import ConstructionMeasurement, ConstructionMeasurementItem
+from app.infrastructure.database.models import ConstructionMeasurement, ConstructionMeasurementItem, ConstructionServiceTemplate
 from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction
 from app.infrastructure.repository._project_scope_filters import scope_conditions
 
@@ -33,6 +33,26 @@ class SubcontractRepository:
             ConstructionSubcontractItem.contract_id == contract_id,
             *scope_conditions(ConstructionSubcontractItem, self.scope)).order_by(ConstructionSubcontractItem.id)
         return (await self.session.scalars(query.with_for_update().execution_options(populate_existing=True) if lock else query)).all()
+
+    async def item_totals(self, company_id, contract_ids):
+        if not contract_ids:
+            return {}
+        unit_price = ConstructionSubcontractItem.material_unit_price + ConstructionSubcontractItem.labor_unit_price
+        rows = await self.session.execute(select(ConstructionSubcontractItem.contract_id,
+            func.coalesce(func.sum(ConstructionSubcontractItem.quantity * unit_price), 0),
+            func.coalesce(func.sum((ConstructionSubcontractItem.quantity - ConstructionSubcontractItem.consumed_quantity) * unit_price), 0))
+            .where(ConstructionSubcontractItem.company_id == company_id,
+                ConstructionSubcontractItem.contract_id.in_(contract_ids), ConstructionSubcontractItem.active.is_(True),
+                *scope_conditions(ConstructionSubcontractItem, self.scope))
+            .group_by(ConstructionSubcontractItem.contract_id))
+        return {contract_id: (total, remaining) for contract_id, total, remaining in rows.all()}
+
+    async def service_template_names(self, company_id, service_template_ids):
+        if not service_template_ids:
+            return {}
+        rows = await self.session.execute(select(ConstructionServiceTemplate.id, ConstructionServiceTemplate.name).where(
+            ConstructionServiceTemplate.company_id == company_id, ConstructionServiceTemplate.id.in_(service_template_ids)))
+        return dict(rows.all())
 
     async def version(self, company_id, contract_id, number):
         return await self.session.scalar(select(ConstructionSubcontractVersion).where(

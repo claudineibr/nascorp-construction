@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
+import { InfoTip } from "../../components/InfoTip";
 import { subcontractRequest } from "../../services/constructionApi";
+import {
+  currencyDecimal,
+  currencyFromNumber,
+  formatCurrencyInput,
+} from "../../utils/currencyInput";
 import styles from "./SubcontractsPanel.module.css";
 import appStyles from "../../App.module.css";
 
@@ -10,11 +16,14 @@ export function ContractMeasurementFields({
   onChange,
 }) {
   const [rows, setRows] = useState([]);
-  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let active = true;
     if (!projectId) return;
+    setLoading(true);
+    setError("");
     subcontractRequest({ bridge, path: `/projects/${projectId}/subcontracts` })
       .then((result) => {
         if (active)
@@ -22,58 +31,67 @@ export function ContractMeasurementFields({
       })
       .catch((failure) => {
         if (active) setError(failure.message);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
       });
     return () => {
       active = false;
     };
-  }, [bridge, projectId]);
-  const choose = (row) => {
+  }, [bridge, projectId, attempt]);
+  const choose = (contractId) => {
+    const row = rows.find((candidate) => candidate.id === contractId);
     onChange("subcontractId", row?.id ?? "");
     if (row) onChange("supplierPersonId", row.supplier_person_id);
   };
   const taxes = form.retentionDetails ?? [];
+  const hint = form.subcontractId
+    ? "Com contrato, o valor bruto sai das quantidades medidas na planilha contratada e a aprovação consome o saldo do contrato."
+    : error
+      ? "Os contratos de empreitada desta obra não foram carregados. Tente novamente antes de lançar a medição como avulsa."
+      : rows.length
+      ? "Medição avulsa: não consome saldo de contrato e usa o valor bruto informado abaixo. Deixe zerado quando uma DNF única pagar várias OS."
+      : "Esta obra não tem contrato de empreitada liberado: a medição é avulsa e usa o valor bruto informado abaixo. Deixe zerado quando uma DNF única pagar várias OS.";
   return (
-    <fieldset className={styles.panel}>
-      <legend>Contrato de empreitada opcional</legend>
-      {error && <p role="alert">{error}</p>}
+    <fieldset className={`${styles.panel} ${styles.contractBox}`}>
+      <legend>
+        Contrato de empreitada
+        <InfoTip label="Quando vincular um contrato de empreitada">
+          Vincule quando o serviço faz parte de um contrato liberado na aba
+          Empreitada: o valor sai do preço contratado e a aprovação consome o
+          saldo. Sem contrato, a medição é avulsa e usa o valor bruto informado.
+        </InfoTip>
+      </legend>
+      {error && (
+        <div className={styles.loadError} role="alert">
+          <span>{error}</span>
+          <button
+            type="button"
+            className={appStyles.secondaryButton}
+            onClick={() => setAttempt((value) => value + 1)}
+          >
+            Tentar novamente
+          </button>
+        </div>
+      )}
       <label>
-        Buscar contrato liberado
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Código ou título"
-        />
-      </label>
-      <div className={styles.actions}>
-        <button
-          type="button"
-          className={appStyles.secondaryButton}
-          onClick={() => choose(null)}
+        Contrato
+        <select
+          value={form.subcontractId ?? ""}
+          onChange={(e) => choose(e.target.value)}
+          disabled={loading || !rows.length}
         >
-          Medição avulsa
-        </button>
-        {rows
-          .filter((row) =>
-            `${row.code} ${row.title}`
-              .toLowerCase()
-              .includes(search.toLowerCase()),
-          )
-          .slice(0, 20)
-          .map((row) => (
-            <button
-              type="button"
-              key={row.id}
-              className={
-                form.subcontractId === row.id
-                  ? appStyles.primaryButton
-                  : appStyles.secondaryButton
-              }
-              onClick={() => choose(row)}
-            >
+          <option value="">
+            {loading ? "Carregando contratos..." : "Medição avulsa (sem contrato)"}
+          </option>
+          {rows.map((row) => (
+            <option key={row.id} value={row.id}>
               {row.code} · {row.title} · Versão {row.released_version}
-            </button>
+            </option>
           ))}
-      </div>
+        </select>
+      </label>
+      <p className={styles.hint}>{hint}</p>
       {form.subcontractId && (
         <>
           <p>
@@ -109,23 +127,24 @@ export function ContractMeasurementFields({
                 </select>
               </label>
               <label>
-                Valor retido
+                Valor retido*
                 <input
                   required
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  value={tax.tax_amount}
-                  onChange={(e) =>
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="0,00"
+                  value={tax.tax_amount ? currencyFromNumber(tax.tax_amount) : ""}
+                  onChange={(e) => {
+                    const masked = formatCurrencyInput(e.target.value);
                     onChange(
                       "retentionDetails",
                       taxes.map((value, position) =>
                         position === index
-                          ? { ...value, tax_amount: e.target.value }
+                          ? { ...value, tax_amount: masked ? currencyDecimal(masked) : "" }
                           : value,
                       ),
-                    )
-                  }
+                    );
+                  }}
                 />
               </label>
               <label>
@@ -173,82 +192,6 @@ export function ContractMeasurementFields({
           </button>
         </>
       )}
-    </fieldset>
-  );
-}
-
-export function ContractItemFields({ bridge, measurement, form, onChange }) {
-  const [contract, setContract] = useState(null);
-  const [search, setSearch] = useState("");
-  const [error, setError] = useState("");
-  useEffect(() => {
-    let active = true;
-    if (!measurement.subcontractId) return;
-    subcontractRequest({
-      bridge,
-      path: `/subcontracts/${measurement.subcontractId}${measurement.subcontractVersionId ? `?version_id=${measurement.subcontractVersionId}` : ""}`,
-    })
-      .then((value) => {
-        if (active) setContract(value);
-      })
-      .catch((failure) => {
-        if (active) setError(failure.message);
-      });
-    return () => {
-      active = false;
-    };
-  }, [bridge, measurement.subcontractId, measurement.subcontractVersionId]);
-  if (!measurement.subcontractId) return null;
-  return (
-    <fieldset className={styles.panel}>
-      <legend>Item da planilha contratada</legend>
-      {error && <p role="alert">{error}</p>}
-      <label>
-        Buscar serviço contratado
-        <input value={search} onChange={(e) => setSearch(e.target.value)} />
-      </label>
-      <div className={styles.actions}>
-        {(contract?.items ?? [])
-          .filter(
-            (item) =>
-              item.active &&
-              item.description.toLowerCase().includes(search.toLowerCase()),
-          )
-          .map((item) => (
-            <button
-              type="button"
-              key={item.id}
-              className={
-                form.subcontractItemId === item.id
-                  ? appStyles.primaryButton
-                  : appStyles.secondaryButton
-              }
-              onClick={() => {
-                onChange("subcontractItemId", item.id);
-                onChange("description", item.description);
-              }}
-            >
-              {item.description} · Saldo {item.remaining_quantity}{" "}
-              {item.unit_of_measure} · Material {item.material_unit_price} · Mão
-              de obra {item.labor_unit_price}
-            </button>
-          ))}
-      </div>
-      <label>
-        Quantidade medida
-        <input
-          required
-          type="number"
-          min="0.00000001"
-          step="0.00000001"
-          value={form.quantity ?? ""}
-          onChange={(e) => onChange("quantity", e.target.value)}
-        />
-      </label>
-      <p>
-        O valor do item será calculado pelo servidor usando a versão da planilha
-        vinculada à medição.
-      </p>
     </fieldset>
   );
 }
