@@ -6,12 +6,10 @@
 .field { display: flex; flex-direction: column; gap: 0.4rem; color: var(--color-text); font-size: 0.85rem; }
 .field input, .field select { width: 100%; padding: calc(0.7rem * var(--density-control)); border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface-muted); color: var(--color-text); font: inherit; }
 .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.primaryButton, .secondaryButton { display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem; padding: calc(0.7rem * var(--density-control)); border: 1px solid var(--color-border); border-radius: 12px; font: inherit; cursor: pointer; }
-.primaryButton { color: var(--color-surface); background: var(--color-primary); }
-.primaryButton:hover { background: var(--color-primary-strong); }
-.secondaryButton { color: var(--color-text); background: var(--color-surface-muted); }
-.secondaryButton:hover { background: var(--color-surface); }
-.primaryButton:disabled, .secondaryButton:disabled { opacity: 0.65; cursor: default; }
+.primaryButton { composes: primaryButton from "../../App.module.css"; }
+.secondaryButton { composes: secondaryButton from "../../App.module.css"; }
+.primaryButton, .secondaryButton { max-width: 100%; padding: calc(0.5rem * var(--density-control)) calc(1.35rem * var(--density-control)); }
+.primaryButton:focus-visible, .secondaryButton:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 .document { width: 100%; min-height: 36rem; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface); }
 .printDocument { position: fixed; top: 0; left: -10000px; width: 210mm; height: 297mm; border: 0; }
 .tableWrapper { overflow-x: auto; }

@@ -787,6 +787,10 @@ export async function listConstructionPersonSummaries({
   }
 }
 
+export async function getConstructionProject({ bridge, projectId }) {
+  return toProjectView(await requestJson({ bridge, path: "/v1/construction/projects/" + projectId }))
+}
+
 export async function createConstructionProject({ bridge, projectData }) {
   const payload = await requestJson({
     bridge,

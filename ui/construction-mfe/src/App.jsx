@@ -67,6 +67,7 @@ import {
   createConstructionMeasurementOccurrence,
   createConstructionProcurementRequest,
   createConstructionProject,
+  getConstructionProject,
   createConstructionSchedulePhase,
   createConstructionUnit,
   createConstructionUnitAdjustment,
@@ -225,6 +226,7 @@ const projectDetailTabs = [
   { id: "services", label: "Serviços", icon: ClipboardList },
   { id: "procurement", label: "Requisições", icon: PackageSearch },
   { id: "purchaseOrders", label: "Pedidos de compra", icon: ShoppingCart },
+  { id: "accountsPayable", label: "Contas a pagar", icon: HandCoins },
   { id: "subcontracts", label: "Empreitada", icon: FileText },
   { id: "reports", label: "Relatórios", icon: BarChart3 },
   { id: "integrations", label: "Integrações", icon: FileCog },
@@ -1158,6 +1160,20 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const bridge = useMemo(() => providedBridge ?? resolveConstructionBridge(), [providedBridge])
   const ProjectPagination = bridge.components?.Pagination ?? StandalonePagination
   const ProjectPurchaseOrders = bridge.canRead?.("purchase_orders") ? bridge.components?.ProjectPurchaseOrders ?? null : null
+  const ProjectAccountsPayable = bridge.canRead?.("accounts_payable") && bridge.canRead?.("construction_projects") ? bridge.components?.ProjectAccountsPayable ?? null : null
+  const [restoredProject, setRestoredProject] = useState(null)
+  useEffect(() => {
+    if (!bridge.initialProjectId) return
+    let active = true
+    getConstructionProject({ bridge, projectId: bridge.initialProjectId }).then((project) => {
+      if (!active) return
+      setRestoredProject(project)
+      setActiveProjectId(project.id)
+      setViewMode("projectDetail")
+      setProjectDetailTab(bridge.initialProjectTab === "accountsPayable" && ProjectAccountsPayable ? "accountsPayable" : "overview")
+    }).catch((error) => { if (active) bridge.feedback?.error?.(error.message) })
+    return () => { active = false }
+  }, [bridge, ProjectAccountsPayable])
   const [viewMode, setViewMode] = useState("projects")
   const [projectDetailTab, setProjectDetailTab] = useState("overview")
   const [activeProjectId, setActiveProjectId] = useState(null)
@@ -1353,20 +1369,20 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }, [loadProjects])
 
   useEffect(() => {
-    if (!projects.length) {
+    if (!projects.length && !restoredProject) {
       setActiveProjectId(null)
       setActiveUnitId(null)
       setViewMode("projects")
       return
     }
 
-    const projectExists = activeProjectId && projects.some((project) => project.id === activeProjectId)
+    const projectExists = activeProjectId && (restoredProject?.id === activeProjectId || projects.some((project) => project.id === activeProjectId))
     if (activeProjectId && !projectExists) {
       setActiveProjectId(null)
       setActiveUnitId(null)
       setViewMode("projects")
     }
-  }, [activeProjectId, projects])
+  }, [activeProjectId, projects, restoredProject])
 
   useEffect(() => {
     if (!activeUnitId) {
@@ -1381,8 +1397,8 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }, [activeUnitId, units])
 
   const selectedProject = useMemo(
-    () => projects.find((project) => project.id === activeProjectId) ?? null,
-    [activeProjectId, projects]
+    () => projects.find((project) => project.id === activeProjectId) ?? (restoredProject?.id === activeProjectId ? restoredProject : null),
+    [activeProjectId, projects, restoredProject]
   )
 
   const selectedUnit = useMemo(
@@ -4058,7 +4074,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
           <section className={styles.tabCard}>
             <div className={styles.tabList}>
-              {projectDetailTabs.filter((tab) => tab.id !== "purchaseOrders" || ProjectPurchaseOrders).map((tab) => {
+              {projectDetailTabs.filter((tab) => (tab.id !== "purchaseOrders" || ProjectPurchaseOrders) && (tab.id !== "accountsPayable" || ProjectAccountsPayable)).map((tab) => {
                 const Icon = tab.icon
                 return (
                   <button
@@ -4098,7 +4114,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           {projectDetailTab === "blocks" ? (
             <DomainCard
               title="Blocos/Torres"
-              subtitle="CRUD da obra aberta com código, status e total de pavimentos."
+              subtitle="Blocos e torres desta obra, com código, situação e número de pavimentos."
               action={
                 <button type="button" className={styles.primaryButton} onClick={openCreateBlock}>
                   <Plus size={16} />
@@ -4223,7 +4239,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
           {projectDetailTab === "schedule" ? (
             <DomainCard
               title="Cronograma"
-              subtitle={`CRUD de fases com sequência e progresso médio de ${scheduleProgress}%`}
+              subtitle={`Fases da obra em ordem, com progresso médio de ${scheduleProgress}%`}
               action={
                 <button type="button" className={styles.primaryButton} onClick={openCreateSchedulePhase}>
                   <Plus size={16} />
@@ -4284,6 +4300,12 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
               subtitle="Pedidos emitidos para esta obra. Abra o pedido para ver itens, recebimentos e títulos."
               content={<ProjectPurchaseOrders projectId={activeProjectId} />}
             />
+          ) : null}
+
+          {projectDetailTab === "accountsPayable" && ProjectAccountsPayable ? (
+            <DomainCard title="Contas a pagar"
+              subtitle="Parcelas da obra e das unidades, incluindo títulos vinculados aos pedidos de compra."
+              content={<ProjectAccountsPayable projectId={activeProjectId} defaultCostCenterId={selectedProject?.analyticCostCenterId} />} />
           ) : null}
 
           {projectDetailTab === "subcontracts" ? <DomainCard title={<SubcontractsCardTitle />}

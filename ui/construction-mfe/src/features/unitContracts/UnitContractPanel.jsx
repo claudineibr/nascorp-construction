@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { Printer, FileText, RefreshCw } from "lucide-react";
-import { unitContractRequest } from "../../services/unitContracts.js";
+import { Printer, FileText, RefreshCcw, CheckCircle, PenLine, Download } from "lucide-react";
+import { downloadUnitContract, unitContractRequest } from "../../services/unitContracts.js";
 import { ContractTemplateField } from "./ContractTemplateField.jsx";
+import { UnitContractManualEdit } from "./UnitContractManualEdit.jsx";
 import { Dialog } from "../subcontracts/DirectBillsSection.jsx";
 import styles from "./UnitContractPanel.module.css";
 
@@ -38,6 +39,8 @@ export function UnitContractPanel({ bridge, unit }) {
   const [signatureRole, setSignatureRole] = useState("customer");
   const [signedDate, setSignedDate] = useState("");
   const [printing, setPrinting] = useState(null);
+  const [downloading, setDownloading] = useState(null);
+  const [editing, setEditing] = useState(null);
   const canRead = bridge?.canRead?.("contract") === true;
   const canGenerate = bridge?.canCreate?.("contract") === true && ["sold", "delivered"].includes(unit.status);
   const report = useCallback((error) => bridge?.feedback?.error?.(error.message), [bridge]);
@@ -95,6 +98,35 @@ export function UnitContractPanel({ bridge, unit }) {
     setBusy(true);
     setPrinting(version);
   };
+  const editVersion = async (version) => {
+    setBusy(true);
+    try {
+      const context = await unitContractRequest(bridge, `/${unit.id}/versions/${version.id}/edit-context`);
+      setEditing(context);
+    } catch (error) { report(error); }
+    finally { setBusy(false); }
+  };
+  const downloadVersion = async (version, kind) => {
+    setBusy(true);
+    setDownloading(kind);
+    let url;
+    let link;
+    try {
+      const blob = await downloadUnitContract(bridge, unit.id, version.id, kind);
+      url = URL.createObjectURL(blob);
+      link = document.createElement("a");
+      link.href = url;
+      link.download = `contrato-${unit.code || unit.id}-v${version.version_number}.${kind}`;
+      document.body.appendChild(link);
+      link.click();
+    } catch (error) { report(error); }
+    finally {
+      link?.remove();
+      if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setDownloading(null);
+      setBusy(false);
+    }
+  };
   const printLoaded = async (frame) => {
     let timeout;
     try {
@@ -124,7 +156,7 @@ export function UnitContractPanel({ bridge, unit }) {
     {divergent.length > 0 && <p>Os dados atuais diferem do último documento. Revise e gere outra versão: {divergent.map((key) => variableLabel(key)).join(", ")}.</p>}
     <div className={styles.actions}>
       <button type="button" className={styles.secondaryButton} onClick={refresh} disabled={busy}>
-        <RefreshCw size={16} aria-hidden="true" />{failed ? "Tentar novamente" : "Atualizar histórico"}
+        <RefreshCcw size={16} aria-hidden="true" />{failed ? "Tentar novamente" : "Atualizar histórico"}
       </button>
       {canGenerate && <button type="button" className={styles.primaryButton} onClick={review} disabled={busy}>
         <FileText size={16} aria-hidden="true" />{hasDocument ? "Regerar contrato" : "Gerar contrato"}
@@ -148,10 +180,12 @@ export function UnitContractPanel({ bridge, unit }) {
         </label>)}</div>
       <iframe className={styles.document} title="Prévia do contrato" sandbox="" srcDoc={preview.content_html} />
       <div className={styles.actions}>
-        <button type="button" className={styles.secondaryButton} onClick={review} disabled={busy}>Atualizar prévia</button>
+        <button type="button" className={styles.secondaryButton} onClick={review} disabled={busy}>
+          <RefreshCcw size={16} aria-hidden="true" />Atualizar prévia
+        </button>
         <button type="button" className={styles.primaryButton} onClick={generate}
           disabled={busy || preview.pending_fields.length > 0 || !preview.context_hash || (hasDocument && !reason.trim())}>
-          Confirmar geração
+          <CheckCircle size={16} aria-hidden="true" />Confirmar geração
         </button>
       </div>
     </div>}
@@ -172,14 +206,30 @@ export function UnitContractPanel({ bridge, unit }) {
     </div>
     {selected && <div className={styles.card}>
       <h3>Documento da versão {selected.version_number}</h3>
-      <button type="button" className={styles.secondaryButton} onClick={() => printVersion(selected)} disabled={busy || !selected.content_html}>
-        <Printer size={16} aria-hidden="true" />Imprimir contrato
-      </button>
-      <p>Na impressão, escolha a impressora ou Salvar como PDF.</p>
-      {selected.id === history.current_version_id && selected.html_hash && ["draft", "sent"].includes(selected.status) && bridge?.canUpdate?.("contract") &&
-        <button type="button" className={styles.secondaryButton} onClick={() => setSigning(true)} disabled={busy}>
-          Registrar assinatura
+      <div className={styles.actions}>
+        {bridge?.canUpdate?.("contract") && selected.content_html &&
+          <button type="button" className={styles.secondaryButton} onClick={() => editVersion(selected)} disabled={busy}>
+            <PenLine size={16} aria-hidden="true" />Editar texto
+          </button>}
+        {selected.pdf_hash && <button type="button" className={styles.secondaryButton}
+          onClick={() => downloadVersion(selected, "pdf")} disabled={busy}>
+          <Download size={16} aria-hidden="true" />{downloading === "pdf" ? "Baixando PDF..." : "Baixar PDF"}
         </button>}
+        {selected.docx_hash && <button type="button" className={styles.secondaryButton}
+          onClick={() => downloadVersion(selected, "docx")} disabled={busy}>
+          <Download size={16} aria-hidden="true" />{downloading === "docx" ? "Baixando Word..." : "Baixar Word"}
+        </button>}
+        <button type="button" className={styles.secondaryButton} onClick={() => printVersion(selected)} disabled={busy || !selected.content_html}>
+          <Printer size={16} aria-hidden="true" />Imprimir contrato
+        </button>
+        {selected.id === history.current_version_id && selected.html_hash && ["draft", "sent"].includes(selected.status) && bridge?.canUpdate?.("contract") &&
+          <button type="button" className={styles.primaryButton} onClick={() => setSigning(true)} disabled={busy}>
+            <PenLine size={16} aria-hidden="true" />Registrar assinatura
+          </button>}
+      </div>
+      <p>Na impressão, escolha a impressora ou Salvar como PDF.</p>
+      {selected.data?.manual_edit && <p>Edição manual baseada na versão {selected.data.edited_from_version_number}.
+        Consulte essa versão no histórico para comparar o texto.</p>}
       <iframe className={styles.document} title={`Contrato versão ${selected.version_number}`} sandbox="" srcDoc={selected.content_html} />
       <details><summary>Diferenças das variáveis</summary>{Object.entries(changes).map(([key, value]) =>
         <p key={key}><strong>{variableLabel(key)}</strong>: {value.previous ?? "Não informado"} → {value.current ?? "Não informado"}</p>)}</details>
@@ -187,6 +237,13 @@ export function UnitContractPanel({ bridge, unit }) {
     {printing && <iframe key={printing.id} className={styles.printDocument} title={`Impressão do contrato versão ${printing.version_number}`}
       sandbox="allow-same-origin allow-modals" srcDoc={printing.content_html} onLoad={(event) => printLoaded(event.currentTarget)}
       aria-hidden="true" tabIndex={-1} />}
+    {editing && <UnitContractManualEdit key={editing.version_id} bridge={bridge} unitId={unit.id} context={editing}
+      onClose={() => setEditing(null)} onSaved={async () => {
+        setEditing(null);
+        setPreview(null);
+        await refresh();
+        bridge?.feedback?.success?.("Edição salva em uma nova versão do contrato.");
+      }} />}
     {signing && <Dialog title="Registrar assinatura da versão" busy={busy} onClose={() => setSigning(false)}>
       <form className={styles.panel} onSubmit={sign}>
         <p>Registre a assinatura já realizada no documento da versão {selected.version_number}.</p>
@@ -196,7 +253,9 @@ export function UnitContractPanel({ bridge, unit }) {
         <label className={styles.field}><span>Data da assinatura *</span><input type="date" required value={signedDate} onChange={(event) => setSignedDate(event.target.value)} disabled={busy} /></label>
         <div className={styles.actions}>
           <button type="button" className={styles.secondaryButton} onClick={() => setSigning(false)} disabled={busy}>Cancelar</button>
-          <button type="submit" className={styles.primaryButton} disabled={busy || !signedDate}>Confirmar registro</button>
+          <button type="submit" className={styles.primaryButton} disabled={busy || !signedDate}>
+            <CheckCircle size={16} aria-hidden="true" />Confirmar registro
+          </button>
         </div>
       </form>
     </Dialog>}
