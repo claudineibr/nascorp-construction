@@ -111,6 +111,7 @@ class EventRepository:
         row = await self.session.scalar(select(OutboxEvent).where(
             OutboxEvent.event_type == ConstructionEventType.MEASUREMENT_APPROVED,
             OutboxEvent.payload["subcontract_id"].astext.is_not(None),
+            OutboxEvent.payload["operation"].astext == "reverse",
             OutboxEvent.status.in_([EventStatus.PENDING, EventStatus.FAILED]), OutboxEvent.retry_count < 3,
             or_(OutboxEvent.next_attempt_at.is_(None), OutboxEvent.next_attempt_at <= now),
             or_(OutboxEvent.lease_until.is_(None), OutboxEvent.lease_until <= now))

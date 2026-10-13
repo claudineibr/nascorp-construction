@@ -460,6 +460,23 @@
   margin: 0.25rem 0 0;
 }
 
+.measurementFinancialStatus {
+  align-items: flex-start;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 14rem;
+  min-width: 0;
+}
+
+.measurementFinancialDetail {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .badgeMuted,
 .badgeSuccess {
   align-items: center;

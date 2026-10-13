@@ -14,21 +14,18 @@ class ErpConstructionClient:
     EVENT_ENDPOINTS = {
         ConstructionEventType.PROJECT_CREATED: "/v1/internal/construction/events/project-created",
         ConstructionEventType.UNIT_CREATED: "/v1/internal/construction/events/unit-created",
-        ConstructionEventType.MEASUREMENT_APPROVED: "/v1/internal/construction/events/measurement-approved",
         ConstructionEventType.UNIT_SOLD: "/v1/internal/construction/events/unit-sold",
         ConstructionEventType.PROCUREMENT_REQUESTED: "/v1/internal/construction/events/procurement-requested",
     }
     RESPONSE_EVENT_TYPES = {
         ConstructionEventType.PROJECT_CREATED: ErpEventType.COST_CENTER_CREATED,
         ConstructionEventType.UNIT_CREATED: ErpEventType.COST_CENTER_CREATED,
-        ConstructionEventType.MEASUREMENT_APPROVED: ErpEventType.ACCOUNTS_PAYABLE_CREATED,
         ConstructionEventType.UNIT_SOLD: ErpEventType.CONTRACT_RECEIVABLE_CREATED,
         ConstructionEventType.PROCUREMENT_REQUESTED: ErpEventType.PROCUREMENT_REQUEST_ACCEPTED,
     }
     RESPONSE_AGGREGATES = {
         ConstructionEventType.PROJECT_CREATED: ("construction_project_id", ConstructionAggregateType.PROJECT),
         ConstructionEventType.UNIT_CREATED: ("construction_unit_id", ConstructionAggregateType.UNIT),
-        ConstructionEventType.MEASUREMENT_APPROVED: ("construction_measurement_id", ConstructionAggregateType.MEASUREMENT),
         ConstructionEventType.UNIT_SOLD: ("construction_unit_id", ConstructionAggregateType.UNIT),
         ConstructionEventType.PROCUREMENT_REQUESTED: (
             "construction_procurement_request_id",
@@ -592,9 +589,6 @@ class ErpConstructionClient:
             return response.json()
 
     async def create_cost_center_hierarchy(self, *, event: EventEnvelope) -> EventEnvelope:
-        return await self.deliver_event(event=event)
-
-    async def create_accounts_payable_from_measurement(self, *, event: EventEnvelope) -> EventEnvelope:
         return await self.deliver_event(event=event)
 
     async def create_contract_and_receivables_from_unit_sale(self, *, event: EventEnvelope) -> EventEnvelope:

@@ -13,6 +13,7 @@
 .secondaryButton:hover { background: var(--color-surface); }
 .primaryButton:disabled, .secondaryButton:disabled { opacity: 0.65; cursor: default; }
 .document { width: 100%; min-height: 36rem; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface); }
+.printDocument { position: fixed; top: 0; left: -10000px; width: 210mm; height: 297mm; border: 0; }
 .tableWrapper { overflow-x: auto; }
 .panel table { width: 100%; border-collapse: collapse; }
 .panel th, .panel td { padding: calc(0.7rem * var(--density)) calc(0.8rem * var(--density-control)); border-bottom: 1px solid var(--color-border); text-align: left; vertical-align: top; }

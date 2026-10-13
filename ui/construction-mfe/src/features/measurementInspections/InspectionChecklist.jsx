@@ -40,6 +40,7 @@ export function InspectionChecklist({
   people,
   saving,
   isLocked,
+  canVerify,
   canWaive,
   onVerifyInspection,
   onVerifyAllPending,
@@ -107,7 +108,7 @@ export function InspectionChecklist({
             }}
           />
         </div>
-        {isLocked || summary.pending === 0 ? null : (
+        {isLocked || !canVerify || summary.pending === 0 ? null : (
           <button
             type="button"
             className={styles.secondaryButton}
@@ -123,6 +124,11 @@ export function InspectionChecklist({
       <p className={styles.checklistSummary}>
         {summary.total} linha(s) · {summary.blocking} aguardando reinspeção · {summary.pending} pendente(s)
       </p>
+      {isLocked || canVerify ? null : (
+        <p className={styles.emptyHint}>
+          Só quem tem a permissão Verificação da FVS (perfil de engenheiro) registra Conforme ou Não conforme.
+        </p>
+      )}
 
       {inspections.length === 0 ? (
         <p className={styles.emptyHint}>Nenhuma linha de verificação cadastrada.</p>
@@ -176,7 +182,7 @@ export function InspectionChecklist({
                 <span className={styles.lineActions}>
                   {isLocked ? null : (
                     <>
-                      {state === "pending" ? (
+                      {!canVerify ? null : state === "pending" ? (
                         <>
                           <button
                             type="button"

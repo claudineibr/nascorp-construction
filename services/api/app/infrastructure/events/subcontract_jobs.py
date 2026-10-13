@@ -22,30 +22,22 @@ async def relay_subcontract_measurements():
             row_id, owner = row.id, row.lease_owner
             envelope = DatabaseOutboxRelay(repository=events, publisher=None)._to_envelope(row)
             try:
-                reversing = envelope.payload.get("operation") == "reverse"
-                if reversing:
-                    response = await client.cancel_measurement_payable(company_id=envelope.company_id,
-                        measurement_id=envelope.aggregate_id, user_id=envelope.payload.get("user_id"),
-                        reason=envelope.payload["reason"])
-                else:
-                    response = await client.deliver_event(event=envelope)
+                response = await client.cancel_measurement_payable(company_id=envelope.company_id,
+                    measurement_id=envelope.aggregate_id, user_id=envelope.payload.get("user_id"),
+                    reason=envelope.payload["reason"])
                 measurement = await SubcontractRepository(session).measurement(envelope.company_id, envelope.aggregate_id, True)
                 row = await events.leased_event(row_id)
                 if row.lease_owner != owner:
                     await session.rollback()
                     continue
                 if measurement is not None and measurement.approval_cycle == envelope.payload.get("approval_cycle"):
-                    if reversing:
-                        if response.get("status") != "CANCELED":
-                            raise ValueError("O ERP não confirmou o cancelamento financeiro.")
-                        await SubcontractService(ConstructionProjectService(repository=repository)).reverse_consumption(
-                            measurement, envelope.payload.get("user_id"))
-                        measurement.status, measurement.reversal_pending = "rejected", False
-                        measurement.external_accounts_payable_id = None
-                        measurement.rejection_reason = envelope.payload["reason"]
-                    elif measurement.status == "approved" and not measurement.reversal_pending:
-                        ConstructionProjectService._apply_accounts_payable_snapshot_from_payload(
-                            measurement=measurement, payload=response.payload)
+                    if response.get("status") != "CANCELED":
+                        raise ValueError("O ERP não confirmou o cancelamento financeiro.")
+                    await SubcontractService(ConstructionProjectService(repository=repository)).reverse_consumption(
+                        measurement, envelope.payload.get("user_id"))
+                    measurement.status, measurement.reversal_pending = "rejected", False
+                    measurement.external_accounts_payable_id = None
+                    measurement.rejection_reason = envelope.payload["reason"]
                 await events.mark_published(row)
                 row.lease_owner, row.lease_until = None, None
                 await session.commit()

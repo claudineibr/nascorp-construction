@@ -576,6 +576,10 @@ async def approve_measurement(
             company_id=ctx.company_id,
             measurement_id=measurement_id,
             actor_user_id=ctx.user_id,
+            actor_can_self_approve=ctx.can(
+                feature=ConstructionFeature.MEASUREMENT_SELF_APPROVAL,
+                action=PermissionAction.UPDATE,
+            ),
         )
         return await _build_measurement_response(service=service, ctx=ctx, measurement=measurement)
     except ConstructionDomainError as exc:
@@ -1488,7 +1492,7 @@ async def update_measurement_item_inspection(
 async def verify_measurement_item_inspection(
     inspection_id: UUID,
     request_data: ConstructionMeasurementInspectionVerifyRequest,
-    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.INSPECTION_VERDICT, PermissionAction.UPDATE)),
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionMeasurementItemInspectionResponse:
     try:
@@ -1498,13 +1502,8 @@ async def verify_measurement_item_inspection(
             request=request_data,
             actor_user_id=ctx.user_id,
             actor_person_id=ctx.person_id,
-            # Dispensar uma reprovacao tira uma obrigacao da ficha, entao nao
-            # pode caber a quem so edita. DELETE e o unico bit acima de UPDATE e
-            # e concedido por perfil na matriz -- e um proxy assumido, nao uma
-            # permissao sob medida: feature nova custa 7 arquivos em 2 repos e
-            # derruba a API do ERP no boot se faltar num dict de seed.
             actor_can_waive=ctx.can(
-                feature=ConstructionFeature.MEASUREMENTS,
+                feature=ConstructionFeature.INSPECTION_VERDICT,
                 action=PermissionAction.DELETE,
             ),
         )

@@ -128,7 +128,33 @@ async def test_direct_material_credit_posts_once_and_reversal_restores_without_n
             discount = await session.scalar(select(ConstructionSubcontractDeduction).where(
                 ConstructionSubcontractDeduction.measurement_id == parent.id))
             assert discount.status == "REVERSED"
-            service.projects.erp_client.create_accounts_payable_from_measurement.assert_not_awaited()
+            service.projects.erp_client.deliver_event.assert_not_awaited()
+    finally:
+        await cleanup(factory, company_id)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reversal_without_linked_title_restores_contract_balance_immediately():
+    engine = await create_reachable_engine_or_skip()
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    company_id = uuid4()
+    try:
+        async with factory() as session:
+            service, project, supplier, contract = await setup(session, company_id)
+            parent = await measurement(session, service, company_id, project, supplier, contract, "6", "M1")
+            await service.consume(parent)
+            parent.status = "approved"
+            await session.commit()
+
+            result = await service.request_reversal(company_id, parent.id, "Medição lançada em duplicidade", uuid4())
+
+            assert result["reversal_pending"] is False
+            item = await session.scalar(select(ConstructionSubcontractItem).where(ConstructionSubcontractItem.company_id == company_id))
+            assert item.consumed_quantity == 0
+            assert parent.status == "rejected" and parent.rejection_reason == "Medição lançada em duplicidade"
+            assert parent.reversal_pending is False
+            service.projects.erp_client.cancel_measurement_payable.assert_not_awaited()
     finally:
         await cleanup(factory, company_id)
         await engine.dispose()

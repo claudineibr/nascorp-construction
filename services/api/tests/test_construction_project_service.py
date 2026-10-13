@@ -1353,7 +1353,7 @@ async def test_apply_cost_center_created_event_updates_project_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_approve_measurement_creates_accounts_payable_once() -> None:
+async def test_approve_measurement_does_not_create_accounts_payable() -> None:
     company_id = uuid4()
     repository = FakeConstructionRepository()
     event_repository = FakeEventRepository()
@@ -1384,68 +1384,30 @@ async def test_approve_measurement_creates_accounts_payable_once() -> None:
             due_date=date(2026, 5, 15),
         ),
     )
+    measurement.supplier_person_id = uuid4()
 
     await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
     approved_first = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
     approved_second = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
 
     assert approved_first.status == ConstructionMeasurementStatus.APPROVED
-    assert approved_first.external_accounts_payable_id is not None
-    assert approved_first.external_accounts_payable_status == "OPEN"
-    assert approved_second.external_accounts_payable_id == approved_first.external_accounts_payable_id
-    assert len(erp_client.events) == 1
-    assert erp_client.events[0].payload["construction_unit_id"] == str(unit.id)
-    assert erp_client.events[0].payload["schedule_phase_id"] == str(schedule_phase.id)
-    assert erp_client.events[0].payload["analytic_cost_center_id"] == str(unit.analytic_cost_center_id)
-    assert any(event.event_type == ConstructionEventType.MEASUREMENT_APPROVED for event in event_repository.outbox_events)
+    assert approved_first.external_accounts_payable_id is None
+    assert approved_second.status == ConstructionMeasurementStatus.APPROVED
+    assert erp_client.events == []
+    assert event_repository.outbox_events == []
 
 
 @pytest.mark.asyncio
-async def test_async_integration_mode_records_measurement_without_http_delivery() -> None:
-    company_id = uuid4()
-    repository = FakeConstructionRepository()
-    event_repository = FakeEventRepository()
-    erp_client = FakeErpMeasurementClient()
-    project = ConstructionProject(
-        id=uuid4(),
-        company_id=company_id,
-        code="OBRA-033",
-        name="Async measurement project",
-        status=ConstructionProjectStatus.ACTIVE,
-        analytic_cost_center_id=uuid4(),
-    )
-    repository.projects[(company_id, project.id)] = project
-    unit, schedule_phase = seed_measurement_axis(repository=repository, company_id=company_id, project_id=project.id)
-    dispatcher = ConstructionIntegrationDispatcher(
-        event_repository=event_repository,
-        event_transport=erp_client,
-        integration_mode=ConstructionIntegrationMode.ASYNC_IN_MEMORY,
-    )
-    service = ConstructionProjectService(
-        repository=repository,
-        event_repository=event_repository,
-        erp_client=erp_client,
-        integration_dispatcher=dispatcher,
-    )
-
-    measurement = await service.create_measurement(
-        company_id=company_id,
-        project_id=project.id,
-        request=ConstructionMeasurementCreate(
-            unit_id=unit.id,
-            schedule_phase_id=schedule_phase.id,
-            measured_amount=Decimal("12500.50"),
-            due_date=date(2026, 5, 15),
-        ),
-    )
+async def test_approve_measurement_requires_supplier() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    measurement.supplier_person_id = None
     await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
-    approved_measurement = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
 
-    assert approved_measurement.status == ConstructionMeasurementStatus.APPROVED
-    assert approved_measurement.external_accounts_payable_id is None
-    assert len(erp_client.events) == 0
-    assert len(event_repository.outbox_events) == 1
-    assert event_repository.outbox_events[0].event_type == ConstructionEventType.MEASUREMENT_APPROVED
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
+
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_SUPPLIER_REQUIRED"
+    assert measurement.status == ConstructionMeasurementStatus.SUBMITTED
 
 
 @pytest.mark.asyncio
@@ -1558,6 +1520,7 @@ async def test_zero_value_measurement_is_approved_without_accounts_payable() -> 
             due_date=date(2026, 5, 20),
         ),
     )
+    measurement.supplier_person_id = uuid4()
     await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
     approved = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
     approved_again = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
@@ -2039,6 +2002,7 @@ async def _build_measurement_scenario(*, measured_amount: Decimal = Decimal("100
         schedule_phase_id=uuid4(),
         code="MED-060",
         sequence_number=1,
+        supplier_person_id=uuid4(),
         gross_amount=measured_amount,
         retentions_amount=Decimal("0"),
         net_amount=measured_amount,
@@ -2550,6 +2514,27 @@ async def test_approval_refuses_the_user_who_submitted_the_measurement() -> None
 
     assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_SELF_APPROVAL"
     assert measurement.status == ConstructionMeasurementStatus.SUBMITTED
+
+
+@pytest.mark.asyncio
+async def test_approval_accepts_the_submitter_with_self_approval_permission() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    submitter_id = uuid4()
+
+    await service.submit_measurement(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        actor_user_id=submitter_id,
+    )
+    await service.approve_measurement(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        actor_user_id=submitter_id,
+        actor_can_self_approve=True,
+    )
+
+    assert measurement.status == ConstructionMeasurementStatus.APPROVED
+    assert measurement.approved_by_user_id == submitter_id
 
 
 @pytest.mark.asyncio
@@ -3812,7 +3797,7 @@ async def test_measurement_creator_cannot_approve_even_when_someone_else_submitt
 
 
 @pytest.mark.asyncio
-async def test_approved_measurement_without_title_retries_and_preserves_original_approval(monkeypatch):
+async def test_approving_an_approved_measurement_changes_nothing(monkeypatch):
     company_id, measurement, service = await _build_measurement_scenario()
     creator, approver = uuid4(), uuid4()
     measurement.created_by_user_id = creator
@@ -3824,17 +3809,15 @@ async def test_approved_measurement_without_title_retries_and_preserves_original
     original_amount = measurement.measured_amount
 
     async def _no_recalculation(**kwargs):
-        raise AssertionError("Retry must preserve approved amounts")
+        raise AssertionError("An approved measurement keeps its amounts")
 
     monkeypatch.setattr(service, "_sync_measurement_amounts_from_items", _no_recalculation)
     result = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id, actor_user_id=creator)
-    assert result.external_accounts_payable_id is not None
+    assert result.external_accounts_payable_id is None
     assert result.approved_by_user_id == approver
     assert result.approved_at == approved_at
     assert result.measured_amount == original_amount
-    assert len(service.erp_client.events) == 1
-    await service.approve_measurement(company_id=company_id, measurement_id=measurement.id, actor_user_id=uuid4())
-    assert len(service.erp_client.events) == 1
+    assert service.erp_client.events == []
 
 
 @pytest.mark.asyncio

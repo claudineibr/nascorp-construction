@@ -3675,11 +3675,10 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   }
 
   const handleApproveMeasurement = (measurement) => {
-    const { canRetryIntegration } = getMeasurementApprovalActions(measurement)
     setConfirmRequest({
-      title: canRetryIntegration ? `Reenviar a medição ${measurement.code} ao ERP` : `Aprovar a medição ${measurement.code}`,
-      message: canRetryIntegration ? "O reenvio tenta vincular o título a pagar e preserva a aprovação original." : "A medição passa a valer e conta no avanço da obra.",
-      confirmLabel: canRetryIntegration ? "Reenviar ao ERP" : "Aprovar medição",
+      title: `Aprovar a medição ${measurement.code}`,
+      message: "A medição passa a valer e conta no avanço da obra. O título a pagar não é gerado: depois da aprovação, use Ações > Vincular título do ERP para lançar a DNF ou vincular a nota.",
+      confirmLabel: "Aprovar medição",
       danger: false,
       run: () => runApproveMeasurement(measurement),
     })
@@ -3688,8 +3687,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const runApproveMeasurement = async (measurement) => {
     try {
       await approveConstructionMeasurement({ bridge, measurementId: measurement.id })
-      const { canRetryIntegration } = getMeasurementApprovalActions(measurement)
-      bridge?.feedback?.success?.(canRetryIntegration ? "Reenvio da medição ao ERP solicitado." : "Medição aprovada com sucesso.")
+      bridge?.feedback?.success?.("Medição aprovada com sucesso.")
       await loadMeasurements()
     } catch (requestError) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível aprovar a medição.")
@@ -7368,7 +7366,7 @@ function MeasurementsList({
         <tbody>
           {visibleMeasurements.map((measurement) => {
             const canSubmit = ["draft", "rejected"].includes(measurement.status)
-            const { canApprove, canRetryIntegration } = getMeasurementApprovalActions(measurement)
+            const { canApprove } = getMeasurementApprovalActions(measurement)
             const canReject = ["draft", "submitted", "in_approval"].includes(measurement.status)
             const canEdit = measurement.status !== "approved" && measurement.status !== "paid"
             const canDelete = measurement.status !== "approved" && measurement.status !== "paid"
@@ -7428,14 +7426,16 @@ function MeasurementsList({
                 <td>{formatMoney(measurement.netAmount ?? measurement.measuredAmount)}</td>
                 <td>{formatDate(measurement.dueDate)}</td>
                 <td>
-                  <div>
-                    {payableBadge.detail ? <div className={styles.rowSecondaryText}>{payableBadge.detail}</div> : null}
+                  <div className={styles.measurementFinancialStatus}>
                     <span
                       className={payableBadge.tone === "success" ? styles.badgeSuccess : styles.badgeMuted}
                       title={payableBadge.title}
                     >
                       {payableBadge.label}
                     </span>
+                    {payableBadge.detail ? (
+                      <span className={styles.measurementFinancialDetail}>{payableBadge.detail}</span>
+                    ) : null}
                   </div>
                 </td>
                 <td>
@@ -7464,7 +7464,7 @@ function MeasurementsList({
                       },
                       {
                         key: "approve",
-                        label: canRetryIntegration ? "Reenviar ao ERP" : "Aprovar",
+                        label: "Aprovar",
                         icon: CheckCircle,
                         visible: canApprove,
                         dividerBefore: !canSubmit,
@@ -9553,10 +9553,8 @@ function MeasurementItemRow({
                 people={people}
                 saving={saving}
                 isLocked={isLocked}
-                // O MFE nao recebe as permissoes do usuario pelo bridge, entao
-                // quem barra a dispensa e a API (400 com mensagem explicita) --
-                // mesmo padrao das outras recusas de regra deste modulo.
-                canWaive
+                canVerify={typeof bridge?.canUpdate === "function" ? bridge.canUpdate("construction_inspection_verdict") : true}
+                canWaive={typeof bridge?.canDelete === "function" ? bridge.canDelete("construction_inspection_verdict") : true}
                 onVerifyInspection={onVerifyInspection}
                 onVerifyAllPending={onVerifyAllPendingInspections}
                 onDeleteInspection={onDeleteInspection}

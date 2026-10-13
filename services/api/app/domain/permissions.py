@@ -5,6 +5,8 @@ class ConstructionFeature:
     MEASUREMENTS = "construction_measurements"
     PROCUREMENT = "construction_procurement"
     REPORTS = "construction_reports"
+    INSPECTION_VERDICT = "construction_inspection_verdict"
+    MEASUREMENT_SELF_APPROVAL = "construction_measurement_self_approval"
 
 
 class PermissionAction:

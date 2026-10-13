@@ -1,8 +1,10 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import uuid4
+from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import inspect
 
 from app.domain.constants import ConstructionMeasurementStatus, ConstructionProjectStatus
 from app.domain.exceptions import ConstructionInvalidValueError
@@ -55,23 +57,40 @@ def build_approved_measurement(*, approved_at, erp_client=None, supplier_person_
 
 
 @pytest.mark.asyncio
-async def test_imported_approved_measurement_is_not_resent_to_the_erp() -> None:
-    service, company_id, measurement = build_approved_measurement(approved_at=None)
+@pytest.mark.parametrize("approved_at", [None, datetime(2026, 9, 1, tzinfo=UTC)])
+async def test_approving_an_approved_measurement_again_is_a_no_op(approved_at) -> None:
+    service, company_id, measurement = build_approved_measurement(approved_at=approved_at)
 
-    with pytest.raises(ConstructionInvalidValueError) as error:
-        await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
+    result = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
 
-    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_IMPORTED_NOT_SENT"
+    assert result.status == ConstructionMeasurementStatus.APPROVED
+    assert result.approved_at == approved_at
+    assert result.external_accounts_payable_id is None
 
 
 @pytest.mark.asyncio
-async def test_measurement_approved_in_the_system_still_reaches_the_phase_check_on_resend() -> None:
-    service, company_id, measurement = build_approved_measurement(approved_at=datetime(2026, 9, 1, tzinfo=UTC))
+async def test_payable_link_reloads_server_generated_timestamp_after_commit():
+    service, company_id, measurement = build_approved_measurement(
+        approved_at=None, erp_client=FakeErpPayableLinkClient(), supplier_person_id=uuid4()
+    )
+    updated_at = datetime(2026, 10, 13, 14, 28, tzinfo=UTC)
+    measurement.updated_at = datetime(2026, 10, 12, tzinfo=UTC)
 
-    with pytest.raises(ConstructionInvalidValueError) as error:
-        await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
+    async def commit():
+        inspect(measurement)._expire_attributes(measurement.__dict__, ["updated_at"])
 
-    assert error.value.error_code != "CONSTRUCTION_MEASUREMENT_IMPORTED_NOT_SENT"
+    async def refresh(entity):
+        entity.updated_at = updated_at
+
+    service.repository.commit = AsyncMock(side_effect=commit)
+    service.repository.refresh = AsyncMock(side_effect=refresh)
+
+    linked = await service.link_measurement_payable(
+        company_id=company_id, measurement_id=measurement.id, payable_document_id=uuid4()
+    )
+
+    assert linked.updated_at == updated_at
+    service.repository.refresh.assert_awaited_once_with(measurement)
 
 
 @pytest.mark.asyncio

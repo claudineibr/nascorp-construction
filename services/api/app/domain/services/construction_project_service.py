@@ -159,9 +159,6 @@ class ErpMeasurementClient(Protocol):
     ) -> list[dict[str, Any]]:
         raise NotImplementedError
 
-    async def create_accounts_payable_from_measurement(self, *, event: EventEnvelope) -> EventEnvelope:
-        raise NotImplementedError
-
     async def create_contract_and_receivables_from_unit_sale(self, *, event: EventEnvelope) -> EventEnvelope:
         raise NotImplementedError
 
@@ -1349,6 +1346,11 @@ class ConstructionProjectService:
                 message="A medição já está vinculada a um título do ERP.",
                 error_code="CONSTRUCTION_MEASUREMENT_ALREADY_LINKED",
             )
+        if getattr(measurement, "reversal_pending", False):
+            raise ConstructionInvalidValueError(
+                message="A medição está com estorno pendente e não pode receber título.",
+                error_code="CONSTRUCTION_MEASUREMENT_REVERSAL_PENDING",
+            )
         if measurement.supplier_person_id is None:
             raise ConstructionInvalidValueError(
                 message="Informe o fornecedor da medição antes de vincular um título.",
@@ -1422,6 +1424,7 @@ class ConstructionProjectService:
             raise ConstructionDomainError(message="Não foi possível falar com o ERP agora.", status_code=502) from request_error
         self._apply_accounts_payable_snapshot_from_payload(measurement=measurement, payload=payload)
         await self.repository.commit()
+        await self.repository.refresh(measurement)
         _logger.info(
             "construction.measurement.payable_linked measurement_id=%s payable_document_id=%s",
             measurement.id,
@@ -1742,38 +1745,15 @@ class ConstructionProjectService:
         company_id: UUID,
         measurement_id: UUID,
         actor_user_id: UUID | None = None,
+        actor_can_self_approve: bool = False,
     ) -> ConstructionMeasurement:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
         if getattr(measurement, "subcontract_id", None):
             measurement = await SubcontractService(self).repository.measurement(company_id, measurement_id, True)
             if measurement.reversal_pending:
                 raise ConstructionInvalidValueError(message="Aguarde a confirmação do estorno financeiro da medição.")
-        if (
-            measurement.status == ConstructionMeasurementStatus.APPROVED
-            and measurement.external_accounts_payable_id is not None
-        ):
+        if measurement.status == ConstructionMeasurementStatus.APPROVED:
             return measurement
-
-        retry_integration = measurement.status == ConstructionMeasurementStatus.APPROVED
-        if retry_integration and measurement.approved_at is None:
-            _logger.info(
-                "construction.measurement.retry_refused measurement_id=%s reason=imported_approved",
-                measurement.id,
-            )
-            raise ConstructionInvalidValueError(
-                message=(
-                    "Esta medição foi importada já aprovada e não é enviada ao ERP: "
-                    "o título a pagar dela vem da importação do financeiro."
-                ),
-                error_code="CONSTRUCTION_MEASUREMENT_IMPORTED_NOT_SENT",
-            )
-        if retry_integration and getattr(measurement, "subcontract_id", None):
-            event = await self.event_repository.latest_measurement_event(company_id, measurement.id) if self.event_repository else None
-            if event is not None:
-                if event.status == "dead_letter":
-                    event.status, event.retry_count, event.last_error, event.next_attempt_at = "pending", 0, None, None
-                    await self.repository.commit()
-                return measurement
         if measurement.status == ConstructionMeasurementStatus.PAID:
             raise ConstructionInvalidValueError(
                 message="A medição já está paga e não pode ser aprovada novamente.",
@@ -1785,7 +1765,6 @@ class ConstructionProjectService:
         if measurement.status not in {
             ConstructionMeasurementStatus.SUBMITTED,
             ConstructionMeasurementStatus.IN_APPROVAL,
-            ConstructionMeasurementStatus.APPROVED,
         }:
             raise ConstructionInvalidValueError(
                 message="Envie a medição para aprovação antes de aprovar.",
@@ -1817,49 +1796,44 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_UNIT_COST_CENTER_REQUIRED",
             )
 
-        if not retry_integration and actor_user_id is not None and actor_user_id in {
+        if not measurement.supplier_person_id:
+            raise ConstructionInvalidValueError(
+                message="Informe o fornecedor da medição antes de aprovar.",
+                error_code="CONSTRUCTION_MEASUREMENT_SUPPLIER_REQUIRED",
+            )
+
+        is_own_measurement = actor_user_id is not None and actor_user_id in {
             measurement.submitted_by_user_id,
             measurement.created_by_user_id,
-        }:
-            raise ConstructionInvalidValueError(
-                message="Quem criou ou enviou a medição não pode aprová-la. Peça a outro usuário com permissão para aprovar.",
-                error_code="CONSTRUCTION_MEASUREMENT_SELF_APPROVAL",
-            )
-
-        if not retry_integration:
-            await self._sync_measurement_amounts_from_items(measurement=measurement)
-            if getattr(measurement, "subcontract_id", None):
-                await SubcontractService(self).consume(measurement)
-
-            measurement.status = ConstructionMeasurementStatus.APPROVED
-            measurement.rejection_reason = None
-            measurement.rejected_by_user_id = None
-            measurement.rejected_at = None
-            measurement.approved_by_user_id = actor_user_id
-            if measurement.approved_at is None:
-                measurement.approved_at = datetime.now(tz=UTC)
-
-        if not getattr(measurement, "subcontract_id", None) and (measurement.measured_amount or Decimal("0")) <= Decimal("0"):
+        }
+        if is_own_measurement:
+            if not actor_can_self_approve:
+                raise ConstructionInvalidValueError(
+                    message="Quem criou ou enviou a medição não pode aprová-la. Peça a outro usuário com permissão para aprovar.",
+                    error_code="CONSTRUCTION_MEASUREMENT_SELF_APPROVAL",
+                )
             _logger.info(
-                "construction.measurement.approved_without_payable measurement_id=%s reason=zero_value",
+                "construction.measurement.self_approved measurement_id=%s user_id=%s",
                 measurement.id,
+                actor_user_id,
             )
-            await self.repository.commit()
-            await self.repository.refresh(measurement)
-            return measurement
 
-        approval_event = self._build_measurement_approved_event(
-            measurement=measurement,
-            analytic_cost_center_id=unit.analytic_cost_center_id,
-            actor_user_id=measurement.approved_by_user_id,
+        await self._sync_measurement_amounts_from_items(measurement=measurement)
+        if getattr(measurement, "subcontract_id", None):
+            await SubcontractService(self).consume(measurement)
+
+        measurement.status = ConstructionMeasurementStatus.APPROVED
+        measurement.rejection_reason = None
+        measurement.rejected_by_user_id = None
+        measurement.rejected_at = None
+        measurement.approved_by_user_id = actor_user_id
+        if measurement.approved_at is None:
+            measurement.approved_at = datetime.now(tz=UTC)
+        _logger.info(
+            "construction.measurement.approved measurement_id=%s user_id=%s payable=manual",
+            measurement.id,
+            actor_user_id,
         )
-        dispatch_result = await self._dispatch_integration_event(event=approval_event)
-        if dispatch_result is not None and dispatch_result.response_event is not None:
-            erp_event = dispatch_result.response_event
-            self._apply_accounts_payable_snapshot_from_payload(
-                measurement=measurement,
-                payload=erp_event.payload,
-            )
 
         await self.repository.commit()
         await self.repository.refresh(measurement)
@@ -2155,7 +2129,7 @@ class ConstructionProjectService:
 
         if request.status == ConstructionInspectionStatus.WAIVED and not actor_can_waive:
             raise ConstructionInvalidValueError(
-                message="Dispensar a reinspeção exige permissão de exclusão em Medições.",
+                message="Dispensar a reinspeção exige permissão de exclusão em Verificação da FVS.",
                 error_code="CONSTRUCTION_INSPECTION_WAIVE_NOT_ALLOWED",
             )
 
@@ -5099,8 +5073,7 @@ class ConstructionProjectService:
             if self.event_repository is not None:
                 await self.event_repository.add_outbox_event(event=event)
 
-            if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED or (
-                event.event_type == ConstructionEventType.MEASUREMENT_APPROVED and event.payload.get("subcontract_id")):
+            if event.event_type == ConstructionEventType.PROCUREMENT_REQUESTED:
                 if self.event_repository is None:
                     raise ConstructionInvalidValueError(
                         message="Outbox indisponivel para registrar o envio de compras.",

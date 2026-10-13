@@ -358,6 +358,13 @@ class SubcontractService:
                 event.status, event.retry_count, event.last_error, event.next_attempt_at = "pending", 0, None, None
                 await self.session.commit()
             return {"id": measurement.id, "reversal_pending": True}
+        if measurement.external_accounts_payable_id is None:
+            await self.reverse_consumption(measurement, actor_user_id)
+            measurement.status, measurement.rejection_reason = "rejected", reason.strip()
+            measurement.rejected_by_user_id, measurement.rejected_at = actor_user_id, datetime.now(UTC)
+            await self.session.commit()
+            _logger.info("construction.subcontract.reversal_local measurement_id=%s user_id=%s", measurement.id, actor_user_id)
+            return {"id": measurement.id, "reversal_pending": False}
         if self.projects.event_repository is None:
             self.fail("O estorno exige fila persistente disponível.")
         event = self.projects._build_measurement_approved_event(measurement=measurement,

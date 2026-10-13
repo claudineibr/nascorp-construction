@@ -1,19 +1,14 @@
 export const isZeroValueMeasurement = (measurement) =>
   !(Number(measurement.netAmount ?? measurement.measuredAmount ?? 0) > 0)
 
-export const getMeasurementApprovalActions = (measurement) => {
-  const canRetryIntegration =
-    measurement.status === "approved" &&
-    !measurement.externalAccountsPayableId &&
-    Boolean(measurement.approvedAt) &&
-    !(!measurement.subcontractId && isZeroValueMeasurement(measurement))
-  const canApprove = ["submitted", "in_approval"].includes(measurement.status) || canRetryIntegration
-  return { canApprove, canRetryIntegration }
-}
+export const getMeasurementApprovalActions = (measurement) => ({
+  canApprove: ["submitted", "in_approval"].includes(measurement.status),
+})
 
 export const canLinkPayable = (measurement) =>
   measurement.status === "approved" &&
   !measurement.externalAccountsPayableId &&
+  !measurement.reversalPending &&
   Boolean(measurement.supplierPersonId) &&
   !isZeroValueMeasurement(measurement)
 

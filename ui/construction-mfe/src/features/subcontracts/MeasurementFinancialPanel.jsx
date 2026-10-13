@@ -221,10 +221,9 @@ export function MeasurementFinancialPanel({ bridge, measurement, onRefresh }) {
             <div>
               <h4>Estorno do contrato</h4>
               <p className={styles.hint}>
-                Cancela o título da medição no ERP e devolve ao contrato a
-                quantidade medida e o crédito de material descontado. A
-                devolução só acontece depois que o ERP confirma o cancelamento;
-                pagamentos precisam ser estornados no financeiro antes.
+                {measurement.externalAccountsPayableId
+                  ? "Cancela o título vinculado à medição no ERP e devolve ao contrato a quantidade medida e o crédito de material descontado. A devolução só acontece depois que o ERP confirma o cancelamento; pagamentos precisam ser estornados no financeiro antes."
+                  : "A medição ainda não tem título vinculado: o estorno devolve na hora ao contrato a quantidade medida e o crédito de material descontado, e a medição fica rejeitada."}
               </p>
             </div>
           </div>
@@ -256,13 +255,15 @@ export function MeasurementFinancialPanel({ bridge, measurement, onRefresh }) {
                   `/measurements/${measurement.id}/reverse-contract-consumption`,
                   "POST",
                   { reason },
-                  "Estorno solicitado ao ERP.",
+                  measurement.externalAccountsPayableId ? "Estorno solicitado ao ERP." : "Estorno concluído: saldo devolvido ao contrato.",
                 )
               }
             >
               {measurement.reversalPending
                 ? "Tentar estorno novamente"
-                : "Solicitar estorno financeiro e contratual"}
+                : measurement.externalAccountsPayableId
+                  ? "Solicitar estorno financeiro e contratual"
+                  : "Estornar medição do contrato"}
             </button>
           </div>
         </section>

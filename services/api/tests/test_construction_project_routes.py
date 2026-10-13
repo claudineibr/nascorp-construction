@@ -506,6 +506,23 @@ def test_create_measurement_accepts_valid_permission() -> None:
     assert payload["status"] == "draft"
 
 
+def test_verify_inspection_requires_fvs_verdict_permission() -> None:
+    user_id = uuid4()
+    company_id = uuid4()
+    client = create_test_client(permissions={ConstructionFeature.MEASUREMENTS: PermissionAction.FULL})
+
+    response = client.post(
+        f"/v1/construction/measurement-inspections/{uuid4()}/verify",
+        headers={
+            "Authorization": make_authorization_header(user_id=user_id),
+            "X-Company-ID": str(company_id),
+        },
+        json={"status": "compliant"},
+    )
+
+    assert response.status_code == 403
+
+
 def test_reserve_unit_requires_update_permission() -> None:
     user_id = uuid4()
     company_id = uuid4()

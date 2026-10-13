@@ -10,22 +10,19 @@ import {
 
 for (const status of ["draft", "rejected", "paid"]) {
   test(`${status} does not offer approval`, () => {
-    assert.deepEqual(getMeasurementApprovalActions({ status }), { canApprove: false, canRetryIntegration: false })
+    assert.deepEqual(getMeasurementApprovalActions({ status }), { canApprove: false })
   })
 }
 for (const status of ["submitted", "in_approval"]) {
   test(`${status} offers approval`, () => {
-    assert.deepEqual(getMeasurementApprovalActions({ status }), { canApprove: true, canRetryIntegration: false })
+    assert.deepEqual(getMeasurementApprovalActions({ status }), { canApprove: true })
   })
 }
-test("approved without a title offers resending to ERP", () => {
-  assert.deepEqual(getMeasurementApprovalActions({ status: "approved", externalAccountsPayableId: null, approvedAt: "2026-09-01T10:00:00Z" }), { canApprove: true, canRetryIntegration: true })
+test("approved without a title does not offer approval again", () => {
+  assert.deepEqual(getMeasurementApprovalActions({ status: "approved", externalAccountsPayableId: null, approvedAt: "2026-09-01T10:00:00Z" }), { canApprove: false })
 })
-test("imported approved measurement does not offer resending to ERP", () => {
-  assert.deepEqual(getMeasurementApprovalActions({ status: "approved", externalAccountsPayableId: null, approvedAt: null }), { canApprove: false, canRetryIntegration: false })
-})
-test("approved with a title does not offer approval or resending", () => {
-  assert.deepEqual(getMeasurementApprovalActions({ status: "approved", externalAccountsPayableId: "title-id" }), { canApprove: false, canRetryIntegration: false })
+test("measurement with a pending reversal cannot link a title", () => {
+  assert.equal(canLinkPayable({ status: "approved", externalAccountsPayableId: null, reversalPending: true, supplierPersonId: "supplier", netAmount: "810.00" }), false)
 })
 test("approved measurement without a title can link an existing ERP title", () => {
   assert.equal(canLinkPayable({ status: "approved", externalAccountsPayableId: null, supplierPersonId: "supplier", netAmount: "810.00" }), true)
