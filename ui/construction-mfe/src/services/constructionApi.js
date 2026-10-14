@@ -1196,6 +1196,7 @@ const toReceivableInstallmentView = (installment) => ({
   paymentDate: installment.payment_date ?? null,
   status: installment.status,
   documentNumber: installment.document_number ?? "",
+  bankSlips: installment.bank_slips ?? [],
   observation: installment.observation ?? "",
   paymentMethod: installment.payment_method ?? "",
   interest: installment.interest ?? null,
@@ -1458,13 +1459,13 @@ export async function generateErpReceiptForInstallment({ bridge, installmentId }
 // O PDF nao passa por `requestJson`: aquela funcao sempre faz `.json()` e
 // engasgaria no binario. Repete o minimo -- cabecalhos, retry de 401 e a
 // mensagem de erro -- para nao mexer no caminho que todas as outras usam.
-export async function downloadErpReceiptPdf({ bridge, receiptId }) {
+export async function downloadErpPdf({ bridge, path, fallbackMessage }) {
   const headers = { ...(bridge?.getAuthHeaders?.() ?? {}) }
   if (!headers.Authorization || !headers["X-Company-ID"]) {
     throw new Error("Contexto autenticado da empresa indisponível.")
   }
 
-  const url = `${erpBaseUrl(bridge)}/v1/receipts/${receiptId}/pdf`
+  const url = `${erpBaseUrl(bridge)}${path}`
   let response = await fetch(url, { headers })
 
   if (response.status === 401 && typeof bridge?.refreshToken === "function") {
@@ -1478,18 +1479,26 @@ export async function downloadErpReceiptPdf({ bridge, receiptId }) {
   }
 
   if (!response.ok) {
-    let mensagem = "Não foi possível baixar o PDF do recibo."
+    let mensagem = fallbackMessage
     try {
       const payload = await response.json()
       mensagem = payload?.detail?.message || payload?.message || payload?.detail || mensagem
     } catch {
       // corpo vazio ou binario: fica a mensagem padrao
     }
-    throw new Error(typeof mensagem === "string" ? mensagem : "Não foi possível baixar o PDF do recibo.")
+    throw new Error(typeof mensagem === "string" ? mensagem : fallbackMessage)
   }
 
   return response.blob()
 }
+
+export const downloadErpReceiptPdf = ({ bridge, receiptId }) => downloadErpPdf({
+  bridge, path: `/v1/receipts/${receiptId}/pdf`, fallbackMessage: "Não foi possível baixar o PDF do recibo.",
+})
+
+export const printErpBankSlips = ({ bridge, ids, unitId, layout = "FULL_PAGE" }) => requestJson({
+  bridge, baseUrl: erpBaseUrl(bridge), path: "/v1/bank-slips/print", method: "POST", body: { bank_slip_ids: ids, construction_unit_id: unitId, layout },
+})
 
 export async function listConstructionDocumentationTypes({ bridge, search = null, onlyActive = true } = {}) {
   const params = new URLSearchParams()

@@ -1,3 +1,6 @@
+import { useUnitBankSlips, UnitBankSlipDialogs, bankSlipStatusLabel } from "./features/UnitBankSlips.jsx"
+import { buildInstallmentRows, buildInstallmentActions, hasObservation, observationEditHint, INSTALLMENT_COLUMNS } from "./features/unitInstallments.js"
+import { InstallmentObservationModal } from "./features/InstallmentObservationModal.jsx"
 import { Pagination as StandalonePagination } from "./components/Pagination.jsx"
 import {
   canLinkPayable,
@@ -17,6 +20,7 @@ import {
   FileCog,
   FileText,
   HandCoins,
+  MessageSquareText,
   Home,
   Layers3,
   ListChecks,
@@ -2838,7 +2842,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
     setConfirmRequest({
       title: `Excluir parcela ${installment.installmentNumber} ${
-        installment.receivableId ? "do aditivo" : "da venda"
+        installment.adjustment ? "do aditivo" : "da venda"
       }`,
       message:
         "A parcela é cancelada e os lançamentos contábeis dela são desfeitos. As outras parcelas "
@@ -5476,7 +5480,6 @@ function UnitDetailPanel({
           loading={loadingPaymentPlan}
           error={paymentPlanError}
           onRetry={() => onRetryPaymentPlan(unit.id)}
-          onSale={onSale}
           onReverseInstallment={onReverseInstallment}
           onPayInstallment={onPayInstallment}
           onDeleteInstallment={onDeleteInstallment}
@@ -5650,7 +5653,6 @@ function UnitInstallmentsPanel({
   loading,
   error,
   onRetry,
-  onSale,
   onReverseInstallment,
   onPayInstallment,
   onDeleteInstallment,
@@ -5661,7 +5663,36 @@ function UnitInstallmentsPanel({
   onCreateInstallment,
   onRebuildPlan,
 }) {
-  const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
+  const bridge = useBridge()
+  const bankSlips = useUnitBankSlips(bridge, unit.id)
+  const canUpdate = Boolean(bridge?.canUpdate?.("construction_units"))
+  const [observationRow, setObservationRow] = useState(null)
+  const [editingObservation, setEditingObservation] = useState(false)
+  const [observation, setObservation] = useState("")
+  const [savingObservation, setSavingObservation] = useState(false)
+  const openObservation = (row, editing = false) => {
+    setObservationRow(row)
+    setObservation(row.observation ?? "")
+    setEditingObservation(editing)
+  }
+  const saveObservation = async (event) => {
+    event.preventDefault()
+    if (!observationRow || observationEditHint(observationRow, canUpdate)) return
+    setSavingObservation(true)
+    try {
+      await updateConstructionUnitInstallment({
+        bridge, unitId: unit.id, installmentNumber: observationRow.installmentNumber,
+        receivableId: observationRow.receivableId, changes: { observation },
+      })
+      setObservationRow(null)
+      await onRetry()
+      bridge?.feedback?.success?.("Observação da parcela atualizada.")
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível salvar a observação.")
+    } finally {
+      setSavingObservation(false)
+    }
+  }
   const canEditSale = unit.status === "sold" && Boolean(unit.analyticCostCenterId)
 
   if (loading) {
@@ -5687,35 +5718,14 @@ function UnitInstallmentsPanel({
 
   const composition = plan ?? {}
   const paymentPlan = composition.paymentPlan ?? {}
-  const sources = composition.sources ?? []
-  const installmentSources = sources.filter((source) => source.generatesInstallments)
-  const settlementSources = sources.filter((source) => !source.generatesInstallments)
   const documentations = composition.documentations ?? []
   const installments = paymentPlan.installments ?? []
-  const adjustments = paymentPlan.adjustments ?? []
   // Saldo zerado significa que tudo que o comprador deve ja esta lancado.
   // Cobrar mais exigiria um valor que a venda nao tem, entao a acao some em vez
   // de deixar o usuario montar a cobranca e levar recusa no final.
   const hasBalanceToCharge = unit.status !== "sold" || Number(composition.balanceTotal ?? 0) > 0
   const canCreateAdjustment = Boolean(paymentPlan.contractId)
-  const rows = [
-    ...installments.map((installment) => ({
-      ...installment,
-      typeLabel: "Parcela",
-      typeHint: "",
-      receivableId: null,
-      adjustment: null,
-    })),
-    ...adjustments.flatMap((adjustment, adjustmentIndex) =>
-      adjustment.installments.map((installment) => ({
-        ...installment,
-        typeLabel: adjustments.length > 1 ? `Aditivo ${adjustmentIndex + 1}` : "Aditivo",
-        typeHint: adjustment.reason || "",
-        receivableId: adjustment.receivableId,
-        adjustment,
-      })),
-    ),
-  ].sort((first, second) => String(first.dueDate).localeCompare(String(second.dueDate)))
+  const rows = buildInstallmentRows(paymentPlan)
 
   return (
     <div className={styles.integrationPanel}>
@@ -5777,6 +5787,19 @@ function UnitInstallmentsPanel({
             </p>
           </div>
           <div className={styles.tableHeaderActions}>
+            {bankSlips.allowed ? <>
+              <label className={styles.filterControl}>
+                Formato de impressão
+                <select value={bankSlips.printLayout} disabled={bankSlips.busy}
+                  onChange={(event) => bankSlips.setPrintLayout(event.target.value)}>
+                  <option value="FULL_PAGE">Boleto completo — um por página</option>
+                  <option value="CARNET">Carnê — três por folha A4</option>
+                </select>
+              </label>
+              <button type="button" className={styles.secondaryButton} disabled={!bankSlips.selected.size || bankSlips.busy}
+                onClick={bankSlips.requestPrint}>{bankSlips.printLayout === "CARNET" ? "Imprimir carnê" : "Imprimir boletos"} ({bankSlips.selected.size})</button>
+              <button type="button" className={styles.secondaryButton} onClick={() => bridge?.navigate?.("/bank-slips")}>Ver todos os boletos</button>
+            </> : null}
             {canEditSale ? (
               <button type="button" className={styles.primaryButton} onClick={() => onRebuildPlan(unit)}>
                 <ShoppingCart size={16} />
@@ -5827,19 +5850,21 @@ function UnitInstallmentsPanel({
             <table className={styles.table}>
               <thead>
                 <tr>
-                  <th>Tipo</th>
-                  <th>Parcela</th>
-                  <th>Vencimento</th>
-                  <th>Valor</th>
-                  <th>Pago</th>
-                  <th aria-label="Ações" />
+                  {bankSlips.allowed ? <th>Marcar</th> : null}
+                  {INSTALLMENT_COLUMNS.filter((column) => bankSlips.allowed || column !== "Boleto").map((column) => (
+                    <th key={column}>{column}</th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row) => (
                   <tr key={row.id}>
+                    {bankSlips.allowed ? <td><input type="checkbox" checked={bankSlips.selected.has(row.bankSlips?.[0]?.id)}
+                      disabled={!row.bankSlips?.length || (!bankSlips.selected.has(row.bankSlips?.[0]?.id) && bankSlips.selected.size >= 200)}
+                      aria-label={`Marcar boleto da parcela ${row.installmentNumber}/${row.totalInstallments}`}
+                      onChange={() => bankSlips.toggle(row)} /></td> : null}
                     <td>
-                      <strong>{row.typeLabel}</strong>
+                      <span className={row.adjustment ? styles.badgeInfo : styles.badgeMuted}>{row.typeLabel}</span>
                       {row.typeHint ? (
                         <div className={styles.rowSecondaryText}>{row.typeHint}</div>
                       ) : null}
@@ -5848,9 +5873,24 @@ function UnitInstallmentsPanel({
                       <strong>
                         {row.installmentNumber}/{row.totalInstallments}
                       </strong>
+                      {hasObservation(row) ? (
+                        <button type="button" className={styles.iconButton}
+                          title={`Ver observação da parcela ${row.installmentNumber}/${row.totalInstallments}`}
+                          aria-label={`Ver observação da parcela ${row.installmentNumber}/${row.totalInstallments}`}
+                          onClick={() => openObservation(row)}>
+                          <MessageSquareText size={16} aria-hidden="true" />
+                        </button>
+                      ) : null}
                     </td>
                     <td>{formatDate(row.dueDate)}</td>
                     <td>{formatMoney(row.amount)}</td>
+                    {bankSlips.allowed ? <td>
+                      {row.bankSlips?.length ? <>
+                        <strong>{row.bankSlips[0].our_number}</strong>
+                        <div className={styles.rowSecondaryText}>{bankSlipStatusLabel[row.bankSlips[0].status]}
+                          {row.bankSlips.length > 1 ? ` · +${row.bankSlips.length - 1} anteriores` : ""}</div>
+                      </> : "—"}
+                    </td> : null}
                     <td>
                       {row.paymentDate ? formatDate(row.paymentDate) : "-"}
                       <div className={styles.rowSecondaryText}>
@@ -5859,10 +5899,15 @@ function UnitInstallmentsPanel({
                     </td>
                     <td className={styles.actionsCell}>
                       <RowActionsMenu
-                        busy={receiptBusyId === row.id}
-                        busyLabel="Recibo..."
+                        busy={receiptBusyId === row.id || bankSlips.busyId === row.bankSlips?.[0]?.id}
+                        busyLabel={receiptBusyId === row.id ? "Recibo..." : "Boleto..."}
                         actions={buildInstallmentActions({
                           installment: row,
+                          onDownloadBankSlip: bankSlips.allowed && row.bankSlips?.length ? () => bankSlips.requestDownload(row.bankSlips[0]) : null,
+                          onViewBankSlips: bankSlips.allowed && row.bankSlips?.length ? () => bankSlips.setHistory(row) : null,
+                          onEditObservation: (item) => openObservation(item, true),
+                          canUpdate,
+                          icons: { FileText, CheckCircle, Trash2, RotateCcw, Pencil },
                           adjustment: row.adjustment,
                           onReverseInstallment,
                           onPayInstallment,
@@ -5886,95 +5931,16 @@ function UnitInstallmentsPanel({
           </p>
         )}
       </div>
+      <UnitBankSlipDialogs state={bankSlips} />
+      {observationRow ? (
+        <InstallmentObservationModal row={observationRow} editing={editingObservation}
+          observation={observation} onChange={setObservation} saving={savingObservation}
+          hint={observationEditHint(observationRow, canUpdate)}
+          onClose={() => { if (!savingObservation) setObservationRow(null) }}
+          onEdit={() => setEditingObservation(true)} onSubmit={saveObservation} />
+      ) : null}
     </div>
   )
-}
-
-function buildInstallmentActions({
-  installment,
-  adjustment,
-  onReverseInstallment,
-  onPayInstallment,
-  onDeleteInstallment,
-  onDeleteAdjustment,
-  onInstallmentReceipt,
-  receiptBusy = false,
-}) {
-  const isPaid = installment.status === "PAID"
-  const hasPayments = (installment.payments?.length ?? 0) > 0
-  // D11: recibo emitido tranca a parcela. Os itens ficam visiveis e
-  // desabilitados, para o operador entender que a acao existe e por que nao
-  // cabe mais aqui.
-  const receiptIssued = Boolean(installment.hasIssuedReceipt)
-  const actions = []
-
-  // Recibo. Visivel SEMPRE, desabilitado enquanto a parcela nao foi paga: o
-  // servidor recusa emitir recibo de parcela em aberto, e esconder o item
-  // faria o operador procurar onde ele nao esta. Quem ja tem recibo baixa o
-  // PDF -- o cadeado da parcela nao impede reimprimir o proprio recibo.
-  if (onInstallmentReceipt) {
-    actions.push({
-      key: "receipt",
-      label: receiptIssued ? "Baixar recibo" : "Gerar recibo",
-      icon: FileText,
-      disabled: receiptBusy || (!isPaid && !receiptIssued),
-      title:
-        !isPaid && !receiptIssued
-          ? "O recibo só sai depois que a parcela for baixada."
-          : undefined,
-      onSelect: () => onInstallmentReceipt(installment),
-    })
-  }
-
-  // Um diálogo so por parcela: "Baixar parcela" abre a composicao por formas e
-  // carrega tambem o numero do documento e a observacao, que antes moravam num
-  // "Editar parcela" separado.
-  if (!isPaid) {
-    actions.push({
-      key: "pay",
-      label: "Baixar parcela",
-      icon: CheckCircle,
-      onSelect: () => onPayInstallment(installment),
-    })
-    actions.push({
-      key: "delete",
-      label: "Excluir parcela",
-      icon: Trash2,
-      danger: true,
-      disabled: receiptIssued,
-      title: receiptIssued ? RECEIPT_ISSUED_HINT : undefined,
-      onSelect: () => onDeleteInstallment(installment),
-    })
-  }
-
-  // O estorno mora aqui desde o plano 15: a tela da unidade concentra a baixa
-  // multi-forma, e mandar o operador ao Contas a Receber para corrigir supunha
-  // uma permissao que ele pode nao ter.
-  if (hasPayments) {
-    actions.push({
-      key: "reverse",
-      label: "Estornar baixa",
-      icon: RotateCcw,
-      danger: true,
-      disabled: receiptIssued,
-      title: receiptIssued ? RECEIPT_ISSUED_HINT : undefined,
-      onSelect: () => onReverseInstallment(installment),
-    })
-  }
-
-  // O aditivo é um documento inteiro: excluí-lo cancela todas as parcelas dele
-  // de uma vez, e é o que se faz quando o aditivo não deveria existir.
-  if (adjustment) {
-    actions.push({
-      key: "delete-adjustment",
-      label: "Excluir aditivo inteiro",
-      icon: Trash2,
-      danger: true,
-      onSelect: () => onDeleteAdjustment(adjustment),
-    })
-  }
-
-  return actions
 }
 
 function CreateInstallmentModal({ unit, form, onClose, onChange, onSubmit, loading }) {
@@ -6449,9 +6415,6 @@ function PayInstallmentModal({
     </div>
   )
 }
-
-const RECEIPT_ISSUED_HINT =
-  "Recibo já emitido: a parcela não pode mais ser alterada, estornada nem excluída."
 
 function ConfirmModal({ title, message, confirmLabel, danger, onCancel, onConfirm, loading }) {
   return (

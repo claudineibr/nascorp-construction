@@ -837,7 +837,7 @@ async def get_unit_payment_plan(
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> dict:
     try:
-        return await service.build_unit_payment_plan(company_id=ctx.company_id, unit_id=unit_id)
+        return await service.build_unit_payment_plan(company_id=ctx.company_id, unit_id=unit_id, user_id=ctx.user_id)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 

@@ -3699,7 +3699,7 @@ class ConstructionProjectService:
 
         return summary
 
-    async def build_unit_payment_plan(self, *, company_id: UUID, unit_id: UUID) -> dict[str, Any]:
+    async def build_unit_payment_plan(self, *, company_id: UUID, unit_id: UUID, user_id: UUID | None = None) -> dict[str, Any]:
         composition = await self.build_unit_sale_composition(company_id=company_id, unit_id=unit_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
 
@@ -3729,6 +3729,7 @@ class ConstructionProjectService:
                     receivable_id=unit.external_receivable_id,
                     contract_id=unit.external_contract_id,
                     construction_unit_id=unit.id,
+                    user_id=user_id,
                 )
                 plan.update(erp_plan)
             except Exception as request_error:

@@ -279,6 +279,7 @@ class ErpConstructionClient:
         receivable_id: UUID | None,
         contract_id: UUID | None,
         construction_unit_id: UUID | None = None,
+        user_id: UUID | None = None,
     ) -> dict[str, object]:
         if not settings.erp_service_key:
             raise RuntimeError("ERP service key is not configured for Construction payment plan integration.")
@@ -287,6 +288,8 @@ class ErpConstructionClient:
             "X-Service-Key": settings.erp_service_key,
             "X-Company-ID": str(company_id),
         }
+        if user_id is not None:
+            headers["X-User-ID"] = str(user_id)
         params: dict[str, object] = {}
         if receivable_id is not None:
             params["receivable_id"] = str(receivable_id)
