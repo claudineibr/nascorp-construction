@@ -1,5 +1,27 @@
-import { useUnitBankSlips, UnitBankSlipDialogs, bankSlipStatusLabel } from "./features/UnitBankSlips.jsx"
-import { buildInstallmentRows, buildInstallmentActions, hasObservation, observationEditHint, INSTALLMENT_COLUMNS } from "./features/unitInstallments.js"
+import {
+  useUnitBankSlipOperations,
+  UnitBankSlipOperationDialogs,
+  bankSlipGenerationReason,
+  cancelableBankSlip,
+  reconcilableBankSlip,
+  retryableBankSlip,
+} from "./features/UnitBankSlipOperations.jsx"
+import { UnitBankSlipsDialog } from "./features/UnitBankSlipsDialog.jsx"
+import {
+  useUnitBankSlips,
+  UnitBankSlipDialogs,
+  bankSlipStatusLabel,
+  SelectPageCheckbox,
+  BANK_SLIP_BATCH_STATUS_LABELS,
+} from "./features/UnitBankSlips.jsx"
+import {
+  buildInstallmentRows,
+  buildInstallmentActions,
+  hasObservation,
+  observationEditHint,
+  INSTALLMENT_COLUMNS,
+  bankSlipSelectionMode,
+} from "./features/unitInstallments.js"
 import { InstallmentObservationModal } from "./features/InstallmentObservationModal.jsx"
 import { Pagination as StandalonePagination } from "./components/Pagination.jsx"
 import {
@@ -40,6 +62,7 @@ import {
   ExternalLink,
 } from "lucide-react"
 import styles from "./App.module.css"
+import installmentStyles from "./features/UnitInstallmentsPanel.module.css"
 import CreatableCombobox from "./components/CreatableCombobox.jsx"
 import { PersonPicker } from "./components/PersonPicker.jsx"
 import { ProductPicker } from "./components/ProductPicker.jsx"
@@ -5665,6 +5688,18 @@ function UnitInstallmentsPanel({
 }) {
   const bridge = useBridge()
   const bankSlips = useUnitBankSlips(bridge, unit.id)
+  const bankSlipOperations = useUnitBankSlipOperations(bridge, unit.id, onRetry)
+  const [batchAction, setBatchAction] = useState("GENERATE")
+  const [allBankSlipsOpen, setAllBankSlipsOpen] = useState(false)
+  useEffect(() => {
+    setAllBankSlipsOpen(false)
+    setBatchAction("GENERATE")
+  }, [unit.id, bridge?.companyContext?.companyId])
+  const changeBatchAction = (value) => {
+    bankSlips.clearSelection()
+    bankSlipOperations.clearSelection()
+    setBatchAction(value)
+  }
   const canUpdate = Boolean(bridge?.canUpdate?.("construction_units"))
   const [observationRow, setObservationRow] = useState(null)
   const [editingObservation, setEditingObservation] = useState(false)
@@ -5726,6 +5761,10 @@ function UnitInstallmentsPanel({
   const hasBalanceToCharge = unit.status !== "sold" || Number(composition.balanceTotal ?? 0) > 0
   const canCreateAdjustment = Boolean(paymentPlan.contractId)
   const rows = buildInstallmentRows(paymentPlan)
+  const hasBankSlips = rows.some((row) => row.bankSlips?.length)
+  const generationMode = bankSlipSelectionMode(batchAction, bankSlipOperations.canCreate, hasBankSlips) === "GENERATE"
+  const selection = generationMode ? bankSlipOperations : bankSlips
+  const selectionEntries = selection.entries(rows)
 
   return (
     <div className={styles.integrationPanel}>
@@ -5776,7 +5815,7 @@ function UnitInstallmentsPanel({
       </div>
 
       <div className={styles.card}>
-        <div className={styles.tableHeaderRow}>
+        <div className={installmentStyles.header}>
           <div>
             <strong>Contas a receber da unidade</strong>
             <p className={styles.metricHint}>
@@ -5786,20 +5825,8 @@ function UnitInstallmentsPanel({
               no contas a receber - editar a venda não mexe nele.
             </p>
           </div>
-          <div className={styles.tableHeaderActions}>
-            {bankSlips.allowed ? <>
-              <label className={styles.filterControl}>
-                Formato de impressão
-                <select value={bankSlips.printLayout} disabled={bankSlips.busy}
-                  onChange={(event) => bankSlips.setPrintLayout(event.target.value)}>
-                  <option value="FULL_PAGE">Boleto completo — um por página</option>
-                  <option value="CARNET">Carnê — três por folha A4</option>
-                </select>
-              </label>
-              <button type="button" className={styles.secondaryButton} disabled={!bankSlips.selected.size || bankSlips.busy}
-                onClick={bankSlips.requestPrint}>{bankSlips.printLayout === "CARNET" ? "Imprimir carnê" : "Imprimir boletos"} ({bankSlips.selected.size})</button>
-              <button type="button" className={styles.secondaryButton} onClick={() => bridge?.navigate?.("/bank-slips")}>Ver todos os boletos</button>
-            </> : null}
+          <div className={installmentStyles.toolbar}>
+            <div className={installmentStyles.managementActions}>
             {canEditSale ? (
               <button type="button" className={styles.primaryButton} onClick={() => onRebuildPlan(unit)}>
                 <ShoppingCart size={16} />
@@ -5832,8 +5859,46 @@ function UnitInstallmentsPanel({
                 </button>
               </span>
             ) : null}
+            </div>
+            <div className={installmentStyles.batchActions}>
+            {bankSlips.allowed ? <>
+              {hasBankSlips && <label className={installmentStyles.field}>Ação em lote
+                <select value={generationMode ? "GENERATE" : "PRINT"}
+                  disabled={bankSlips.busy || bankSlipOperations.busy}
+                  onChange={(event) => changeBatchAction(event.target.value)}>
+                  <option value="PRINT">Imprimir boletos existentes</option>
+                  {bankSlipOperations.canCreate && <option value="GENERATE">Gerar boletos</option>}
+                </select>
+              </label>}
+              {!generationMode && hasBankSlips && <label className={installmentStyles.field}>
+                Formato de impressão
+                <select value={bankSlips.printLayout} disabled={bankSlips.busy}
+                  onChange={(event) => bankSlips.setPrintLayout(event.target.value)}>
+                  <option value="FULL_PAGE">Boleto completo — um por página</option>
+                  <option value="CARNET">Carnê — três por folha A4</option>
+                </select>
+              </label>}
+              {!generationMode && hasBankSlips && <button type="button" className={styles.secondaryButton}
+                disabled={!bankSlips.selected.size || bankSlips.busy}
+                onClick={bankSlips.requestPrint}>
+                {bankSlips.printLayout === "CARNET" ? "Imprimir carnê" : "Imprimir boletos"} ({bankSlips.selected.size})
+              </button>
+              }
+              {generationMode && <button type="button" className={styles.primaryButton}
+                disabled={!bankSlipOperations.selected.size || bankSlipOperations.busy}
+                onClick={() => bankSlipOperations.setIssueRows([...bankSlipOperations.selected.values()])}>
+                Gerar boletos ({bankSlipOperations.selected.size})</button>}
+              <button type="button" className={styles.secondaryButton} onClick={() => {
+                bankSlips.setHistory(null); bankSlips.setFailed([]); setAllBankSlipsOpen(true)
+              }}>Ver todos os boletos</button>
+            </> : null}
+            </div>
           </div>
         </div>
+        {bankSlips.allowed && <p className={styles.metricHint}>
+          {generationMode ? "Selecione parcelas em aberto e sem boleto ativo para gerar boletos."
+            : "Selecione parcelas com boleto para imprimir. A impressão não gera novas cobranças."}
+        </p>}
         {paymentPlan.erpUnavailableReason ? (
           <p className={styles.metricHint}>
             Não foi possível consultar o ERP agora: {paymentPlan.erpUnavailableReason}
@@ -5847,22 +5912,41 @@ function UnitInstallmentsPanel({
         ) : null}
         {rows.length ? (
           <div className={styles.tableWrapper}>
-            <table className={styles.table}>
+            <table className={`${styles.table} ${installmentStyles.table}`}>
               <thead>
                 <tr>
-                  {bankSlips.allowed ? <th>Marcar</th> : null}
+                  {bankSlips.allowed ? <th className={installmentStyles.selectionCell}>
+                    <SelectPageCheckbox ids={selectionEntries.map(([id]) => id)} selected={selection.selected}
+                      disabled={selection.busy}
+                      label={generationMode ? "Selecionar todas as parcelas sem boleto"
+                        : "Selecionar todas as parcelas com boleto"}
+                      onToggle={() => selection.selectPage(selectionEntries)} />
+                  </th> : null}
                   {INSTALLMENT_COLUMNS.filter((column) => bankSlips.allowed || column !== "Boleto").map((column) => (
-                    <th key={column}>{column}</th>
+                    <th key={column} className={column === "Ações" ? installmentStyles.actionsCell : undefined}>
+                      {column}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row) => (
-                  <tr key={row.id}>
-                    {bankSlips.allowed ? <td><input type="checkbox" checked={bankSlips.selected.has(row.bankSlips?.[0]?.id)}
-                      disabled={!row.bankSlips?.length || (!bankSlips.selected.has(row.bankSlips?.[0]?.id) && bankSlips.selected.size >= 200)}
-                      aria-label={`Marcar boleto da parcela ${row.installmentNumber}/${row.totalInstallments}`}
-                      onChange={() => bankSlips.toggle(row)} /></td> : null}
+                  <tr key={row.id} className={bankSlips.allowed
+                    && selection.selected.has(generationMode ? row.id : row.bankSlips?.[0]?.id)
+                    ? installmentStyles.selectedRow : undefined}>
+                    {bankSlips.allowed ? <td className={installmentStyles.selectionCell}>
+                      <input type="checkbox"
+                        checked={selection.selected.has(generationMode ? row.id : row.bankSlips?.[0]?.id)}
+                        disabled={(generationMode ? Boolean(bankSlipGenerationReason(row)) : !row.bankSlips?.length)
+                          || selection.busy
+                          || (!selection.selected.has(generationMode ? row.id : row.bankSlips?.[0]?.id)
+                            && selection.selected.size >= 200)}
+                        title={generationMode ? bankSlipGenerationReason(row) || "Selecionar para gerar boleto"
+                          : row.bankSlips?.length ? "Selecionar para imprimir boleto"
+                            : "Esta parcela não possui boleto para imprimir."}
+                        aria-label={`Selecionar parcela ${row.installmentNumber}/${row.totalInstallments} para ${
+                          generationMode ? "gerar boleto" : "imprimir boleto"}`}
+                        onChange={() => selection.toggle(row)} />
+                    </td> : null}
                     <td>
                       <span className={row.adjustment ? styles.badgeInfo : styles.badgeMuted}>{row.typeLabel}</span>
                       {row.typeHint ? (
@@ -5897,14 +5981,25 @@ function UnitInstallmentsPanel({
                         {row.paidAmount ? formatMoney(row.paidAmount) : ""}
                       </div>
                     </td>
-                    <td className={styles.actionsCell}>
+                    <td className={installmentStyles.actionsCell}>
                       <RowActionsMenu
                         busy={receiptBusyId === row.id || bankSlips.busyId === row.bankSlips?.[0]?.id}
                         busyLabel={receiptBusyId === row.id ? "Recibo..." : "Boleto..."}
                         actions={buildInstallmentActions({
                           installment: row,
-                          onDownloadBankSlip: bankSlips.allowed && row.bankSlips?.length ? () => bankSlips.requestDownload(row.bankSlips[0]) : null,
-                          onViewBankSlips: bankSlips.allowed && row.bankSlips?.length ? () => bankSlips.setHistory(row) : null,
+                          generationReason: bankSlipGenerationReason(row),
+                          onGenerateBankSlip: bankSlipOperations.canCreate
+                            ? () => bankSlipOperations.setIssueRows([row]) : null,
+                          onCancelBankSlip: bankSlipOperations.canUpdate && cancelableBankSlip(row)
+                            ? () => bankSlipOperations.setCancelSlip(cancelableBankSlip(row)) : null,
+                          onReconcileBankSlip: bankSlipOperations.canUpdate && reconcilableBankSlip(row)
+                            ? () => bankSlipOperations.operate(reconcilableBankSlip(row), "reconcile") : null,
+                          onRetryBankSlip: bankSlipOperations.canCreate && retryableBankSlip(row)
+                            ? () => bankSlipOperations.operate(retryableBankSlip(row), "retry") : null,
+                          onDownloadBankSlip: bankSlips.allowed && row.bankSlips?.length
+                            ? () => bankSlips.requestDownload(row.bankSlips[0]) : null,
+                          onViewBankSlips: bankSlips.allowed && row.bankSlips?.length
+                            ? () => bankSlips.setHistory(row) : null,
                           onEditObservation: (item) => openObservation(item, true),
                           canUpdate,
                           icons: { FileText, CheckCircle, Trash2, RotateCcw, Pencil },
@@ -5931,7 +6026,25 @@ function UnitInstallmentsPanel({
           </p>
         )}
       </div>
-      <UnitBankSlipDialogs state={bankSlips} />
+      {bankSlipOperations.batch && <section className={styles.card} aria-label="Lote de boletos">
+        <p>Lote: {bankSlipOperations.batch.items.filter((item) => item.status === "OK").length}
+          /{bankSlipOperations.batch.items.length} boletos gerados.</p>
+        <table className={styles.table}>
+          <thead><tr><th>Parcela</th><th>Pagador</th><th>Situação</th><th>Motivo</th></tr></thead><tbody>
+            {bankSlipOperations.batch.items.map((item) => <tr key={item.id}>
+              <td>{item.installment_number}/{item.total_installments}</td>
+              <td>{item.payer_name}</td>
+              <td>{BANK_SLIP_BATCH_STATUS_LABELS[item.status]}</td>
+              <td>{item.last_error || "—"}</td></tr>)}</tbody></table>
+        {bankSlipOperations.canCreate
+          && bankSlipOperations.batch.items.some((item) => ["FAILED", "UNCERTAIN"].includes(item.status))
+          && <button type="button" className={styles.secondaryButton} onClick={bankSlipOperations.retryBatch}>
+            Tentar novamente as falhas</button>}
+      </section>}
+      {allBankSlipsOpen && <UnitBankSlipsDialog key={unit.id} state={bankSlips} unitId={unit.id}
+        onClose={() => { setAllBankSlipsOpen(false); bankSlips.setWarning(false); bankSlips.setFailed([]) }} />}
+      <UnitBankSlipOperationDialogs state={bankSlipOperations} />
+      {!allBankSlipsOpen && <UnitBankSlipDialogs state={bankSlips} />}
       {observationRow ? (
         <InstallmentObservationModal row={observationRow} editing={editingObservation}
           observation={observation} onChange={setObservation} saving={savingObservation}

@@ -2144,3 +2144,7 @@ export {
   toMeasurementPayload,
   toUnitPayload,
 }
+
+
+export const bankSlipErpOperation = ({ bridge, path, method = "POST", body = null }) =>
+  requestJson({ bridge, baseUrl: erpBaseUrl(bridge), path: `/v1/bank-slips${path}`, method, body })

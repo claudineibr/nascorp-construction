@@ -3,6 +3,9 @@ export const RECEIPT_ISSUED_HINT =
 
 export const INSTALLMENT_COLUMNS = ["Tipo", "Parcela", "Vencimento", "Valor", "Boleto", "Pago", "Ações"]
 
+export const bankSlipSelectionMode = (action, canCreate, hasSlips) =>
+  canCreate && (action === "GENERATE" || !hasSlips) ? "GENERATE" : "PRINT"
+
 export const bankSlipActionLabel = (slip) =>
   slip?.has_pdf === false ? "Imprimir original do boleto" : "Baixar PDF do boleto"
 
@@ -42,6 +45,11 @@ export function buildInstallmentActions({
   onInstallmentReceipt,
   receiptBusy = false,
   onEditObservation,
+  onGenerateBankSlip,
+  generationReason = "",
+  onCancelBankSlip,
+  onReconcileBankSlip,
+  onRetryBankSlip,
   onDownloadBankSlip,
   onViewBankSlips,
   canUpdate = false,
@@ -51,6 +59,14 @@ export function buildInstallmentActions({
   const hasPayments = (installment.payments?.length ?? 0) > 0
   const receiptIssued = Boolean(installment.hasIssuedReceipt)
   const actions = []
+  if (onGenerateBankSlip) actions.push({ key: "generate-bank-slip", label: "Gerar boleto", icon: icons.FileText,
+    disabled: Boolean(generationReason), title: generationReason || undefined, onSelect: onGenerateBankSlip })
+  if (onCancelBankSlip) actions.push({ key: "cancel-bank-slip", label: "Excluir boleto", icon: icons.Trash2,
+    danger: true, onSelect: onCancelBankSlip })
+  if (onReconcileBankSlip) actions.push({ key: "reconcile-bank-slip", label: "Consultar situação no banco",
+    icon: icons.FileText, onSelect: onReconcileBankSlip })
+  if (onRetryBankSlip) actions.push({ key: "retry-bank-slip", label: "Tentar novamente", icon: icons.FileText,
+    onSelect: onRetryBankSlip })
   if (onDownloadBankSlip) actions.push({ key: "bank-slip-pdf", label: bankSlipActionLabel(installment.bankSlips?.[0]), icon: icons.FileText, onSelect: onDownloadBankSlip })
   if (onViewBankSlips) actions.push({ key: "bank-slips", label: "Ver boletos", icon: icons.FileText, onSelect: onViewBankSlips })
   if (onEditObservation) {

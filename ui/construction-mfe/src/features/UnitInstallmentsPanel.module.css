@@ -1,0 +1,60 @@
+.header {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: calc(1rem * var(--density, 1));
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.toolbar, .batchActions, .managementActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: calc(0.75rem * var(--density-control, 1));
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.toolbar { width: 100%; flex-direction: column; align-items: stretch; }
+.batchActions { justify-content: flex-end; width: 100%; }
+.managementActions { width: 100%; justify-content: flex-end; }
+
+.field {
+  composes: filterControl from "../App.module.css";
+  min-width: 14rem;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.field select { width: 100%; min-width: 0; box-sizing: border-box; }
+.table.table th, .table.table td {
+  vertical-align: middle;
+  padding: calc(0.9rem * var(--density, 1)) calc(1rem * var(--density-control, 1));
+}
+.table .selectionCell { width: 1%; white-space: nowrap; text-align: center; }
+.table .selectionCell input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  vertical-align: middle;
+  accent-color: var(--color-primary);
+  cursor: pointer;
+  border-radius: 4px;
+  outline: 2px solid color-mix(in srgb, var(--color-primary) 35%, transparent);
+  outline-offset: 1px;
+  box-sizing: border-box;
+}
+.table .selectionCell input[type="checkbox"]:focus-visible { outline-color: var(--color-primary); }
+.table .selectionCell input[type="checkbox"]:disabled { opacity: 0.3; outline: none; cursor: not-allowed; }
+.table .selectedRow td { background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
+.table .actionsCell { width: 1%; white-space: nowrap; text-align: right; }
+
+@media (width <= 640px) {
+  .toolbar, .batchActions, .managementActions { width: 100%; }
+  .field { width: 100%; min-width: 0; }
+  .managementActions { margin-left: 0; }
+}
+
+.dialog { composes: modalCard from "../App.module.css"; width: min(1040px, 100%); box-sizing: border-box; }
+.dialog, .dialog * { box-sizing: border-box; min-width: 0; }
