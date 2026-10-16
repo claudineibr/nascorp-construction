@@ -83,7 +83,7 @@ class EventRepository:
             earlier.company_id == OutboxEvent.company_id,
             earlier.aggregate_id == OutboxEvent.aggregate_id,
             earlier.event_type.in_([ConstructionEventType.PROJECT_CREATED, ConstructionEventType.UNIT_CREATED,
-                                   ConstructionEventType.UNIT_SOLD]),
+                                   ConstructionEventType.UNIT_SOLD, ConstructionEventType.UNIT_STATUS_CHANGED]),
             earlier.status != EventStatus.PUBLISHED,
             tuple_(earlier.occurred_at, earlier.id) < tuple_(OutboxEvent.occurred_at, OutboxEvent.id),
         ).exists()
@@ -91,7 +91,8 @@ class EventRepository:
             ~outstanding,
             OutboxEvent.event_type.in_([
                 ConstructionEventType.PROJECT_CREATED, ConstructionEventType.UNIT_CREATED,
-                ConstructionEventType.UNIT_SOLD, ConstructionEventType.MEASUREMENT_APPROVED,
+                ConstructionEventType.UNIT_SOLD, ConstructionEventType.UNIT_STATUS_CHANGED,
+                ConstructionEventType.MEASUREMENT_APPROVED,
             ]),
             or_(OutboxEvent.payload['operation'].astext.is_(None), OutboxEvent.payload['operation'].astext != 'reverse'),
             OutboxEvent.status.in_([EventStatus.PENDING, EventStatus.FAILED]),

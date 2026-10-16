@@ -649,6 +649,11 @@ class ConstructionProjectService:
     ) -> ConstructionUnit:
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
         updates = request.model_dump(exclude_unset=True)
+        if "status" in updates:
+            unit = await self.repository.lock_unit(company_id=company_id, unit_id=unit_id)
+            if unit is None:
+                raise ConstructionNotFoundError(resource_name="a unidade")
+
         next_status = updates.get("status")
         if next_status is not None:
             self._ensure_known_value(value=next_status, allowed_values=UNIT_STATUSES, field_name="status")
@@ -719,6 +724,32 @@ class ConstructionProjectService:
                     request_error=request_error,
                     fallback_message="Não foi possível renomear o centro de custo da unidade no ERP.",
                 ) from request_error
+
+        previous_status = unit.status
+        reclassify = next_status is not None and next_status != previous_status and "delivered" in {
+            previous_status, next_status,
+        }
+        if reclassify:
+            if self.event_repository is None or actor_user_id is None:
+                raise ConstructionInvalidValueError(
+                    message="A entrega exige usuário identificado e integração contábil disponível.")
+
+            event_id = uuid4()
+            await self.event_repository.add_outbox_event(event=EventEnvelope(
+                event_id=event_id,
+                event_type=ConstructionEventType.UNIT_STATUS_CHANGED,
+                event_version=1,
+                company_id=company_id,
+                aggregate_id=unit.id,
+                aggregate_type=ConstructionAggregateType.UNIT,
+                occurred_at=datetime.now(UTC),
+                producer=EventProducer.CONSTRUCTION_API,
+                correlation_id=event_id,
+                causation_id=None,
+                payload={"status": next_status, "previous_status": previous_status,
+                         "user_id": str(actor_user_id)},
+            ))
+            _logger.info(f"[accounting] unit_status_queued: unit_id={unit.id} previous={previous_status} status={next_status}")
 
         self._apply_updates(entity=unit, updates=updates)
         await self.repository.commit()
@@ -4490,6 +4521,9 @@ class ConstructionProjectService:
                 raise ConstructionInvalidValueError(message="O ERP não confirmou o contrato da unidade.")
             unit = await self._get_unit(company_id=request_event.company_id, unit_id=request_event.aggregate_id)
             self._apply_contract_snapshot_from_payload(unit=unit, payload=response_event.payload)
+        elif request_event.event_type == ConstructionEventType.UNIT_STATUS_CHANGED:
+            if response_event.event_type != ErpEventType.UNIT_RECLASSIFIED:
+                raise ConstructionInvalidValueError(message="O ERP não confirmou a reclassificação da unidade.")
         else:
             raise ConstructionInvalidValueError(message="Evento sem consumidor ativo de integração.")
 

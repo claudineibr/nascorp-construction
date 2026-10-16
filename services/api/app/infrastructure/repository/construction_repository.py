@@ -113,6 +113,7 @@ class ConstructionRepository:
             ConstructionEventType.PROJECT_CREATED: ConstructionProject,
             ConstructionEventType.UNIT_CREATED: ConstructionUnit,
             ConstructionEventType.UNIT_SOLD: ConstructionUnit,
+            ConstructionEventType.UNIT_STATUS_CHANGED: ConstructionUnit,
         }[event.event_type]
         return await self.session.scalar(select(model).where(
             model.company_id == event.company_id, model.id == event.aggregate_id
@@ -280,6 +281,14 @@ class ConstructionRepository:
             )
         )
         return result.scalars().first()
+
+    async def lock_unit(self, *, company_id, unit_id):
+        return await self.session.scalar(select(ConstructionUnit).where(
+            ConstructionUnit.company_id == company_id,
+            ConstructionUnit.id == unit_id,
+            ConstructionUnit.deleted_at.is_(None),
+            *scope_conditions(ConstructionUnit, self.scope),
+        ).with_for_update().execution_options(populate_existing=True))
 
     async def valid_contract_template(self, company_id, template_id):
         result = await self.session.execute(text("SELECT id FROM public.contract_templates WHERE id=:template AND company_id=:company AND deleted_at IS NULL AND is_active=true AND file_path IS NOT NULL"),

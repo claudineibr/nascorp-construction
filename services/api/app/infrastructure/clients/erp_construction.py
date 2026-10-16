@@ -15,18 +15,21 @@ class ErpConstructionClient:
         ConstructionEventType.PROJECT_CREATED: "/v1/internal/construction/events/project-created",
         ConstructionEventType.UNIT_CREATED: "/v1/internal/construction/events/unit-created",
         ConstructionEventType.UNIT_SOLD: "/v1/internal/construction/events/unit-sold",
+        ConstructionEventType.UNIT_STATUS_CHANGED: "/v1/internal/construction/events/unit-status-changed",
         ConstructionEventType.PROCUREMENT_REQUESTED: "/v1/internal/construction/events/procurement-requested",
     }
     RESPONSE_EVENT_TYPES = {
         ConstructionEventType.PROJECT_CREATED: ErpEventType.COST_CENTER_CREATED,
         ConstructionEventType.UNIT_CREATED: ErpEventType.COST_CENTER_CREATED,
         ConstructionEventType.UNIT_SOLD: ErpEventType.CONTRACT_RECEIVABLE_CREATED,
+        ConstructionEventType.UNIT_STATUS_CHANGED: ErpEventType.UNIT_RECLASSIFIED,
         ConstructionEventType.PROCUREMENT_REQUESTED: ErpEventType.PROCUREMENT_REQUEST_ACCEPTED,
     }
     RESPONSE_AGGREGATES = {
         ConstructionEventType.PROJECT_CREATED: ("construction_project_id", ConstructionAggregateType.PROJECT),
         ConstructionEventType.UNIT_CREATED: ("construction_unit_id", ConstructionAggregateType.UNIT),
         ConstructionEventType.UNIT_SOLD: ("construction_unit_id", ConstructionAggregateType.UNIT),
+        ConstructionEventType.UNIT_STATUS_CHANGED: ("construction_unit_id", ConstructionAggregateType.UNIT),
         ConstructionEventType.PROCUREMENT_REQUESTED: (
             "construction_procurement_request_id",
             ConstructionAggregateType.PROCUREMENT_REQUEST,

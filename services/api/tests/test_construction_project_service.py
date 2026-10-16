@@ -693,6 +693,9 @@ class FakeConstructionRepository:
     async def get_measurement(self, *, company_id, measurement_id):
         return self.measurements.get((company_id, measurement_id))
 
+    async def lock_unit(self, *, company_id, unit_id):
+        return await self.get_unit(company_id=company_id, unit_id=unit_id)
+
     async def get_unit(self, *, company_id, unit_id):
         return self.units.get((company_id, unit_id))
 
