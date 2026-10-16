@@ -1,0 +1,51 @@
+name: Construction checks
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: construction_test
+          POSTGRES_PASSWORD: construction_test
+          POSTGRES_DB: construction_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U construction_test -d construction_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: services/api
+    env:
+      CONSTRUCTION_DATABASE_URL: postgresql+asyncpg://construction_test:construction_test@127.0.0.1:5432/construction_test
+      CONSTRUCTION_ERP_SERVICE_KEY: ci-test-only
+      CONSTRUCTION_JWT_SECRET_KEY: ci-construction-tests-only-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: services/api/*requirements.txt
+      - run: pip install -r requirements.txt -r dev_requirements.txt
+      - run: alembic upgrade head
+      - run: python -m pytest tests/test_history_preservation.py tests/test_integration_recovery.py tests/test_outbox_relay.py tests/test_outbox_relay_integration.py tests/test_project_listing_integration.py tests/test_project_scope_integration.py tests/test_imported_measurement_retry.py
+  mfe:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui/construction-mfe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/construction-mfe/package-lock.json
+      - run: npm ci
+      - run: node --test tests/*.test.mjs
+      - run: npm run build

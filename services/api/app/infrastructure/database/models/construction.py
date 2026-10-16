@@ -35,9 +35,10 @@ from app.domain.constants import (
     ConstructionUnitStatus,
 )
 from app.infrastructure.database.base import Base, CONSTRUCTION_SCHEMA
+from app.infrastructure.database.history import PreservedHistory
 
 
-class ConstructionProject(Base):
+class ConstructionProject(PreservedHistory, Base):
     __tablename__ = "construction_projects"
     __table_args__ = (
         UniqueConstraint(
@@ -136,7 +137,7 @@ class ConstructionBlock(Base):
     units: Mapped[list[ConstructionUnit]] = relationship(back_populates="block")
 
 
-class ConstructionUnit(Base):
+class ConstructionUnit(PreservedHistory, Base):
     __tablename__ = "construction_units"
     __table_args__ = (
         UniqueConstraint("project_id", "code", name="uq_construction_units_project_code"),
@@ -248,7 +249,7 @@ class ConstructionSchedulePhase(Base):
     project: Mapped[ConstructionProject] = relationship(back_populates="schedule_phases")
 
 
-class ConstructionMeasurement(Base):
+class ConstructionMeasurement(PreservedHistory, Base):
     __tablename__ = "construction_measurements"
     __table_args__ = (
         UniqueConstraint("project_id", "code", name="uq_construction_measurements_project_code"),
@@ -703,7 +704,7 @@ class ConstructionUnitCommission(Base):
     unit: Mapped[ConstructionUnit] = relationship(back_populates="commissions")
 
 
-class ConstructionMeasurementItem(Base):
+class ConstructionMeasurementItem(PreservedHistory, Base):
     __tablename__ = "construction_measurement_items"
     __table_args__ = (
         UniqueConstraint("measurement_id", "sequence_number", name="uq_construction_measurement_items_sequence"),
@@ -763,7 +764,7 @@ class ConstructionMeasurementItem(Base):
     )
 
 
-class ConstructionMeasurementItemInspection(Base):
+class ConstructionMeasurementItemInspection(PreservedHistory, Base):
     __tablename__ = "construction_measurement_item_inspections"
     __table_args__ = (
         UniqueConstraint(
@@ -964,7 +965,7 @@ class ConstructionInspectionRound(Base):
     inspection: Mapped[ConstructionMeasurementItemInspection] = relationship(back_populates="rounds")
 
 
-class ConstructionMeasurementItemOccurrence(Base):
+class ConstructionMeasurementItemOccurrence(PreservedHistory, Base):
     __tablename__ = "construction_measurement_item_occurrences"
     __table_args__ = (
         UniqueConstraint(

@@ -17,6 +17,9 @@ from app.domain.constants import (
     ConstructionUnitStatus,
 )
 from app.infrastructure.repository._project_scope_filters import scope_conditions
+from app.infrastructure.database.history import PreservedHistory
+from app.infrastructure.repository._history import preserve_deletion, protected_history
+from app.domain.events.constants import ConstructionEventType
 
 from app.infrastructure.database.models import (
     ConstructionBlock,
@@ -97,7 +100,23 @@ class ConstructionRepository:
         await self.session.refresh(entity)
 
     async def delete(self, entity: object) -> None:
-        await self.session.delete(entity)
+        if isinstance(entity, PreservedHistory):
+            await preserve_deletion(self.session, entity)
+        else:
+            await self.session.delete(entity)
+
+    async def has_protected_history(self, entity):
+        return await protected_history(self.session, entity)
+
+    async def lock_integration_aggregate(self, event):
+        model = {
+            ConstructionEventType.PROJECT_CREATED: ConstructionProject,
+            ConstructionEventType.UNIT_CREATED: ConstructionUnit,
+            ConstructionEventType.UNIT_SOLD: ConstructionUnit,
+        }[event.event_type]
+        return await self.session.scalar(select(model).where(
+            model.company_id == event.company_id, model.id == event.aggregate_id
+        ).with_for_update().execution_options(populate_existing=True))
 
     async def replace_unit_children(
         self,
@@ -135,7 +154,7 @@ class ConstructionRepository:
             select(ConstructionProject).where(
                 ConstructionProject.company_id == company_id,
                 ConstructionProject.code == code,
-            )
+            ).execution_options(include_deleted=True)
         )
         return result.scalars().first()
 
@@ -289,7 +308,7 @@ class ConstructionRepository:
                 ConstructionUnit.company_id == company_id,
                 ConstructionUnit.project_id == project_id,
                 ConstructionUnit.code == code,
-            )
+            ).execution_options(include_deleted=True)
         )
         return result.scalars().first()
 
@@ -384,7 +403,7 @@ class ConstructionRepository:
             text("SELECT pg_advisory_xact_lock(hashtextextended(:scope, 0))"),
             {"scope": lock_scope},
         )
-        result = await self.session.execute(select(func.max(column)).where(*filters))
+        result = await self.session.execute(select(func.max(column)).where(*filters).execution_options(include_deleted=True))
         current_sequence = result.scalar_one_or_none()
         if current_sequence is None:
             return 1

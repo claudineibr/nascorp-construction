@@ -19,7 +19,10 @@ class ConstructionIntegrationDispatchResult:
 
 
 class ConstructionEventRepository(Protocol):
-    async def add_outbox_event(self, *, event: EventEnvelope):
+    async def add_outbox_event(self, *, event: EventEnvelope, delivery_mode=None):
+        raise NotImplementedError
+
+    async def mark_delivered(self, event_id):
         raise NotImplementedError
 
 
@@ -45,11 +48,13 @@ class ConstructionIntegrationDispatcher:
         if deferred and self.event_repository is None:
             raise ValueError("O envio de compras exige um outbox persistente.")
         if self.event_repository is not None:
-            await self.event_repository.add_outbox_event(event=event)
+            await self.event_repository.add_outbox_event(event=event, delivery_mode=self.integration_mode)
 
         response_event = None
         if not deferred and self.integration_mode == ConstructionIntegrationMode.SYNC_HTTP and self.event_transport is not None:
             response_event = await self.event_transport.deliver_event(event=event)
+            if self.event_repository is not None:
+                await self.event_repository.mark_delivered(event.event_id)
 
         return ConstructionIntegrationDispatchResult(
             event=event,

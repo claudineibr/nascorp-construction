@@ -124,6 +124,7 @@ async def get_project_service(
     requisicao -- pedi-la aqui NAO gera uma segunda consulta ao ERP.
     """
     event_repository = EventRepository(session=session)
+    session.info['actor_user_id'] = ctx.user_id
     return ConstructionProjectService(
         repository=ConstructionRepository(session=session, scope=ctx.project_scope),
         event_repository=event_repository,

@@ -795,11 +795,14 @@ class FakeConstructionRepository:
 
 
 class FakeEventRepository:
+    async def mark_delivered(self, event_id):
+        return None
+
     def __init__(self) -> None:
         self.outbox_events: list[EventEnvelope] = []
         self.processed_events: set[tuple[str, object]] = set()
 
-    async def add_outbox_event(self, *, event: EventEnvelope):
+    async def add_outbox_event(self, *, event: EventEnvelope, delivery_mode=None):
         self.outbox_events.append(event)
         return event
 

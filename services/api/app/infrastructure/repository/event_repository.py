@@ -3,12 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, tuple_
+from sqlalchemy.orm import aliased
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.events.constants import ConstructionEventType, EventStatus
 from app.domain.events.contracts import EventEnvelope
+from app.core.config import settings
 from app.infrastructure.database.models import DeadLetterEvent, OutboxEvent, ProcessedEvent
 
 
@@ -16,7 +18,7 @@ class EventRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def add_outbox_event(self, event: EventEnvelope) -> OutboxEvent:
+    async def add_outbox_event(self, event: EventEnvelope, delivery_mode=None) -> OutboxEvent:
         outbox_event = OutboxEvent(
             id=uuid4(),
             event_id=event.event_id,
@@ -32,6 +34,7 @@ class EventRepository:
             status=EventStatus.PENDING,
             retry_count=0,
             occurred_at=event.occurred_at,
+            delivery_mode=delivery_mode or settings.integration_mode,
         )
         self.session.add(outbox_event)
         return outbox_event
@@ -67,6 +70,35 @@ class EventRepository:
         outbox_event.status = EventStatus.PUBLISHED
         outbox_event.published_at = datetime.now(UTC)
         outbox_event.last_error = None
+
+    async def mark_delivered(self, event_id):
+        row = await self.session.scalar(select(OutboxEvent).where(OutboxEvent.event_id == event_id))
+        if row is not None:
+            await self.mark_published(row)
+
+    async def next_integration_event(self):
+        now = datetime.now(UTC)
+        earlier = aliased(OutboxEvent)
+        outstanding = select(earlier.id).where(
+            earlier.company_id == OutboxEvent.company_id,
+            earlier.aggregate_id == OutboxEvent.aggregate_id,
+            earlier.event_type.in_([ConstructionEventType.PROJECT_CREATED, ConstructionEventType.UNIT_CREATED,
+                                   ConstructionEventType.UNIT_SOLD]),
+            earlier.status != EventStatus.PUBLISHED,
+            tuple_(earlier.occurred_at, earlier.id) < tuple_(OutboxEvent.occurred_at, OutboxEvent.id),
+        ).exists()
+        return await self.session.scalar(select(OutboxEvent).where(
+            ~outstanding,
+            OutboxEvent.event_type.in_([
+                ConstructionEventType.PROJECT_CREATED, ConstructionEventType.UNIT_CREATED,
+                ConstructionEventType.UNIT_SOLD, ConstructionEventType.MEASUREMENT_APPROVED,
+            ]),
+            or_(OutboxEvent.payload['operation'].astext.is_(None), OutboxEvent.payload['operation'].astext != 'reverse'),
+            OutboxEvent.status.in_([EventStatus.PENDING, EventStatus.FAILED]),
+            OutboxEvent.retry_count < 3,
+            or_(OutboxEvent.next_attempt_at.is_(None), OutboxEvent.next_attempt_at <= now),
+            or_(OutboxEvent.lease_until.is_(None), OutboxEvent.lease_until <= now),
+        ).order_by(OutboxEvent.occurred_at, OutboxEvent.id).limit(1).with_for_update(skip_locked=True))
 
     async def mark_failed(self, outbox_event: OutboxEvent, error: str) -> None:
         outbox_event.status = EventStatus.FAILED

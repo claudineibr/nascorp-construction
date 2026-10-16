@@ -500,6 +500,7 @@ class ConstructionProjectService:
 
     async def delete_project(self, *, company_id: UUID, project_id: UUID) -> None:
         project = await self.get_project(company_id=company_id, project_id=project_id)
+        await self._assert_history_can_be_deleted(project)
         await self.repository.delete(project)
         await self.repository.commit()
 
@@ -775,6 +776,7 @@ class ConstructionProjectService:
 
     async def delete_unit(self, *, company_id: UUID, unit_id: UUID) -> None:
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        await self._assert_history_can_be_deleted(unit)
         # Apagar a unidade tira o dono junto -- pela porta maior. Ver
         # `_refuse_when_unit_has_installments`.
         await self._refuse_when_unit_has_installments(
@@ -4462,8 +4464,41 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
             )
 
+        await self._assert_history_can_be_deleted(measurement)
         await self.repository.delete(measurement)
         await self.repository.commit()
+
+    async def assert_integration_delivery(self, request_event):
+        aggregate = await self.repository.lock_integration_aggregate(request_event)
+        if aggregate is None:
+            raise ConstructionNotFoundError(resource_name="o registro ativo para integração")
+
+    async def apply_integration_response(self, *, request_event, response_event):
+        if (response_event.company_id != request_event.company_id or
+                response_event.aggregate_id != request_event.aggregate_id or
+                response_event.causation_id != request_event.event_id):
+            raise ConstructionInvalidValueError(message="A confirmação do ERP não pertence ao evento enviado.")
+
+        if request_event.event_type == ConstructionEventType.PROJECT_CREATED:
+            project = await self.get_project(company_id=request_event.company_id, project_id=request_event.aggregate_id)
+            self._apply_cost_center_snapshot_from_event(project=project, event=response_event)
+        elif request_event.event_type == ConstructionEventType.UNIT_CREATED:
+            unit = await self._get_unit(company_id=request_event.company_id, unit_id=request_event.aggregate_id)
+            self._apply_unit_cost_center_snapshot_from_event(unit=unit, event=response_event)
+        elif request_event.event_type == ConstructionEventType.UNIT_SOLD:
+            if response_event.event_type != ErpEventType.CONTRACT_RECEIVABLE_CREATED:
+                raise ConstructionInvalidValueError(message="O ERP não confirmou o contrato da unidade.")
+            unit = await self._get_unit(company_id=request_event.company_id, unit_id=request_event.aggregate_id)
+            self._apply_contract_snapshot_from_payload(unit=unit, payload=response_event.payload)
+        else:
+            raise ConstructionInvalidValueError(message="Evento sem consumidor ativo de integração.")
+
+    async def _assert_history_can_be_deleted(self, entity):
+        if await self.repository.has_protected_history(entity):
+            raise ConstructionResourceInUseError(
+                message="O registro possui unidades, medição em aprovação, aprovada ou vínculo financeiro e não pode ser excluído. Trate as unidades pelo fluxo próprio antes de excluir a obra.",
+                error_code="CONSTRUCTION_HISTORY_LOCKED",
+            )
 
     async def apply_accounts_payable_updated_event(self, *, event: EventEnvelope) -> ConstructionMeasurement:
         if event.event_type not in {ErpEventType.ACCOUNTS_PAYABLE_CREATED, ErpEventType.ACCOUNTS_PAYABLE_UPDATED}:
@@ -5086,6 +5121,8 @@ class ConstructionProjectService:
                 return None
 
             response_event = await self.erp_client.deliver_event(event=event)
+            if self.event_repository is not None:
+                await self.event_repository.mark_delivered(event.event_id)
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             raise ConstructionDomainError(
                 message="Não foi possível conectar ao ERP. Tente novamente.",

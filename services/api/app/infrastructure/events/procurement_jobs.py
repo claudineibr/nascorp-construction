@@ -12,6 +12,7 @@ from app.infrastructure.events.outbox_relay import DatabaseOutboxRelay
 from app.infrastructure.repository.construction_repository import ConstructionRepository
 from app.infrastructure.repository.event_repository import EventRepository
 from app.infrastructure.events.subcontract_jobs import relay_subcontract_measurements
+from app.infrastructure.events.integration_jobs import relay_integrations
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,7 @@ async def reconcile_procurement():
 @asynccontextmanager
 async def procurement_lifespan(app):
     tasks = [asyncio.create_task(run_periodically(relay_procurement, 15)),
+        asyncio.create_task(run_periodically(relay_integrations, 15)),
         asyncio.create_task(run_periodically(relay_subcontract_measurements, 15)),
         asyncio.create_task(run_periodically(reconcile_procurement, 86400))]
     try:
