@@ -8,6 +8,7 @@ from app.core.config import settings
 from app.infrastructure.events.procurement_jobs import procurement_lifespan
 from app.presentation.routes.construction_projects import router as construction_router
 from app.presentation.routes.construction_subcontracts import router as subcontract_router
+from app.presentation.routes.assistance_requests import router as assistance_router
 from app.presentation.routes.health import router as health_router
 from app.presentation.routes.internal_events import router as internal_events_router
 
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type", "X-Company-ID", "X-Service-Key"],
     )
     app.include_router(construction_router, prefix="/v1")
+    app.include_router(assistance_router, prefix="/v1")
     app.include_router(subcontract_router, prefix="/v1")
     app.include_router(health_router, prefix="/v1")
     app.include_router(internal_events_router, prefix="/v1")

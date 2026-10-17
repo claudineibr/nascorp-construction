@@ -31,6 +31,7 @@ from app.domain.exceptions import (
     ConstructionInvalidStatusTransitionError,
     ConstructionInvalidValueError,
     ConstructionNotFoundError,
+    ConstructionPersonOutsideCompanyError,
     ConstructionResourceInUseError,
 )
 from app.domain.events.constants import (
@@ -230,6 +231,13 @@ class ConstructionProjectService:
         self._ensure_known_value(value=request.status, allowed_values=PROJECT_STATUSES, field_name="status")
         self._ensure_known_value(value=request.project_type, allowed_values=PROJECT_TYPES, field_name="project_type")
         await self._validate_contract_template(company_id, request.contract_template_id)
+        await self._validate_receipt_template(company_id, request.receipt_template_id)
+        await self._validate_receipt_template(company_id, request.commission_receipt_template_id)
+        await self._require_company_people(
+            company_id=company_id,
+            actor_user_id=actor_user_id,
+            people={"O cliente da obra": request.customer_person_id},
+        )
         existing_project = await self.repository.get_project_by_code(company_id=company_id, code=request.code)
         if existing_project:
             raise ConstructionDuplicateCodeError(resource_name="a obra", code=request.code)
@@ -405,6 +413,92 @@ class ConstructionProjectService:
             person_id=supplier_person_id,
         )
 
+    async def _require_company_people(
+        self,
+        *,
+        company_id: UUID,
+        actor_user_id: UUID | None,
+        people: dict[str, UUID | None],
+    ) -> None:
+        pending = {label: person_id for label, person_id in people.items() if person_id is not None}
+        if not pending:
+            return
+        if self.erp_client is None or not hasattr(self.erp_client, "list_person_summaries"):
+            _logger.info(f"[construction] require_company_people: erp_unconfigured company_id={company_id}")
+            raise ConstructionDomainError(
+                message="Não foi possível validar as pessoas no ERP agora. Tente novamente.",
+                status_code=503,
+                error_code="CONSTRUCTION_ERP_INTEGRATION_UNAVAILABLE",
+            )
+        for label, person_id in pending.items():
+            try:
+                result = await self.erp_client.list_person_summaries(
+                    company_id=company_id,
+                    user_id=actor_user_id,
+                    search=None,
+                    page=1,
+                    page_size=1,
+                    person_id=person_id,
+                )
+            except Exception as exc:
+                _logger.info(
+                    f"[construction] require_company_people: erp_unavailable company_id={company_id} "
+                    f"person_id={person_id} error={type(exc).__name__}"
+                )
+                raise ConstructionDomainError(
+                    message="Não foi possível validar as pessoas no ERP agora. Tente novamente.",
+                    status_code=503,
+                    error_code="CONSTRUCTION_ERP_INTEGRATION_UNAVAILABLE",
+                ) from exc
+            if not any(str(person.get("id")) == str(person_id) for person in result.get("items") or []):
+                _logger.info(
+                    f"[construction] require_company_people: refused company_id={company_id} "
+                    f"person_id={person_id} label={label}"
+                )
+                raise ConstructionPersonOutsideCompanyError(label=label)
+
+    async def _require_company_products(
+        self,
+        *,
+        company_id: UUID,
+        actor_user_id: UUID | None,
+        product_ids: list[UUID | None],
+    ) -> None:
+        pending = list(dict.fromkeys(product_id for product_id in product_ids if product_id is not None))
+        if not pending:
+            return
+        if self.erp_client is None or not hasattr(self.erp_client, "validate_procurement_products"):
+            _logger.info(f"[construction] require_company_products: erp_unconfigured company_id={company_id}")
+            raise ConstructionInvalidValueError(
+                message="Não foi possível validar os produtos no ERP agora.",
+                error_code="CONSTRUCTION_PROCUREMENT_PRODUCT_VALIDATION_UNAVAILABLE",
+            )
+        try:
+            products = await self.erp_client.validate_procurement_products(
+                company_id=company_id,
+                user_id=actor_user_id,
+                product_ids=pending,
+            )
+        except Exception as exc:
+            raise ConstructionInvalidValueError(
+                message="Não foi possível validar os produtos no ERP agora. Tente novamente.",
+                error_code="CONSTRUCTION_PROCUREMENT_PRODUCT_VALIDATION_UNAVAILABLE",
+            ) from exc
+        if {str(product.get("id")) for product in products} != {str(product_id) for product_id in pending}:
+            _logger.info(f"[construction] require_company_products: refused company_id={company_id} product_ids={pending}")
+            raise ConstructionInvalidValueError(
+                message="Um ou mais produtos não existem, estão inativos ou pertencem a outra empresa.",
+                error_code="CONSTRUCTION_PROCUREMENT_PRODUCT_UNAVAILABLE",
+            )
+
+    async def _validate_receipt_template(self, company_id: UUID, template_id: UUID | None) -> None:
+        if template_id and not await self.repository.valid_receipt_template(company_id, template_id):
+            _logger.info(f"[construction] validate_receipt_template: refused company_id={company_id} template_id={template_id}")
+            raise ConstructionInvalidValueError(
+                message="O modelo de recibo deve estar ativo e cadastrado nesta empresa.",
+                error_code="CONSTRUCTION_RECEIPT_TEMPLATE_INVALID",
+            )
+
     async def list_person_summaries(
         self,
         *,
@@ -471,10 +565,20 @@ class ConstructionProjectService:
         company_id: UUID,
         project_id: UUID,
         request: ConstructionProjectUpdate,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionProject:
         project = await self.get_project(company_id=company_id, project_id=project_id)
         updates = request.model_dump(exclude_unset=True)
         await self._validate_contract_template(company_id, updates.get("contract_template_id"))
+        for field_name in ("receipt_template_id", "commission_receipt_template_id"):
+            if updates.get(field_name) != getattr(project, field_name):
+                await self._validate_receipt_template(company_id, updates.get(field_name))
+        if updates.get("customer_person_id") != project.customer_person_id:
+            await self._require_company_people(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                people={"O cliente da obra": updates.get("customer_person_id")},
+            )
         next_status = updates.get("status")
         if next_status is not None:
             self._ensure_project_status_transition(current_status=project.status, next_status=next_status)
@@ -822,6 +926,7 @@ class ConstructionProjectService:
         company_id: UUID,
         unit_id: UUID,
         request: ConstructionUnitReserveRequest,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionUnit:
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
         if unit.status != ConstructionUnitStatus.AVAILABLE:
@@ -829,6 +934,11 @@ class ConstructionProjectService:
                 message="Só é possível reservar unidade disponível.",
                 error_code="CONSTRUCTION_UNIT_INVALID_STATUS",
             )
+        await self._require_company_people(
+            company_id=company_id,
+            actor_user_id=actor_user_id,
+            people={"O comprador": request.buyer_person_id},
+        )
 
         unit.status = ConstructionUnitStatus.RESERVED
         unit.buyer_person_id = request.buyer_person_id
@@ -907,6 +1017,21 @@ class ConstructionProjectService:
                 message="O segundo comprador precisa ser diferente do comprador principal.",
                 error_code="CONSTRUCTION_UNIT_DUPLICATE_BUYER",
             )
+
+        changed_people = {
+            label: person_id
+            for label, person_id, stored_id in (
+                ("O comprador", request.buyer_person_id, unit.buyer_person_id),
+                ("O segundo comprador", request.secondary_buyer_person_id, unit.secondary_buyer_person_id),
+                ("O corretor", request.broker_person_id, unit.broker_person_id),
+            )
+            if person_id != stored_id
+        }
+        await self._require_company_people(
+            company_id=company_id,
+            actor_user_id=actor_user_id,
+            people=changed_people,
+        )
 
         net_sale_price = sale_price - discount_amount
         documentations = await self._resolve_sale_documentations(unit=unit, request=request)
@@ -1018,9 +1143,15 @@ class ConstructionProjectService:
         await self.get_project(company_id=company_id, project_id=project_id)
         items, _, total = await self._prepare_procurement_items(
             company_id=company_id,
+            project_id=project_id,
             actor_user_id=actor_user_id,
             item_inputs=request.items,
             discount_amount=request.discount_amount,
+        )
+        await self._require_company_people(
+            company_id=company_id,
+            actor_user_id=actor_user_id,
+            people={"O fornecedor": request.supplier_person_id},
         )
         procurement_code = (request.code or "").strip()
         if procurement_code:
@@ -1170,9 +1301,11 @@ class ConstructionProjectService:
                 ]
             prepared_items, _, total = await self._prepare_procurement_items(
                 company_id=company_id,
+                project_id=procurement_request.project_id,
                 actor_user_id=actor_user_id,
                 item_inputs=next_items,
                 discount_amount=next_discount,
+                stored_items=procurement_request.items,
             )
             existing_items = {item.sequence_number: item for item in procurement_request.items}
             next_entities = []
@@ -1187,6 +1320,11 @@ class ConstructionProjectService:
             procurement_request.discount_amount = next_discount
             procurement_request.estimated_amount = total
         if "supplier_person_id" in updates and updates["supplier_person_id"] != procurement_request.supplier_person_id:
+            await self._require_company_people(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                people={"O fornecedor": updates["supplier_person_id"]},
+            )
             procurement_request.supplier_qualification_status = await self._resolve_supplier_qualification_status(
                 company_id=company_id,
                 actor_user_id=actor_user_id,
@@ -1315,6 +1453,12 @@ class ConstructionProjectService:
                 raise ConstructionInvalidValueError(message="Selecione contrato liberado desta obra.")
             if request.supplier_person_id and request.supplier_person_id != subcontract.supplier_person_id:
                 raise ConstructionInvalidValueError(message="O fornecedor da medição precisa corresponder ao contrato.")
+        else:
+            await self._require_company_people(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                people={"O fornecedor": request.supplier_person_id},
+            )
         gross_amount = request.gross_amount or request.measured_amount or Decimal("0")
         retentions_amount = request.retentions_amount or Decimal("0")
         net_amount = request.net_amount or request.measured_amount or (gross_amount - retentions_amount)
@@ -1657,6 +1801,7 @@ class ConstructionProjectService:
         company_id: UUID,
         measurement_id: UUID,
         request: ConstructionMeasurementUpdate,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurement:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
         if measurement.status in {ConstructionMeasurementStatus.APPROVED, ConstructionMeasurementStatus.PAID}:
@@ -1668,6 +1813,16 @@ class ConstructionProjectService:
         updates = request.model_dump(exclude_unset=True)
         if "subcontract_id" in updates or getattr(measurement, "subcontract_id", None):
             await SubcontractService(self).bind_parent(measurement, updates)
+        if (
+            updates.get("subcontract_id", getattr(measurement, "subcontract_id", None)) is None
+            and "supplier_person_id" in updates
+            and updates["supplier_person_id"] != measurement.supplier_person_id
+        ):
+            await self._require_company_people(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                people={"O fornecedor": updates["supplier_person_id"]},
+            )
         if "retention_details" in updates:
             updates["retention_details"] = [item.model_dump(mode="json") for item in (request.retention_details or [])]
         if "unit_id" in updates:
@@ -1961,6 +2116,17 @@ class ConstructionProjectService:
                     error_code="CONSTRUCTION_MEASUREMENT_ITEM_DUPLICATE_SERVICE",
                 )
 
+        await self._require_company_people(
+            company_id=company_id,
+            actor_user_id=actor_user_id,
+            people={"O inspetor": request.inspector_person_id},
+        )
+        await self._require_company_products(
+            company_id=company_id,
+            actor_user_id=actor_user_id,
+            product_ids=[request.product_id],
+        )
+
         sequence_number = request.sequence_number
         if sequence_number is None:
             sequence_number = await self.repository.get_next_measurement_item_sequence(
@@ -2034,6 +2200,7 @@ class ConstructionProjectService:
         company_id: UUID,
         item_id: UUID,
         request: ConstructionMeasurementItemUpdate,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurementItem:
         item = await self.get_measurement_item(company_id=company_id, item_id=item_id)
         measurement = await self._get_editable_measurement(
@@ -2042,6 +2209,18 @@ class ConstructionProjectService:
         )
 
         updates = request.model_dump(exclude_unset=True)
+        if updates.get("inspector_person_id") != item.inspector_person_id:
+            await self._require_company_people(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                people={"O inspetor": updates.get("inspector_person_id")},
+            )
+        if updates.get("product_id") != item.product_id:
+            await self._require_company_products(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                product_ids=[updates.get("product_id")],
+            )
         if "description" in updates and updates["description"]:
             updates["description"] = updates["description"].strip()
 
@@ -2082,9 +2261,16 @@ class ConstructionProjectService:
         company_id: UUID,
         item_id: UUID,
         request: ConstructionMeasurementItemInspectionCreate,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurementItemInspection:
         item = await self.get_measurement_item(company_id=company_id, item_id=item_id)
         await self._get_editable_measurement(company_id=company_id, measurement_id=item.measurement_id)
+        if request.inspector_person_id != item.inspector_person_id:
+            await self._require_company_people(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                people={"O inspetor": request.inspector_person_id},
+            )
 
         sequence_number = request.sequence_number
         if sequence_number is None:
@@ -2117,12 +2303,19 @@ class ConstructionProjectService:
         company_id: UUID,
         inspection_id: UUID,
         request: ConstructionMeasurementItemInspectionUpdate,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurementItemInspection:
         inspection = await self._get_inspection(company_id=company_id, inspection_id=inspection_id)
         item = await self.get_measurement_item(company_id=company_id, item_id=inspection.measurement_item_id)
         await self._get_editable_measurement(company_id=company_id, measurement_id=item.measurement_id)
 
         updates = request.model_dump(exclude_unset=True)
+        if updates.get("inspector_person_id") != inspection.inspector_person_id:
+            await self._require_company_people(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                people={"O inspetor": updates.get("inspector_person_id")},
+            )
         if "description" in updates and updates["description"]:
             updates["description"] = updates["description"].strip()
 
@@ -2196,6 +2389,12 @@ class ConstructionProjectService:
         inspector_person_id = (
             request.inspector_person_id or inspection.inspector_person_id or item.inspector_person_id
         )
+        if request.inspector_person_id not in {inspection.inspector_person_id, item.inspector_person_id}:
+            await self._require_company_people(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                people={"O inspetor": request.inspector_person_id},
+            )
         inspector_name = await self._resolve_actor_name(
             company_id=company_id,
             actor_user_id=actor_user_id,
@@ -2330,6 +2529,12 @@ class ConstructionProjectService:
     ) -> ConstructionMeasurementItemOccurrence:
         item = await self.get_measurement_item(company_id=company_id, item_id=item_id)
         await self.get_measurement(company_id=company_id, measurement_id=item.measurement_id)
+        if request.inspector_person_id != item.inspector_person_id:
+            await self._require_company_people(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                people={"O inspetor": request.inspector_person_id},
+            )
 
         sequence_number = request.sequence_number
         if sequence_number is None:
@@ -2360,10 +2565,17 @@ class ConstructionProjectService:
         company_id: UUID,
         occurrence_id: UUID,
         request: ConstructionMeasurementItemOccurrenceUpdate,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurementItemOccurrence:
         occurrence = await self._get_occurrence(company_id=company_id, occurrence_id=occurrence_id)
 
         updates = request.model_dump(exclude_unset=True)
+        if updates.get("inspector_person_id") != occurrence.inspector_person_id:
+            await self._require_company_people(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                people={"O inspetor": updates.get("inspector_person_id")},
+            )
         if "problem" in updates and updates["problem"]:
             updates["problem"] = updates["problem"].strip()
 
@@ -2765,6 +2977,13 @@ class ConstructionProjectService:
 
             updates["name"] = next_name
 
+        if updates.get("product_id") != service_template.product_id:
+            await self._require_company_products(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                product_ids=[updates.get("product_id")],
+            )
+
         self._apply_updates(entity=service_template, updates=updates)
         service_template.updated_by_user_id = actor_user_id
 
@@ -2903,6 +3122,11 @@ class ConstructionProjectService:
             raise ConstructionDuplicateCodeError(resource_name="o serviço do catálogo", code=name)
 
         normalized_sections = self._normalize_section_inputs(request.sections)
+        await self._require_company_products(
+            company_id=company_id,
+            actor_user_id=actor_user_id,
+            product_ids=[request.product_id],
+        )
 
         service_template = ConstructionServiceTemplate(
             company_id=company_id,
@@ -2976,6 +3200,12 @@ class ConstructionProjectService:
                 raise ConstructionDuplicateCodeError(resource_name="o serviço do catálogo", code=name)
 
         normalized_sections = self._normalize_section_inputs(request.sections)
+        if request.product_id != service_template.product_id:
+            await self._require_company_products(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                product_ids=[request.product_id],
+            )
 
         self._apply_updates(
             entity=service_template,
@@ -4061,6 +4291,7 @@ class ConstructionProjectService:
         company_id: UUID,
         unit_id: UUID,
         request: ConstructionUnitCommissionCreate,
+        actor_user_id: UUID | None = None,
     ) -> list[ConstructionUnitCommissionModel]:
         """Lanca o sinal, replicando o "Repetir 1+" do legado.
 
@@ -4071,6 +4302,11 @@ class ConstructionProjectService:
         """
         await self._refuse_when_nothing_left_to_charge(company_id=company_id, unit_id=unit_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        await self._require_company_people(
+            company_id=company_id,
+            actor_user_id=actor_user_id,
+            people={"O beneficiário do sinal": request.beneficiary_person_id},
+        )
         project = await self.repository.get_project(company_id=company_id, project_id=unit.project_id)
         receipt_template_id = project.commission_receipt_template_id if project is not None else None
 
@@ -4109,6 +4345,7 @@ class ConstructionProjectService:
         company_id: UUID,
         commission_id: UUID,
         request: ConstructionUnitCommissionUpdate,
+        actor_user_id: UUID | None = None,
     ) -> ConstructionUnitCommissionModel:
         commission = await self._get_unit_commission(company_id=company_id, commission_id=commission_id)
         updates = request.model_dump(exclude_unset=True)
@@ -4125,6 +4362,13 @@ class ConstructionProjectService:
                     message=f"O campo '{field_name}' do sinal não pode ficar em branco.",
                     error_code="CONSTRUCTION_UNIT_COMMISSION_REQUIRED_FIELD",
                 )
+
+        if "beneficiary_person_id" in updates and updates["beneficiary_person_id"] != commission.beneficiary_person_id:
+            await self._require_company_people(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                people={"O beneficiário do sinal": updates["beneficiary_person_id"]},
+            )
 
         if updates.get("amount") is not None:
             updates["amount"] = Decimal(str(updates["amount"])).quantize(Decimal("0.01"))
@@ -4530,7 +4774,7 @@ class ConstructionProjectService:
     async def _assert_history_can_be_deleted(self, entity):
         if await self.repository.has_protected_history(entity):
             raise ConstructionResourceInUseError(
-                message="O registro possui unidades, medição em aprovação, aprovada ou vínculo financeiro e não pode ser excluído. Trate as unidades pelo fluxo próprio antes de excluir a obra.",
+                message="O registro possui unidades, SAT, medição em aprovação, aprovada ou vínculo financeiro e não pode ser excluído. Trate as unidades pelo fluxo próprio antes de excluir a obra.",
                 error_code="CONSTRUCTION_HISTORY_LOCKED",
             )
 
@@ -5067,6 +5311,19 @@ class ConstructionProjectService:
                 payload=dispatch_result.response_event.payload,
             )
 
+    async def apply_cash_received_event(self, *, event):
+        if event.event_type != "construction.unit.installment.cash_received.v1" or event.event_version != 1:
+            raise ConstructionInvalidValueError(message="Evento de caixa ou versão inválidos.")
+        unit_id = self._read_uuid_payload(payload=event.payload, field_name="unit_id")
+        if unit_id != event.aggregate_id:
+            raise ConstructionInvalidValueError(message="Unidade do evento de caixa divergente.")
+        unit = await self.repository.get_unit(company_id=event.company_id, unit_id=unit_id)
+        if unit is None:
+            raise ConstructionNotFoundError(resource_name="a unidade do recebimento")
+        accepted = await self.event_repository.mark_processed(consumer_name="construction_cash_received_v1", event=event)
+        await self.repository.commit()
+        return {"accepted": True, "duplicate": not accepted, "unit_id": str(unit.id)}
+
     async def apply_procurement_updated_event(self, *, event: EventEnvelope):
         if event.event_type != ErpEventType.PROCUREMENT_REQUEST_UPDATED:
             raise ConstructionInvalidValueError(message="Tipo de evento de compras inválido.",
@@ -5242,15 +5499,39 @@ class ConstructionProjectService:
         self,
         *,
         company_id: UUID,
+        project_id: UUID,
         actor_user_id: UUID | None,
         item_inputs,
         discount_amount: Decimal,
+        stored_items=(),
     ) -> tuple[list[dict[str, Any]], Decimal, Decimal]:
         if not item_inputs:
             raise ConstructionInvalidValueError(
                 message="Inclua pelo menos um produto na requisição.",
                 error_code="CONSTRUCTION_PROCUREMENT_ITEMS_REQUIRED",
             )
+        stored_phase_ids = {item.schedule_phase_id for item in stored_items}
+        stored_unit_ids = {item.construction_unit_id for item in stored_items}
+        for phase_id in dict.fromkeys(item.schedule_phase_id for item in item_inputs):
+            if phase_id is None or phase_id in stored_phase_ids:
+                continue
+            phase = await self._get_schedule_phase(company_id=company_id, phase_id=phase_id)
+            if phase.project_id != project_id:
+                _logger.info(f"[construction] procurement_items: phase_refused project_id={project_id} phase_id={phase_id}")
+                raise ConstructionInvalidValueError(
+                    message="A etapa do cronograma do item não pertence à obra da requisição.",
+                    error_code="CONSTRUCTION_SCHEDULE_PROJECT_MISMATCH",
+                )
+        for unit_id in dict.fromkeys(item.construction_unit_id for item in item_inputs):
+            if unit_id is None or unit_id in stored_unit_ids:
+                continue
+            unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+            if unit.project_id != project_id:
+                _logger.info(f"[construction] procurement_items: unit_refused project_id={project_id} unit_id={unit_id}")
+                raise ConstructionInvalidValueError(
+                    message="A unidade do item não pertence à obra da requisição.",
+                    error_code="CONSTRUCTION_UNIT_PROJECT_MISMATCH",
+                )
         if discount_amount < Decimal("0"):
             raise ConstructionInvalidValueError(
                 message="O desconto não pode ser negativo.",

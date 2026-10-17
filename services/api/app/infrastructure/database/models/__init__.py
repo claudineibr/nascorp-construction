@@ -1,3 +1,4 @@
+from app.infrastructure.database.models.assistance import AssistanceRequest, AssistanceContact, AssistanceComplaint, AssistanceService, AssistanceHistory, AssistanceMigrationState
 from app.infrastructure.database.models.construction import (
     ConstructionBlock,
     ConstructionDocumentationType,

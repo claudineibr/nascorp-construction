@@ -18,10 +18,12 @@ import httpx
 import pytest
 
 from app.domain.constants import ConstructionUnitStatus
-from app.domain.exceptions import ConstructionResourceInUseError
+from app.domain.exceptions import ConstructionPersonOutsideCompanyError, ConstructionResourceInUseError
 from app.domain.services import ConstructionProjectService
 from app.infrastructure.database.models import ConstructionUnit
 from app.schemas.construction import ConstructionUnitReserveRequest
+
+from .test_construction_project_service import FakeErpPeopleDirectory
 
 
 class _RepositorioFalso:
@@ -45,7 +47,7 @@ class _RepositorioFalso:
         return None
 
 
-class _ErpFalso:
+class _ErpFalso(FakeErpPeopleDirectory):
     """So o metodo que o guard usa. `chamadas` guarda o que foi perguntado."""
 
     def __init__(self, *, parcelas=0, falha=False):
@@ -193,3 +195,24 @@ async def test_reservar_continua_gravando_o_comprador():
 
     assert reservada.buyer_person_id == comprador
     assert erp.chamadas == []
+
+
+@pytest.mark.asyncio
+async def test_reservar_para_comprador_de_outra_empresa_e_recusado():
+    unit = _unidade(status=ConstructionUnitStatus.AVAILABLE)
+    unit.buyer_person_id = None
+    erp = _ErpFalso()
+    comprador = uuid4()
+    erp.foreign_person_ids = {comprador}
+    service = _servico(unit, erp)
+
+    with pytest.raises(ConstructionPersonOutsideCompanyError, match="O comprador"):
+        await service.reserve_unit(
+            company_id=unit.company_id,
+            unit_id=unit.id,
+            request=ConstructionUnitReserveRequest(buyer_person_id=comprador),
+            actor_user_id=uuid4(),
+        )
+
+    assert unit.buyer_person_id is None
+    assert unit.status == ConstructionUnitStatus.AVAILABLE

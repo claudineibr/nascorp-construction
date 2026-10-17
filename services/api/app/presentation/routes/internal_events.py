@@ -29,6 +29,15 @@ async def get_project_service(session: AsyncSession = Depends(get_session)) -> C
     )
 
 
+@router.post("/events/erp-cash-received")
+async def consume_erp_cash_received_event(request_data: EventEnvelopeRequest,
+    _: None = Depends(require_service_key), service: ConstructionProjectService = Depends(get_project_service)):
+    try:
+        return await service.apply_cash_received_event(event=request_data.to_event_envelope())
+    except ConstructionDomainError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+
 @router.post("/events/erp-procurement-updated", response_model=ConstructionProcurementRequestResponse)
 async def consume_erp_procurement_updated_event(request_data: EventEnvelopeRequest,
     _: None = Depends(require_service_key), service: ConstructionProjectService = Depends(get_project_service)):

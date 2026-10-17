@@ -84,10 +84,20 @@ async def preserve_deletion(session, entity):
 
 async def protected_history(session, entity):
     from app.infrastructure.database.models import ConstructionMeasurement, ConstructionUnit, ConstructionProject
+    from app.infrastructure.database.models.assistance import AssistanceRequest
 
     await session.execute(select(type(entity).id).where(
         type(entity).id == entity.id, type(entity).company_id == entity.company_id
     ).with_for_update())
+
+    if isinstance(entity, (ConstructionUnit, ConstructionProject)):
+        parent = AssistanceRequest.unit_id if isinstance(entity, ConstructionUnit) else AssistanceRequest.project_id
+        if await session.scalar(select(AssistanceRequest.id).where(
+            AssistanceRequest.company_id == entity.company_id, parent == entity.id,
+            AssistanceRequest.deleted_at.is_(None),
+        ).limit(1)):
+            return True
+
     conditions = descendant_conditions(entity)
     if ConstructionMeasurement in conditions:
         rows = await session.scalars(select(ConstructionMeasurement).where(

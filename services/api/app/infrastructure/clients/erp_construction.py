@@ -1,3 +1,4 @@
+import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID
@@ -5,10 +6,13 @@ from uuid import UUID
 import httpx
 
 from app.core.config import settings
+from app.domain.exceptions import ConstructionPersonOutsideCompanyError
 from app.domain.events.constants import ConstructionAggregateType, ConstructionEventType, ErpEventType, EventProducer
 from app.domain.events.contracts import EventEnvelope
 from app.infrastructure.events.json_event_serializer import JsonEventSerializer
 
+
+logger = logging.getLogger(__name__)
 
 class ErpConstructionClient:
     EVENT_ENDPOINTS = {
@@ -95,8 +99,9 @@ class ErpConstructionClient:
     ) -> str:
         """Status de qualificacao do fornecedor, direto do core.
 
-        Degrada para `none` em qualquer falha -- ERP fora do ar, chave de
-        servico ausente, versao do core que ainda nao devolve o campo. O aviso
+        Degrada para `none` quando o ERP esta indisponivel -- fora do ar, chave
+        de servico ausente, erro do core. Pessoa inexistente ou sem vinculo com
+        a empresa e recusa, nao degradacao. O aviso
         e informativo e nao pode ser o motivo de a requisicao nao ser salva; se
         isso levantasse excecao, a decisao D7 ("avisa, nao bloqueia") viraria
         bloqueio pela porta dos fundos.
@@ -110,12 +115,20 @@ class ErpConstructionClient:
                 page_size=1,
                 person_id=person_id,
             )
-        except Exception:
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                logger.info(f"[construction] qualification_status: person_not_found company_id={company_id} person_id={person_id}")
+                raise ConstructionPersonOutsideCompanyError(label="O fornecedor") from exc
+            logger.info(f"[construction] qualification_status: erp_unavailable company_id={company_id} status={exc.response.status_code}")
+            return "none"
+        except (httpx.RequestError, RuntimeError) as exc:
+            logger.info(f"[construction] qualification_status: erp_unavailable company_id={company_id} error={type(exc).__name__}")
             return "none"
 
-        items = payload.get("items") or []
+        items = [item for item in payload.get("items") or [] if str(item.get("id")) == str(person_id)]
         if not items:
-            return "none"
+            logger.info(f"[construction] qualification_status: person_outside_company company_id={company_id} person_id={person_id}")
+            raise ConstructionPersonOutsideCompanyError(label="O fornecedor")
         return str(items[0].get("qualification_status") or "none")
 
     async def validate_procurement_products(

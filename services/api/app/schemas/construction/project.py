@@ -46,8 +46,6 @@ class ConstructionProjectUpdate(BaseModel):
     start_date: date | None = None
     expected_end_date: date | None = None
     actual_end_date: date | None = None
-    synthetic_cost_center_id: UUID | None = None
-    analytic_cost_center_id: UUID | None = None
     receipt_template_id: UUID | None = None
     commission_receipt_template_id: UUID | None = None
     contract_template_id: UUID | None = None
@@ -351,6 +349,7 @@ class ConstructionUnitInstallmentPaymentLine(BaseModel):
     nao o principal amortizado: quem deriva o principal e o financeiro.
     """
 
+    cash_register_id: UUID | None = None
     payment_method: str = Field(..., min_length=1, max_length=30)
     amount: Decimal = Field(..., gt=0)
     paid_at: datetime | None = None

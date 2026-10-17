@@ -53,7 +53,13 @@ from app.infrastructure.database.models.subcontract import ConstructionSubcontra
 # Tabelas que chegam na obra por um salto de chave estrangeira: (pai, coluna).
 # A recursão para nas cinco que têm `project_id` -- e em `ConstructionProject`,
 # que é a própria obra.
+from app.infrastructure.database.models.assistance import AssistanceRequest, AssistanceContact, AssistanceComplaint, AssistanceService, AssistanceHistory, AssistanceMigrationState
+
 _CAMINHO = {
+    AssistanceContact: (AssistanceRequest, "request_id"),
+    AssistanceComplaint: (AssistanceRequest, "request_id"),
+    AssistanceService: (AssistanceRequest, "request_id"),
+    AssistanceHistory: (AssistanceRequest, "request_id"),
     ConstructionProcurementItem: (ConstructionProcurementRequest, "procurement_request_id"),
     ConstructionSubcontractItem: (ConstructionSubcontract, "contract_id"),
     ConstructionSubcontractVersion: (ConstructionSubcontract, "contract_id"),
@@ -73,6 +79,7 @@ _CAMINHO = {
 
 # Tabelas com `project_id` próprio: um passo só.
 _COM_OBRA = (
+    AssistanceRequest,
     ConstructionSubcontract,
     ConstructionBlock,
     ConstructionUnit,
@@ -84,6 +91,7 @@ _COM_OBRA = (
 
 # Catálogos da empresa: não pertencem a obra nenhuma.
 _SEM_OBRA = (
+    AssistanceMigrationState,
     ConstructionServiceTemplate,
     ConstructionServiceTemplateSection,
     ConstructionServiceTemplateItem,

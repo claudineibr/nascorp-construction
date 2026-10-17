@@ -1,0 +1,8 @@
+@page {
+  size: A4;
+  margin: 12mm;
+  @bottom-right {
+    content: "Página " counter(page) " de " counter(pages);
+    font: 9px Arial, sans-serif;
+  }
+}

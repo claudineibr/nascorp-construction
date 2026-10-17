@@ -13,6 +13,7 @@ from app.domain.exceptions import (
     ConstructionInvalidStatusTransitionError,
     ConstructionInvalidValueError,
     ConstructionNotFoundError,
+    ConstructionPersonOutsideCompanyError,
     ConstructionResourceInUseError,
 )
 from app.domain.events.constants import ConstructionEventType, ConstructionIntegrationMode, ErpEventType
@@ -47,14 +48,17 @@ from app.schemas.construction import (
     ConstructionMeasurementItemOccurrenceCreate,
     ConstructionMeasurementItemOccurrenceUpdate,
     ConstructionMeasurementItemUpdate,
+    ConstructionMeasurementUpdate,
     ConstructionProcurementRequestCreate,
     ConstructionProcurementRequestUpdate,
     ConstructionProjectCreate,
+    ConstructionServiceTemplateCreate,
     ConstructionUnitInstallmentPaymentLine,
     ConstructionUnitInstallmentPaymentRequest,
     ConstructionProjectUpdate,
     ConstructionUnitCreate,
     ConstructionUnitCommissionCreate,
+    ConstructionUnitCommissionUpdate,
     ConstructionUnitSaleConfirmRequest,
 )
 
@@ -79,8 +83,12 @@ class FakeConstructionRepository:
         self.unit_documentations: dict[tuple[object, object], ConstructionUnitDocumentation] = {}
         self.unit_commissions: dict[tuple[object, object], ConstructionUnitCommission] = {}
         self.project_service_links: set[tuple[object, object, object]] = set()
+        self.foreign_receipt_template_ids: set = set()
         self.commits = 0
         self.replaced_children = 0
+
+    async def valid_receipt_template(self, company_id, template_id):
+        return None if template_id in self.foreign_receipt_template_ids else template_id
 
     def _section_items(self, *, company_id, section_id):
         return sorted(
@@ -824,13 +832,23 @@ class FakeEventRepository:
         return True
 
 
-class FakeErpMeasurementClient:
+class FakeErpPeopleDirectory:
+    foreign_person_ids: frozenset = frozenset()
+
+    async def list_person_summaries(self, *, company_id, user_id, search, page, page_size, person_id=None, **filters):
+        if person_id is None or person_id in self.foreign_person_ids:
+            return {"items": [], "total": 0}
+        return {"items": [{"id": str(person_id), "name": "Pessoa da empresa"}], "total": 1}
+
+
+class FakeErpMeasurementClient(FakeErpPeopleDirectory):
     def __init__(self) -> None:
         self.events: list[EventEnvelope] = []
         self.confirmation_events: list[EventEnvelope] = []
         #: Nomes que este ERP falso sabe resolver. Vazio de proposito: o caso
         #: comum e o nome NAO vir, e a gravacao tem de acontecer assim mesmo.
         self.person_names: dict = {}
+        self.foreign_product_ids: set = set()
 
     async def get_person_name(self, *, company_id, user_id, person_id):
         return self.person_names.get(person_id)
@@ -842,6 +860,7 @@ class FakeErpMeasurementClient:
         return [
             {"id": str(product_id), "code": "MAT-001", "description": "Material", "default_unit_of_measure": "UN"}
             for product_id in product_ids
+            if product_id not in self.foreign_product_ids
         ]
 
     async def create_cost_center_hierarchy(self, *, event: EventEnvelope) -> EventEnvelope:
@@ -3835,3 +3854,369 @@ async def test_paid_measurement_has_a_specific_denial():
     assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_ALREADY_PAID"
     assert "paga" in error.value.message
     assert not service.erp_client.events
+
+
+def _project_with_erp(company_id, **fields):
+    repository = FakeConstructionRepository()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code=f"OBRA-{str(uuid4())[:6]}",
+        name="Tenant guard project",
+        status=ConstructionProjectStatus.ACTIVE,
+        analytic_cost_center_id=uuid4(),
+        **fields,
+    )
+    repository.projects[(company_id, project.id)] = project
+    erp_client = FakeErpMeasurementClient()
+    service = ConstructionProjectService(repository=repository, erp_client=erp_client)
+    return repository, project, erp_client, service
+
+
+@pytest.mark.asyncio
+async def test_project_update_cannot_point_to_another_cost_center() -> None:
+    company_id = uuid4()
+    synthetic_id, analytic_id = uuid4(), uuid4()
+    _, project, _, service = _project_with_erp(company_id)
+    project.synthetic_cost_center_id = synthetic_id
+    project.analytic_cost_center_id = analytic_id
+
+    request = ConstructionProjectUpdate.model_validate(
+        {"name": "Renomeada", "synthetic_cost_center_id": str(uuid4()), "analytic_cost_center_id": str(uuid4())}
+    )
+    updated = await service.update_project(company_id=company_id, project_id=project.id, request=request)
+
+    assert "synthetic_cost_center_id" not in request.model_dump(exclude_unset=True)
+    assert "analytic_cost_center_id" not in request.model_dump(exclude_unset=True)
+    assert updated.name == "Renomeada"
+    assert updated.synthetic_cost_center_id == synthetic_id
+    assert updated.analytic_cost_center_id == analytic_id
+
+
+@pytest.mark.asyncio
+async def test_project_customer_from_another_company_is_refused() -> None:
+    company_id = uuid4()
+    repository, project, erp_client, service = _project_with_erp(company_id)
+    foreign_id = uuid4()
+    erp_client.foreign_person_ids = {foreign_id}
+
+    with pytest.raises(ConstructionPersonOutsideCompanyError, match="O cliente da obra"):
+        await service.create_project(
+            company_id=company_id,
+            request=ConstructionProjectCreate(code="OBRA-X", name="Obra", customer_person_id=foreign_id),
+        )
+    with pytest.raises(ConstructionPersonOutsideCompanyError):
+        await service.update_project(
+            company_id=company_id,
+            project_id=project.id,
+            request=ConstructionProjectUpdate(customer_person_id=foreign_id),
+        )
+
+    project.customer_person_id = foreign_id
+    kept = await service.update_project(
+        company_id=company_id,
+        project_id=project.id,
+        request=ConstructionProjectUpdate(name="Historico", customer_person_id=foreign_id),
+    )
+    assert kept.customer_person_id == foreign_id
+
+
+@pytest.mark.asyncio
+async def test_receipt_template_from_another_company_is_refused() -> None:
+    company_id = uuid4()
+    repository, project, _, service = _project_with_erp(company_id)
+    foreign_template_id = uuid4()
+    repository.foreign_receipt_template_ids = {foreign_template_id}
+
+    for field_name in ("receipt_template_id", "commission_receipt_template_id"):
+        with pytest.raises(ConstructionInvalidValueError) as create_error:
+            await service.create_project(
+                company_id=company_id,
+                request=ConstructionProjectCreate(code=f"OBRA-{field_name}", name="Obra", **{field_name: foreign_template_id}),
+            )
+        assert create_error.value.error_code == "CONSTRUCTION_RECEIPT_TEMPLATE_INVALID"
+        with pytest.raises(ConstructionInvalidValueError) as update_error:
+            await service.update_project(
+                company_id=company_id,
+                project_id=project.id,
+                request=ConstructionProjectUpdate(**{field_name: foreign_template_id}),
+            )
+        assert update_error.value.error_code == "CONSTRUCTION_RECEIPT_TEMPLATE_INVALID"
+
+    project.receipt_template_id = foreign_template_id
+    kept = await service.update_project(
+        company_id=company_id,
+        project_id=project.id,
+        request=ConstructionProjectUpdate(name="Historico", receipt_template_id=foreign_template_id),
+    )
+    assert kept.receipt_template_id == foreign_template_id
+
+
+@pytest.mark.asyncio
+async def test_sale_refuses_buyer_or_broker_from_another_company_but_keeps_stored_people() -> None:
+    company_id, unit, service, erp_client = _build_sale_scenario(
+        project_code="OBRA-TEN", unit_code="T-101", sale_price=Decimal("300000.00")
+    )
+    buyer_id, broker_id = uuid4(), uuid4()
+    request = {
+        "buyer_person_id": buyer_id,
+        "sale_price": Decimal("300000.00"),
+        "first_due_date": date(2026, 6, 10),
+        "installments": 12,
+    }
+    erp_client.foreign_person_ids = {broker_id}
+
+    with pytest.raises(ConstructionPersonOutsideCompanyError, match="O corretor"):
+        await service.confirm_unit_sale(
+            company_id=company_id,
+            unit_id=unit.id,
+            request=ConstructionUnitSaleConfirmRequest(**request, broker_person_id=broker_id),
+        )
+    assert unit.status == "available"
+    assert erp_client.events == []
+
+    erp_client.foreign_person_ids = frozenset()
+    await service.confirm_unit_sale(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitSaleConfirmRequest(**request, broker_person_id=broker_id),
+    )
+    erp_client.foreign_person_ids = {buyer_id, broker_id}
+    edited = await service.confirm_unit_sale(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitSaleConfirmRequest(**request, broker_person_id=broker_id, sale_notes="Edição"),
+    )
+    assert edited.buyer_person_id == buyer_id
+    assert edited.broker_person_id == broker_id
+
+
+@pytest.mark.asyncio
+async def test_person_check_fails_closed_when_the_erp_is_unavailable() -> None:
+    company_id, unit, service, erp_client = _build_sale_scenario(
+        project_code="OBRA-OFF", unit_code="T-102", sale_price=Decimal("300000.00")
+    )
+
+    async def _offline(**_kwargs):
+        raise httpx.ConnectError("erp fora do ar")
+
+    erp_client.list_person_summaries = _offline
+
+    with pytest.raises(ConstructionDomainError) as error:
+        await service.confirm_unit_sale(
+            company_id=company_id,
+            unit_id=unit.id,
+            request=ConstructionUnitSaleConfirmRequest(
+                buyer_person_id=uuid4(),
+                sale_price=Decimal("300000.00"),
+                first_due_date=date(2026, 6, 10),
+                installments=12,
+            ),
+        )
+    assert error.value.status_code == 503
+    assert unit.status == "available"
+
+
+@pytest.mark.asyncio
+async def test_measurement_supplier_from_another_company_is_refused() -> None:
+    company_id = uuid4()
+    repository, project, erp_client, service = _project_with_erp(company_id)
+    unit, schedule_phase = seed_measurement_axis(repository=repository, company_id=company_id, project_id=project.id)
+    foreign_id = uuid4()
+    erp_client.foreign_person_ids = {foreign_id}
+
+    with pytest.raises(ConstructionPersonOutsideCompanyError, match="O fornecedor"):
+        await service.create_measurement(
+            company_id=company_id,
+            project_id=project.id,
+            request=ConstructionMeasurementCreate(
+                unit_id=unit.id,
+                schedule_phase_id=schedule_phase.id,
+                due_date=date(2026, 5, 20),
+                supplier_person_id=foreign_id,
+            ),
+        )
+    assert repository.measurements == {}
+
+
+@pytest.mark.asyncio
+async def test_measurement_update_refuses_a_new_foreign_supplier_and_keeps_the_stored_one() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    stored_supplier = measurement.supplier_person_id
+    foreign_id = uuid4()
+    service.erp_client.foreign_person_ids = {foreign_id, stored_supplier}
+
+    with pytest.raises(ConstructionPersonOutsideCompanyError):
+        await service.update_measurement(
+            company_id=company_id,
+            measurement_id=measurement.id,
+            request=ConstructionMeasurementUpdate(supplier_person_id=foreign_id),
+        )
+    kept = await service.update_measurement(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementUpdate(supplier_person_id=stored_supplier, description="Histórico"),
+    )
+    assert kept.supplier_person_id == stored_supplier
+
+
+@pytest.mark.asyncio
+async def test_measurement_item_refuses_foreign_inspector_and_foreign_product() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    foreign_person, foreign_product = uuid4(), uuid4()
+    service.erp_client.foreign_person_ids = {foreign_person}
+    service.erp_client.foreign_product_ids = {foreign_product}
+
+    with pytest.raises(ConstructionPersonOutsideCompanyError, match="O inspetor"):
+        await service.create_measurement_item(
+            company_id=company_id,
+            measurement_id=measurement.id,
+            request=ConstructionMeasurementItemCreate(
+                description="Reboco", amount=Decimal("10.00"), inspector_person_id=foreign_person
+            ),
+        )
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.create_measurement_item(
+            company_id=company_id,
+            measurement_id=measurement.id,
+            request=ConstructionMeasurementItemCreate(
+                description="Reboco", amount=Decimal("10.00"), product_id=foreign_product
+            ),
+        )
+    assert error.value.error_code == "CONSTRUCTION_PROCUREMENT_PRODUCT_UNAVAILABLE"
+
+    item = await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(description="Pintura", amount=Decimal("10.00")),
+    )
+    with pytest.raises(ConstructionPersonOutsideCompanyError):
+        await service.update_measurement_item(
+            company_id=company_id,
+            item_id=item.id,
+            request=ConstructionMeasurementItemUpdate(inspector_person_id=foreign_person),
+        )
+    with pytest.raises(ConstructionInvalidValueError):
+        await service.update_measurement_item(
+            company_id=company_id,
+            item_id=item.id,
+            request=ConstructionMeasurementItemUpdate(product_id=foreign_product),
+        )
+
+
+@pytest.mark.asyncio
+async def test_fvs_line_round_and_occurrence_refuse_a_foreign_inspector() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    item, inspection = await _build_item_with_one_line(service, company_id, measurement)
+    foreign_id = uuid4()
+    service.erp_client.foreign_person_ids = {foreign_id}
+
+    with pytest.raises(ConstructionPersonOutsideCompanyError):
+        await service.create_measurement_item_inspection(
+            company_id=company_id,
+            item_id=item.id,
+            request=ConstructionMeasurementItemInspectionCreate(
+                description="Prumo", verification_method="Visual", inspector_person_id=foreign_id
+            ),
+        )
+    with pytest.raises(ConstructionPersonOutsideCompanyError):
+        await _verify(service, company_id, inspection.id, "compliant", inspector_person_id=foreign_id)
+    with pytest.raises(ConstructionPersonOutsideCompanyError):
+        await service.create_measurement_item_occurrence(
+            company_id=company_id,
+            item_id=item.id,
+            request=ConstructionMeasurementItemOccurrenceCreate(problem="Fissura", inspector_person_id=foreign_id),
+        )
+    occurrence = await service.create_measurement_item_occurrence(
+        company_id=company_id,
+        item_id=item.id,
+        request=ConstructionMeasurementItemOccurrenceCreate(problem="Fissura"),
+    )
+    with pytest.raises(ConstructionPersonOutsideCompanyError):
+        await service.update_measurement_item_occurrence(
+            company_id=company_id,
+            occurrence_id=occurrence.id,
+            request=ConstructionMeasurementItemOccurrenceUpdate(inspector_person_id=foreign_id),
+        )
+
+
+@pytest.mark.asyncio
+async def test_service_template_refuses_a_product_from_another_company() -> None:
+    company_id = uuid4()
+    repository, _, erp_client, service = _project_with_erp(company_id)
+    foreign_product = uuid4()
+    erp_client.foreign_product_ids = {foreign_product}
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.create_service_template(
+            company_id=company_id,
+            request=ConstructionServiceTemplateCreate(name="Alvenaria", product_id=foreign_product),
+        )
+    assert error.value.error_code == "CONSTRUCTION_PROCUREMENT_PRODUCT_UNAVAILABLE"
+    assert repository.service_templates == {}
+
+
+@pytest.mark.asyncio
+async def test_commission_beneficiary_from_another_company_is_refused_but_stored_one_is_kept() -> None:
+    company_id, unit, service, erp_client = _build_sale_scenario(
+        project_code="OBRA-SIN", unit_code="S-101", sale_price=Decimal("300000.00")
+    )
+    beneficiary_id, foreign_id = uuid4(), uuid4()
+    erp_client.foreign_person_ids = {foreign_id}
+    request = {"amount": Decimal("1000.00"), "due_date": date(2026, 6, 10)}
+
+    with pytest.raises(ConstructionPersonOutsideCompanyError, match="O beneficiário do sinal"):
+        await service.create_unit_commissions(
+            company_id=company_id,
+            unit_id=unit.id,
+            request=ConstructionUnitCommissionCreate(beneficiary_person_id=foreign_id, **request),
+        )
+    created = await service.create_unit_commissions(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitCommissionCreate(beneficiary_person_id=beneficiary_id, **request),
+    )
+    with pytest.raises(ConstructionPersonOutsideCompanyError):
+        await service.update_unit_commission(
+            company_id=company_id,
+            commission_id=created[0].id,
+            request=ConstructionUnitCommissionUpdate(beneficiary_person_id=foreign_id),
+        )
+    erp_client.foreign_person_ids = {foreign_id, beneficiary_id}
+    kept = await service.update_unit_commission(
+        company_id=company_id,
+        commission_id=created[0].id,
+        request=ConstructionUnitCommissionUpdate(beneficiary_person_id=beneficiary_id, notes="Histórico"),
+    )
+    assert kept.beneficiary_person_id == beneficiary_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field_name", ["schedule_phase_id", "construction_unit_id"])
+async def test_procurement_item_cannot_point_to_another_project(field_name) -> None:
+    company_id = uuid4()
+    repository, project, _, service = _project_with_erp(company_id)
+    other_project_id = uuid4()
+    other_unit, other_phase = seed_measurement_axis(
+        repository=repository, company_id=company_id, project_id=other_project_id
+    )
+    target = other_phase.id if field_name == "schedule_phase_id" else other_unit.id
+    item = {"product_id": uuid4(), "quantity": Decimal("1"), "unit_of_measure": "UN", field_name: target}
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.create_procurement_request(
+            company_id=company_id,
+            project_id=project.id,
+            request=ConstructionProcurementRequestCreate(supplier_person_id=uuid4(), title="Materiais", items=[item]),
+        )
+    assert error.value.error_code in {"CONSTRUCTION_SCHEDULE_PROJECT_MISMATCH", "CONSTRUCTION_UNIT_PROJECT_MISMATCH"}
+    assert repository.procurement_requests == {}
+
+    with pytest.raises(ConstructionNotFoundError):
+        await service.create_procurement_request(
+            company_id=company_id,
+            project_id=project.id,
+            request=ConstructionProcurementRequestCreate(
+                supplier_person_id=uuid4(), title="Materiais", items=[{**item, field_name: uuid4()}]
+            ),
+        )

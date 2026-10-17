@@ -89,7 +89,7 @@ class FakeProjectService:
             updated_at=now,
         )
 
-    async def reserve_unit(self, *, company_id: UUID, unit_id: UUID, request):
+    async def reserve_unit(self, *, company_id: UUID, unit_id: UUID, request, actor_user_id=None):
         now = datetime.now(tz=UTC)
         return SimpleNamespace(
             id=unit_id,
@@ -239,13 +239,13 @@ class FakeProjectService:
     async def list_unit_commissions(self, *, company_id: UUID, unit_id: UUID):
         return [self._fake_commission(company_id=company_id, commission_id=uuid4(), unit_id=unit_id)]
 
-    async def create_unit_commissions(self, *, company_id: UUID, unit_id: UUID, request):
+    async def create_unit_commissions(self, *, company_id: UUID, unit_id: UUID, request, actor_user_id=None):
         return [
             self._fake_commission(company_id=company_id, commission_id=uuid4(), unit_id=unit_id)
             for _ in range(request.installments)
         ]
 
-    async def update_unit_commission(self, *, company_id: UUID, commission_id: UUID, request):
+    async def update_unit_commission(self, *, company_id: UUID, commission_id: UUID, request, actor_user_id=None):
         return self._fake_commission(company_id=company_id, commission_id=commission_id, unit_id=uuid4())
 
     async def settle_unit_commission(self, *, company_id: UUID, commission_id: UUID, payment_date):

@@ -19,15 +19,19 @@ from app.schemas.construction import (
     ConstructionUnitSaleConfirmRequest,
 )
 from tests.integration_database import create_reachable_engine_or_skip
+from tests.test_construction_project_service import FakeErpPeopleDirectory
 
 
-class RecordingErpClient:
+class RecordingErpClient(FakeErpPeopleDirectory):
     def __init__(self) -> None:
         self.events = []
 
     async def deliver_event(self, *, event):
         self.events.append(event)
         return None
+
+    async def get_unit_payment_plan(self, **kwargs):
+        return {"installments": []}
 
 
 async def seed_project_and_unit(session, *, company_id, commission_receipt_template_id=None):
@@ -144,7 +148,7 @@ async def test_deleting_the_unit_takes_its_commissions_with_it() -> None:
         project_id = project.id
         unit_id = unit.id
         repository = ConstructionRepository(session=session)
-        service = ConstructionProjectService(repository=repository)
+        service = ConstructionProjectService(repository=repository, erp_client=RecordingErpClient())
 
         try:
             await service.create_unit_commissions(

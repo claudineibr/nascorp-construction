@@ -45,6 +45,14 @@ class ConstructionInvalidValueError(ConstructionDomainError):
         super().__init__(message=message, status_code=400, error_code=error_code)
 
 
+class ConstructionPersonOutsideCompanyError(ConstructionInvalidValueError):
+    def __init__(self, *, label: str = "A pessoa informada") -> None:
+        super().__init__(
+            message=f"{label} precisa ter cadastro e vínculo ativo com esta empresa.",
+            error_code="CONSTRUCTION_PERSON_OUTSIDE_COMPANY",
+        )
+
+
 class ConstructionResourceInUseError(ConstructionDomainError):
     def __init__(self, *, message: str, error_code: str = "CONSTRUCTION_RESOURCE_IN_USE") -> None:
         super().__init__(message=message, status_code=409, error_code=error_code)

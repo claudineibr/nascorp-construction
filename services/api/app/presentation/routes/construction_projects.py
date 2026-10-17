@@ -255,7 +255,9 @@ async def update_project(
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionProjectResponse:
     try:
-        project = await service.update_project(company_id=ctx.company_id, project_id=project_id, request=request_data)
+        project = await service.update_project(
+            company_id=ctx.company_id, project_id=project_id, request=request_data, actor_user_id=ctx.user_id
+        )
         return ConstructionProjectResponse.model_validate(project)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
@@ -431,6 +433,7 @@ async def reserve_unit(
             company_id=ctx.company_id,
             unit_id=unit_id,
             request=request_data,
+            actor_user_id=ctx.user_id,
         )
         return ConstructionUnitResponse.model_validate(unit)
     except ConstructionDomainError as exc:
@@ -560,6 +563,7 @@ async def update_measurement(
             company_id=ctx.company_id,
             measurement_id=measurement_id,
             request=request_data,
+            actor_user_id=ctx.user_id,
         )
         return await _build_measurement_response(service=service, ctx=ctx, measurement=measurement)
     except ConstructionDomainError as exc:
@@ -995,6 +999,7 @@ async def create_unit_commissions(
             company_id=ctx.company_id,
             unit_id=unit_id,
             request=request_data,
+            actor_user_id=ctx.user_id,
         )
         return ConstructionUnitCommissionListResponse(
             items=[ConstructionUnitCommissionResponse.model_validate(commission) for commission in commissions],
@@ -1016,6 +1021,7 @@ async def update_unit_commission(
             company_id=ctx.company_id,
             commission_id=commission_id,
             request=request_data,
+            actor_user_id=ctx.user_id,
         )
         return ConstructionUnitCommissionResponse.model_validate(commission)
     except ConstructionDomainError as exc:
@@ -1424,6 +1430,7 @@ async def update_measurement_item(
             company_id=ctx.company_id,
             item_id=item_id,
             request=request_data,
+            actor_user_id=ctx.user_id,
         )
         return ConstructionMeasurementItemResponse.model_validate(item)
     except ConstructionDomainError as exc:
@@ -1459,6 +1466,7 @@ async def create_measurement_item_inspection(
             company_id=ctx.company_id,
             item_id=item_id,
             request=request_data,
+            actor_user_id=ctx.user_id,
         )
         return ConstructionMeasurementItemInspectionResponse.model_validate(inspection)
     except ConstructionDomainError as exc:
@@ -1480,6 +1488,7 @@ async def update_measurement_item_inspection(
             company_id=ctx.company_id,
             inspection_id=inspection_id,
             request=request_data,
+            actor_user_id=ctx.user_id,
         )
         return ConstructionMeasurementItemInspectionResponse.model_validate(inspection)
     except ConstructionDomainError as exc:
@@ -1587,6 +1596,7 @@ async def update_measurement_item_occurrence(
             company_id=ctx.company_id,
             occurrence_id=occurrence_id,
             request=request_data,
+            actor_user_id=ctx.user_id,
         )
         return ConstructionMeasurementItemOccurrenceResponse.model_validate(occurrence)
     except ConstructionDomainError as exc:

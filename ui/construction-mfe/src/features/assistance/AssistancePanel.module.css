@@ -1,0 +1,283 @@
+.panel,
+.panel * {
+  box-sizing: border-box;
+}
+.panel {
+  min-width: 0;
+  color: var(--color-text);
+  display: flex;
+  flex-direction: column;
+  gap: calc(1.25rem * var(--density, 1));
+  height: 100%;
+}
+.card {
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: var(--color-surface);
+  padding: calc(1.25rem * var(--density, 1));
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 12px;
+}
+.field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  position: relative;
+}
+.field > span {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+.field input,
+.field select,
+.field textarea {
+  min-width: 0;
+  width: 100%;
+  padding: calc(0.65rem * var(--density-control, 1));
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font: inherit;
+}
+.panel textarea {
+  min-height: 5rem;
+  resize: vertical;
+}
+.actions {
+  display: flex;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.tableCard {
+  composes: card;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.tableWrapper {
+  composes: tableWrapper from "../../App.module.css";
+  flex: 0 0 auto;
+}
+.header {
+  composes: header from "../../App.module.css";
+}
+.header h2 {
+  margin: 0;
+}
+.headerActions {
+  composes: heroActions from "../../App.module.css";
+  justify-content: flex-end;
+  margin-left: auto;
+}
+.paginationSlot {
+  composes: paginationSlot from "../../App.module.css";
+  flex: 0 0 auto;
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.table th,
+.table td {
+  padding: 0.65rem;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+}
+.table th {
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+}
+.table th:last-child,
+.table td:last-child {
+  text-align: center;
+  white-space: nowrap;
+  width: 10rem;
+}
+.emptyState {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  margin: 0;
+  padding: 1rem;
+  text-align: center;
+}
+.rowActions {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.printDocument {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  width: 210mm;
+  height: 297mm;
+  border: 0;
+}
+.item {
+  border-bottom: 1px solid var(--color-border);
+  padding: 1rem 0;
+}
+.options {
+  position: absolute;
+  top: 100%;
+  z-index: 30;
+  max-height: 16rem;
+  overflow: auto;
+  width: 100%;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+}
+.option {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+  width: 100%;
+  border: 0;
+  padding: 0.6rem;
+  color: var(--color-text);
+  background: var(--color-surface);
+  cursor: pointer;
+}
+.option:hover {
+  background: var(--color-surface-muted);
+}
+.history {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+}
+.history h4,
+.history p {
+  margin: 0;
+}
+.historyEvent {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.historyEvent p {
+  margin-top: 0.35rem;
+}
+.addButton {
+  margin-top: 1rem;
+}
+.schedule {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.panel fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+@media (width <= 640px) {
+  .table {
+    font-size: 0.8rem;
+  }
+  .card {
+    padding: 0.65rem;
+  }
+}
+
+.editor {
+  composes: panel;
+  height: auto;
+  min-height: min(28rem, 50dvh);
+}
+.modalPrimaryButton,
+.modalSecondaryButton {
+  border-radius: 12px;
+  border: 1px solid var(--color-border);
+  padding: 0.5rem 0.75rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  cursor: pointer;
+}
+.modalPrimaryButton {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-text-inverse);
+}
+.modalPrimaryButton:hover:not(:disabled) {
+  background: var(--color-primary-strong);
+}
+.modalSecondaryButton {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+.modalSecondaryButton:hover:not(:disabled) {
+  background: var(--color-surface);
+}
+.modalPrimaryButton:disabled,
+.modalSecondaryButton:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.editorFooter {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.fallbackFooter {
+  border-top: 1px solid var(--color-border);
+  padding-top: 1rem;
+  margin-top: 1rem;
+}
+.clearableField {
+  position: relative;
+  min-width: 0;
+}
+.clearableField input,
+.clearableField textarea {
+  padding-right: 2.5rem;
+}
+.removeButton {
+  position: absolute;
+  right: 0.35rem;
+  top: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.removeButton:hover:not(:disabled) {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+.removeButton:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.removeButton:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}

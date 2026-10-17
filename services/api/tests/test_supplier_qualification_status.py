@@ -16,6 +16,7 @@ from decimal import Decimal
 from pydantic import ValidationError
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from app.domain.constants import ConstructionProjectStatus
@@ -24,11 +25,12 @@ from app.infrastructure.database.models import ConstructionProject
 from app.schemas.construction import ConstructionProcurementRequestCreate
 
 from app.infrastructure.clients.erp_construction import ErpConstructionClient
+from app.domain.exceptions import ConstructionPersonOutsideCompanyError
 
-from .test_construction_project_service import FakeConstructionRepository
+from .test_construction_project_service import FakeConstructionRepository, FakeErpPeopleDirectory
 
 
-class FakeQualificationClient:
+class FakeQualificationClient(FakeErpPeopleDirectory):
     """So o pedaco do contrato que importa aqui."""
 
     def __init__(self, *, status: str | None = None, fails: bool = False) -> None:
@@ -203,17 +205,70 @@ async def test_cliente_degrada_para_none_quando_o_erp_falha(monkeypatch) -> None
 async def test_cliente_degrada_para_none_quando_o_core_nao_devolve_o_campo(monkeypatch) -> None:
     """Deploy do ERP primeiro, Obras depois: a ausencia do campo e esperada."""
     client = ErpConstructionClient()
+    person_id = uuid4()
 
     async def _sem_o_campo(**_kwargs):
-        return {"items": [{"id": str(uuid4()), "name": "Fornecedor"}], "total": 1}
+        return {"items": [{"id": str(person_id), "name": "Fornecedor"}], "total": 1}
 
     monkeypatch.setattr(client, "list_person_summaries", _sem_o_campo)
 
     status = await client.get_person_qualification_status(
-        company_id=uuid4(), user_id=uuid4(), person_id=uuid4()
+        company_id=uuid4(), user_id=uuid4(), person_id=person_id
     )
 
     assert status == "none"
+
+
+@pytest.mark.asyncio
+async def test_cliente_recusa_fornecedor_sem_vinculo_com_a_empresa(monkeypatch) -> None:
+    client = ErpConstructionClient()
+
+    async def _sem_a_pessoa(**_kwargs):
+        return {"items": [], "total": 0}
+
+    monkeypatch.setattr(client, "list_person_summaries", _sem_a_pessoa)
+
+    with pytest.raises(ConstructionPersonOutsideCompanyError):
+        await client.get_person_qualification_status(company_id=uuid4(), user_id=uuid4(), person_id=uuid4())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code,degrades", [(404, False), (503, True)])
+async def test_cliente_distingue_pessoa_inexistente_de_erp_indisponivel(monkeypatch, status_code, degrades) -> None:
+    client = ErpConstructionClient()
+    request = httpx.Request("GET", "http://erp/v1/internal/construction/person-summaries")
+
+    async def _falha(**_kwargs):
+        raise httpx.HTTPStatusError("erp", request=request, response=httpx.Response(status_code, request=request))
+
+    monkeypatch.setattr(client, "list_person_summaries", _falha)
+
+    if degrades:
+        assert await client.get_person_qualification_status(
+            company_id=uuid4(), user_id=uuid4(), person_id=uuid4()
+        ) == "none"
+    else:
+        with pytest.raises(ConstructionPersonOutsideCompanyError):
+            await client.get_person_qualification_status(company_id=uuid4(), user_id=uuid4(), person_id=uuid4())
+
+
+@pytest.mark.asyncio
+async def test_requisicao_com_fornecedor_de_outra_empresa_e_recusada() -> None:
+    company_id = uuid4()
+    supplier_person_id = uuid4()
+    repository = FakeConstructionRepository()
+    project = _project(company_id)
+    repository.projects[(company_id, project.id)] = project
+    client = FakeQualificationClient(status="approved")
+    client.foreign_person_ids = {supplier_person_id}
+    service = ConstructionProjectService(repository=repository, erp_client=client)
+
+    with pytest.raises(ConstructionPersonOutsideCompanyError, match="O fornecedor"):
+        await _create_request(
+            service, company_id=company_id, project_id=project.id, supplier_person_id=supplier_person_id
+        )
+    assert client.calls == []
+    assert repository.procurement_requests == {}
 
 
 @pytest.mark.asyncio

@@ -295,6 +295,11 @@ class ConstructionRepository:
             {"template": template_id, "company": company_id})
         return result.scalar_one_or_none()
 
+    async def valid_receipt_template(self, company_id, template_id):
+        result = await self.session.execute(text("SELECT id FROM public.receipt_templates WHERE id=:template AND company_id=:company AND deleted_at IS NULL AND is_active=true"),
+            {"template": template_id, "company": company_id})
+        return result.scalar_one_or_none()
+
     async def contract_context(self, company_id, unit_id):
         unit = await self.get_unit(company_id=company_id, unit_id=unit_id)
         if not unit:

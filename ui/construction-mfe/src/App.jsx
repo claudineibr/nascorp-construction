@@ -6,6 +6,7 @@ import {
   reconcilableBankSlip,
   retryableBankSlip,
 } from "./features/UnitBankSlipOperations.jsx"
+import { CashRegisterPicker } from "./components/CashRegisterPicker.jsx"
 import { UnitBankSlipsDialog } from "./features/UnitBankSlipsDialog.jsx"
 import {
   useUnitBankSlips,
@@ -74,12 +75,14 @@ import {
   countPendingLines,
   itemStatusLabel,
 } from "./features/measurementInspections/inspectionVocabulary"
+import { AssistancePanel } from "./features/assistance/AssistancePanel.jsx"
 import { ServiceTemplatesPanel } from "./features/serviceTemplates/ServiceTemplatesPanel.jsx"
 import { ProjectServicesPanel } from "./features/projectServices/ProjectServicesPanel.jsx"
 import { SubcontractsCardTitle, SubcontractsPanel } from "./features/subcontracts/SubcontractsPanel.jsx"
 import { SharedPayablesSection } from "./features/sharedPayables/SharedPayablesSection.jsx"
 import { ContractMeasurementFields } from "./features/subcontracts/ContractMeasurementFields.jsx"
 import { UnitContractPanel } from "./features/unitContracts/UnitContractPanel.jsx"
+import { UnitTermPanel } from "./features/unitContracts/UnitTermPanel.jsx"
 import { ContractTemplateField } from "./features/unitContracts/ContractTemplateField.jsx"
 import { ContractMeasureItems } from "./features/subcontracts/ContractMeasureItems.jsx"
 import { MeasurementFinancialPanel } from "./features/subcontracts/MeasurementFinancialPanel.jsx"
@@ -261,10 +264,13 @@ const projectDetailTabs = [
 
 const unitDetailTabs = [
   { id: "summary", label: "Resumo", icon: Home },
-  { id: "measurements", label: "Medições", icon: HandCoins },
+  { id: "assistance", label: "Assistência técnica", icon: ClipboardList },
   { id: "installments", label: "Parcelas", icon: ShoppingCart },
   { id: "commissions", label: "Sinal", icon: HandCoins },
+  { id: "measurements", label: "Medições", icon: HandCoins },
   { id: "contract", label: "Contrato", icon: FileText },
+  { id: "delivery_term", label: "Termo Entrega", icon: FileText },
+  { id: "debt_confession", label: "T.C.D", icon: FileText },
 ]
 
 const statusOptions = Object.entries(statusLabel)
@@ -448,6 +454,7 @@ const newInstallmentLine = (defaults = {}) => ({
   paidAt: defaults.paidAt || todayISO(),
   documentNumber: "",
   companyBankAccountId: defaults.companyBankAccountId ?? "",
+  cashRegisterId: "",
 })
 
 // O rodape da regra da tela: o que foi lancado, o que ha para receber e o que
@@ -1185,6 +1192,11 @@ function requiredProcurementFieldError(formProcurement) {
 
 export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const bridge = useMemo(() => providedBridge ?? resolveConstructionBridge(), [providedBridge])
+  return bridge.assistanceView ? <AssistancePanel key={bridge.companyContext?.companyId} bridge={bridge} /> : <ConstructionWorkspace bridge={bridge} />
+}
+
+function ConstructionWorkspace({ bridge: providedBridge }) {
+  const bridge = useMemo(() => providedBridge ?? resolveConstructionBridge(), [providedBridge])
   const ProjectPagination = bridge.components?.Pagination ?? StandalonePagination
   const ProjectPurchaseOrders = bridge.canRead?.("purchase_orders") ? bridge.components?.ProjectPurchaseOrders ?? null : null
   const ProjectAccountsPayable = bridge.canRead?.("accounts_payable") && bridge.canRead?.("construction_projects") ? bridge.components?.ProjectAccountsPayable ?? null : null
@@ -1463,7 +1475,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
     // uma consulta de agregacao que a rota nao tem.
     return [
       {
-        label: "Empreendimentos",
+        label: "Obras",
         value: totalProjects,
         hint: hasActiveFilters ? "no filtro atual" : "cadastrados",
         icon: Building2,
@@ -2830,6 +2842,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
             paidAt: line.paidAt,
             documentNumber: line.documentNumber || payInstallmentForm.documentNumber,
             companyBankAccountId: line.companyBankAccountId,
+            cashRegisterId: line.cashRegisterId,
           })),
         },
       })
@@ -3952,6 +3965,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
                 <Plus size={18} />
                 Nova obra
               </button>
+              {bridge.canRead?.("construction_units") ? <button type="button" className={styles.secondaryButton} onClick={() => bridge.navigate?.("/construction/assistance-requests")}>Assistência técnica</button> : null}
               <button
                 type="button"
                 className={styles.secondaryButton}
@@ -4491,6 +4505,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
       {payingInstallment ? (
         <PayInstallmentModal
+          bridge={bridge}
           installment={payingInstallment}
           form={payInstallmentForm}
           paymentMethods={paymentMethodOptions}
@@ -5425,7 +5440,7 @@ function UnitDetailPanel({
 
       <section className={styles.tabCard}>
         <div className={styles.tabList}>
-          {unitDetailTabs.map((tab) => {
+          {unitDetailTabs.filter((tab) => (["delivery_term", "debt_confession"].includes(tab.id) ? bridge.canRead?.("contract") : tab.id !== "assistance" || bridge.canRead?.("construction_units"))).map((tab) => {
             const Icon = tab.icon
             return (
               <button
@@ -5442,6 +5457,7 @@ function UnitDetailPanel({
         </div>
       </section>
 
+      {activeTab === "assistance" ? <AssistancePanel key={unit.id} bridge={bridge} projectId={unit.projectId} unitId={unit.id} /> : null}
       {activeTab === "summary" ? (
         <div className={styles.integrationGrid}>
           <article className={styles.integrationCard}>
@@ -5527,6 +5543,10 @@ function UnitDetailPanel({
           onSettle={onSettleCommission}
           onDelete={onDeleteCommission}
         />
+      ) : null}
+
+      {["delivery_term", "debt_confession"].includes(activeTab) ? (
+        <UnitTermPanel key={`${unit.id}-${activeTab}`} bridge={bridge} unit={unit} kind={activeTab} />
       ) : null}
 
       {activeTab === "contract" ? (
@@ -6286,6 +6306,7 @@ function RebuildSalePlanModal({ unit, form, composition, onClose, onChange, onSu
 }
 
 function PayInstallmentModal({
+  bridge,
   installment,
   form,
   paymentMethods,
@@ -6299,9 +6320,13 @@ function PayInstallmentModal({
   onSubmit,
   loading,
 }) {
+  const CashRegisterSelector = bridge?.components?.CashRegisterCombobox ?? CashRegisterPicker
   const { posted, due, missing, closes } = installmentClosing(installment, form)
   const everyLineIsFilled = form.lines.every(
-    (line) => line.paymentMethod && parseCurrencyToNumber(line.amount) > 0,
+    (line) =>
+      line.paymentMethod
+      && parseCurrencyToNumber(line.amount) > 0
+      && (line.paymentMethod !== "CASH" || line.cashRegisterId),
   )
   const locked = Boolean(installment?.hasIssuedReceipt)
   const existingPayments = installment?.payments ?? []
@@ -6410,20 +6435,30 @@ function PayInstallmentModal({
                     />
                   </label>
                   <label className={styles.filterControl}>
-                    <span>Conta bancária</span>
-                    <select
-                      value={line.companyBankAccountId}
-                      onChange={(event) =>
-                        onLineChange(line.key, "companyBankAccountId", event.target.value)
-                      }
-                    >
-                      <option value="">Herdar da parcela</option>
-                      {bankAccounts.map((account) => (
-                        <option key={account.id} value={account.id}>
-                          {account.label}
-                        </option>
-                      ))}
-                    </select>
+                    <span>{line.paymentMethod === "CASH" ? "Caixa físico *" : "Conta bancária"}</span>
+                    {line.paymentMethod === "CASH" ? (
+                      <CashRegisterSelector
+                        bridge={bridge}
+                        token={bridge?.token}
+                        companyId={bridge?.companyContext?.companyId}
+                        value={line.cashRegisterId}
+                        onChange={(id) => onLineChange(line.key, "cashRegisterId", id)}
+                      />
+                    ) : (
+                      <select
+                        value={line.companyBankAccountId}
+                        onChange={(event) =>
+                          onLineChange(line.key, "companyBankAccountId", event.target.value)
+                        }
+                      >
+                        <option value="">Herdar da parcela</option>
+                        {bankAccounts.map((account) => (
+                          <option key={account.id} value={account.id}>
+                            {account.label}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </label>
                   <div className={styles.filterControl}>
                     <span>&nbsp;</span>

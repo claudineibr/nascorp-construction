@@ -1,0 +1,14 @@
+.editorFields,
+.editorFields * {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.editorFields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: calc(1.25rem * var(--density));
+  margin: 0;
+  border: 0;
+  padding: 0;
+}

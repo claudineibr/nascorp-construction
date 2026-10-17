@@ -1,0 +1,99 @@
+.page {
+  --color-text: CanvasText;
+  --color-surface: Canvas;
+  --color-border: CanvasText;
+  color-scheme: light;
+  margin: 0;
+  color: var(--color-text);
+  background: var(--color-surface);
+  font: 11px/1.3 Arial, sans-serif;
+}
+.sheet,
+.sheet * {
+  box-sizing: border-box;
+  min-width: 0;
+}
+.sheet {
+  width: 100%;
+}
+.sheet table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  margin-bottom: 8px;
+}
+.sheet th,
+.sheet td {
+  border: 1px solid var(--color-border);
+  padding: 4px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  vertical-align: top;
+  font-weight: normal;
+}
+.header th {
+  padding: 12px 6px;
+  font-weight: bold;
+  vertical-align: middle;
+}
+.company {
+  width: 28%;
+  font-size: 14px;
+}
+.companyLogo {
+  display: block;
+  max-width: 100%;
+  max-height: 48px;
+  margin: 0 auto;
+  object-fit: contain;
+}
+.item {
+  width: 7%;
+  text-align: center;
+}
+.provenance {
+  width: 21%;
+  text-align: center;
+}
+.due {
+  width: 19%;
+}
+.declaration {
+  border: 1px solid var(--color-border);
+  padding: 5px;
+  margin: 0;
+}
+.signatures {
+  border-collapse: separate !important;
+  border-spacing: 18px 0;
+  margin-top: 22px;
+  margin-bottom: 16px !important;
+  break-inside: avoid;
+}
+.signatures td {
+  border: 0;
+  padding: 0;
+  text-align: center;
+  font-size: 10px;
+}
+.signatureName {
+  min-height: 28px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.signatureDate {
+  min-height: 27px;
+  margin-top: 12px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.notes td {
+  min-height: 21px;
+  height: 21px;
+}
+.sheet thead {
+  display: table-header-group;
+}
+.sheet tr {
+  break-inside: avoid;
+}

@@ -528,6 +528,22 @@ const toProcurementPayload = (procurementData = {}) => ({
   supplier_person_id: toNullableString(procurementData.supplierPersonId),
 })
 
+export async function fetchCashRegisterOptions({ bridge, search, preferred = false, registerId = null }) {
+  const params = new URLSearchParams({ authorized_only: "true", page: "1", page_size: "50" })
+  if (search) params.set("search", search)
+  const erpApiBaseUrl = bridge?.erpApiBaseUrl || import.meta.env.VITE_ERP_API_URL || DEFAULT_ERP_API_URL
+  const path = registerId
+    ? `/v1/cash-registers/${registerId}`
+    : preferred
+      ? "/v1/cash-registers/preferred"
+      : `/v1/cash-registers?${params}`
+  return requestJson({
+    bridge,
+    baseUrl: erpApiBaseUrl,
+    path,
+  })
+}
+
 export async function searchConstructionProducts({ bridge, search }) {
   const query = new URLSearchParams({ active: "true", nature: "MATERIAL", page: "1", page_size: "30" })
   if (String(search ?? "").trim()) query.set("search", String(search).trim())
@@ -1051,6 +1067,8 @@ export async function payConstructionUnitInstallment({
       receivable_id: toNullableString(receivableId),
       payments: paymentData.payments.map((line) => ({
         payment_method: line.paymentMethod,
+        cash_register_id: line.paymentMethod === "CASH" ? toNullableString(line.cashRegisterId) : null,
+        company_bank_account_id: line.paymentMethod === "CASH" ? null : toNullableString(line.companyBankAccountId),
         amount: toNullableNumber(line.amount),
         paid_at: line.paidAt ? `${line.paidAt}T12:00:00` : null,
         document_number: toNullableString(line.documentNumber),

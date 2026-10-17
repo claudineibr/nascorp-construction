@@ -16,9 +16,10 @@ from app.infrastructure.database.models import (
 from app.infrastructure.repository.construction_repository import ConstructionRepository
 from app.schemas.construction import ConstructionUnitSaleConfirmRequest
 from tests.integration_database import create_reachable_engine_or_skip
+from tests.test_construction_project_service import FakeErpPeopleDirectory
 
 
-class RecordingErpClient:
+class RecordingErpClient(FakeErpPeopleDirectory):
     def __init__(self) -> None:
         self.events = []
 

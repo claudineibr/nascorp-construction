@@ -71,7 +71,7 @@ async def test_repeating_the_commission_generates_one_row_per_month() -> None:
     company_id = uuid4()
     repository = FakeConstructionRepository()
     _, unit = seed_project_and_unit(repository, company_id=company_id)
-    service = ConstructionProjectService(repository=repository)
+    service = ConstructionProjectService(repository=repository, erp_client=FakeErpMeasurementClient())
 
     commissions = await service.create_unit_commissions(
         company_id=company_id,
@@ -98,7 +98,7 @@ async def test_commission_numbering_of_one_unit_does_not_collide_with_another() 
     repository = FakeConstructionRepository()
     _, first_unit = seed_project_and_unit(repository, company_id=company_id, unit_code="A-101")
     _, second_unit = seed_project_and_unit(repository, company_id=company_id, unit_code="A-102")
-    service = ConstructionProjectService(repository=repository)
+    service = ConstructionProjectService(repository=repository, erp_client=FakeErpMeasurementClient())
     request = ConstructionUnitCommissionCreate(
         beneficiary_person_id=uuid4(),
         amount=Decimal("2000.00"),
@@ -294,7 +294,7 @@ async def test_clearing_a_required_field_is_refused_instead_of_breaking_the_row(
     company_id = uuid4()
     repository = FakeConstructionRepository()
     _, unit = seed_project_and_unit(repository, company_id=company_id)
-    service = ConstructionProjectService(repository=repository)
+    service = ConstructionProjectService(repository=repository, erp_client=FakeErpMeasurementClient())
     commissions = await service.create_unit_commissions(
         company_id=company_id,
         unit_id=unit.id,
@@ -335,7 +335,7 @@ async def test_commission_copies_the_project_template_and_keeps_it_after_the_pro
         company_id=company_id,
         commission_receipt_template_id=original_template_id,
     )
-    service = ConstructionProjectService(repository=repository)
+    service = ConstructionProjectService(repository=repository, erp_client=FakeErpMeasurementClient())
 
     commissions = await service.create_unit_commissions(
         company_id=company_id,
@@ -380,7 +380,7 @@ async def test_sale_composition_exposes_the_commission_totals() -> None:
     company_id = uuid4()
     repository = FakeConstructionRepository()
     _, unit = seed_project_and_unit(repository, company_id=company_id)
-    service = ConstructionProjectService(repository=repository)
+    service = ConstructionProjectService(repository=repository, erp_client=FakeErpMeasurementClient())
     composing = await service.create_unit_commissions(
         company_id=company_id,
         unit_id=unit.id,
