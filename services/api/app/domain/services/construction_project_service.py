@@ -250,6 +250,7 @@ class ConstructionProjectService:
             description=request.description,
             status=request.status,
             project_type=request.project_type,
+            development_type=request.development_type,
             customer_person_id=request.customer_person_id,
             cnpj_spe=request.cnpj_spe.strip() if request.cnpj_spe else None,
             address_json=request.address_json,
@@ -717,6 +718,9 @@ class ConstructionProjectService:
             unit_type=request.unit_type.strip(),
             typology=request.typology.strip() if request.typology else None,
             floor=request.floor,
+            ideal_fraction=request.ideal_fraction,
+            delivered_at=datetime.now(UTC) if request.status == ConstructionUnitStatus.DELIVERED else None,
+            terminated_at=datetime.now(UTC) if request.status == ConstructionUnitStatus.TERMINATED else None,
             private_area=request.private_area,
             total_area=request.total_area,
             sale_price=request.sale_price,
@@ -830,6 +834,11 @@ class ConstructionProjectService:
                 ) from request_error
 
         previous_status = unit.status
+        if next_status and next_status != previous_status:
+            if next_status == ConstructionUnitStatus.DELIVERED:
+                unit.delivered_at = datetime.now(UTC)
+            elif next_status == ConstructionUnitStatus.TERMINATED:
+                self._record_unit_termination(unit)
         reclassify = next_status is not None and next_status != previous_status and "delivered" in {
             previous_status, next_status,
         }
@@ -1073,7 +1082,7 @@ class ConstructionProjectService:
         unit.discount_amount = discount_amount
         unit.contract_signature_date = request.contract_signature_date
         unit.sale_notes = (request.sale_notes or "").strip() or None
-        unit.sold_at = datetime.now(tz=UTC)
+        unit.sold_at = unit.sold_at or datetime.now(tz=UTC)
         unit.reservation_expires_at = None
 
         project = await self.repository.get_project(company_id=company_id, project_id=unit.project_id)
@@ -1103,6 +1112,14 @@ class ConstructionProjectService:
         await self.repository.refresh(unit)
         return unit
 
+    @staticmethod
+    def _record_unit_termination(unit):
+        terminated_at = datetime.now(UTC)
+        if unit.sold_at:
+            unit.cost_sale_history = [*(unit.cost_sale_history or []),
+                {"sold_at": unit.sold_at.isoformat(), "terminated_at": terminated_at.isoformat()}]
+        unit.terminated_at = terminated_at
+
     async def apply_contract_status_updated_event(self, *, event: EventEnvelope) -> ConstructionUnit:
         if event.event_type not in {ErpEventType.CONTRACT_RECEIVABLE_CREATED, ErpEventType.CONTRACT_STATUS_UPDATED}:
             raise ConstructionInvalidValueError(
@@ -1125,6 +1142,7 @@ class ConstructionProjectService:
         contract_status = str(event.payload.get("contract_status") or "")
         if contract_status.upper() == "CANCELED":
             unit.status = ConstructionUnitStatus.AVAILABLE
+            self._record_unit_termination(unit)
             unit.sold_at = None
             unit.external_contract_status = contract_status
 

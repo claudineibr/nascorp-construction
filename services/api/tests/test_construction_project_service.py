@@ -1600,6 +1600,24 @@ async def test_apply_accounts_payable_updated_event_updates_measurement_once() -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status,field", [("delivered", "delivered_at"), ("terminated", "terminated_at")])
+async def test_unit_inventory_lifecycle_records_delivery_and_termination_dates(status, field):
+    from app.schemas.construction.project import ConstructionUnitUpdate
+
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    unit = ConstructionUnit(id=uuid4(), company_id=company_id, project_id=uuid4(), code="U1",
+        unit_type="Casa", status="sold", sold_at=datetime(2026, 1, 1, tzinfo=UTC))
+    repository.units[(company_id, unit.id)] = unit
+    service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository())
+    result = await service.update_unit(company_id=company_id, unit_id=unit.id,
+        request=ConstructionUnitUpdate(status=status), actor_user_id=uuid4())
+    assert getattr(result, field) is not None
+    if status == "terminated":
+        assert result.cost_sale_history[0]["sold_at"] == "2026-01-01T00:00:00+00:00"
+
+
+@pytest.mark.asyncio
 async def test_confirm_unit_sale_keeps_one_contract_and_reemits_on_edit() -> None:
     """Reconfirmar e como editar a venda: mesmo contrato, evento novo.
 
@@ -1647,12 +1665,14 @@ async def test_confirm_unit_sale_keeps_one_contract_and_reemits_on_edit() -> Non
         unit_id=unit.id,
         request=request,
     )
+    original_sold_at = first_result.sold_at
     second_result = await service.confirm_unit_sale(
         company_id=company_id,
         unit_id=unit.id,
         request=request,
     )
 
+    assert second_result.sold_at == original_sold_at
     assert first_result.status == "sold"
     assert first_result.external_contract_id is not None
     assert first_result.external_receivable_id is not None

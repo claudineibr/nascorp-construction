@@ -19,6 +19,7 @@ class ConstructionProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
     status: str = ConstructionProjectStatus.DRAFT
+    development_type: Literal["INCORPORATION", "CONTRACT_WORK"] | None = None
     project_type: str = ConstructionProjectType.RESIDENTIAL_VERTICAL
     customer_person_id: UUID | None = None
     cnpj_spe: str | None = Field(default=None, max_length=18)
@@ -39,6 +40,7 @@ class ConstructionProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     status: str | None = None
+    development_type: Literal["INCORPORATION", "CONTRACT_WORK"] | None = None
     project_type: str | None = None
     customer_person_id: UUID | None = None
     cnpj_spe: str | None = Field(default=None, max_length=18)
@@ -74,6 +76,7 @@ class ConstructionProjectResponse(BaseModel):
     description: str | None = None
     status: str
     project_type: str
+    development_type: str | None = None
     customer_person_id: UUID | None = None
     cnpj_spe: str | None = None
     address_json: dict[str, Any] | None = None
@@ -165,6 +168,7 @@ class ConstructionUnitCreate(BaseModel):
     typology: str | None = Field(default=None, max_length=80)
     block_id: UUID | None = None
     floor: str | None = Field(default=None, max_length=30)
+    ideal_fraction: Decimal | None = Field(default=None, gt=0, le=1, decimal_places=10)
     private_area: Decimal | None = Field(default=None, ge=0)
     total_area: Decimal | None = Field(default=None, ge=0)
     sale_price: Decimal | None = Field(default=None, ge=0)
@@ -178,6 +182,7 @@ class ConstructionUnitUpdate(BaseModel):
     typology: str | None = Field(default=None, max_length=80)
     block_id: UUID | None = None
     floor: str | None = Field(default=None, max_length=30)
+    ideal_fraction: Decimal | None = Field(default=None, gt=0, le=1, decimal_places=10)
     private_area: Decimal | None = Field(default=None, ge=0)
     total_area: Decimal | None = Field(default=None, ge=0)
     sale_price: Decimal | None = Field(default=None, ge=0)
@@ -196,6 +201,9 @@ class ConstructionUnitResponse(BaseModel):
     unit_type: str
     typology: str | None = None
     floor: str | None = None
+    ideal_fraction: Decimal | None = None
+    delivered_at: datetime | None = None
+    terminated_at: datetime | None = None
     private_area: Decimal | None = None
     total_area: Decimal | None = None
     sale_price: Decimal | None = None

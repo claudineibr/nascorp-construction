@@ -46,6 +46,7 @@ class ConstructionProject(PreservedHistory, Base):
             "code", 
             name="uq_construction_projects_company_code"
             ),
+        CheckConstraint("development_type IN ('INCORPORATION', 'CONTRACT_WORK')", name="ck_project_development_type"),
         {
             "schema": CONSTRUCTION_SCHEMA
             },
@@ -62,6 +63,7 @@ class ConstructionProject(PreservedHistory, Base):
         nullable=False,
         default=ConstructionProjectType.RESIDENTIAL_VERTICAL,
     )
+    development_type = mapped_column(String(20), nullable=True)
     customer_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     cnpj_spe: Mapped[str | None] = mapped_column(String(18), nullable=True)
     address_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -141,6 +143,7 @@ class ConstructionUnit(PreservedHistory, Base):
     __tablename__ = "construction_units"
     __table_args__ = (
         UniqueConstraint("project_id", "code", name="uq_construction_units_project_code"),
+        CheckConstraint("ideal_fraction > 0 AND ideal_fraction <= 1", name="ck_unit_ideal_fraction"),
         {"schema": CONSTRUCTION_SCHEMA},
     )
 
@@ -163,6 +166,10 @@ class ConstructionUnit(PreservedHistory, Base):
     unit_type: Mapped[str] = mapped_column(String(80), nullable=False)
     typology: Mapped[str | None] = mapped_column(String(80), nullable=True)
     floor: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    cost_sale_history = mapped_column(JSONB, nullable=True)
+    ideal_fraction = mapped_column(Numeric(12, 10), nullable=True)
+    delivered_at = mapped_column(DateTime(timezone=True), nullable=True)
+    terminated_at = mapped_column(DateTime(timezone=True), nullable=True)
     private_area: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     total_area: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     sale_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)

@@ -144,7 +144,6 @@ import {
   submitConstructionProcurementRequest,
   updateConstructionBlock,
   updateConstructionMeasurement,
-  updateConstructionMeasurementItem,
   updateConstructionMeasurementOccurrence,
   updateConstructionProcurementRequest,
   verifyConstructionMeasurementInspection,
@@ -352,6 +351,7 @@ const defaultProjectForm = {
   description: "",
   status: "draft",
   projectType: "residential_vertical",
+  developmentType: "INCORPORATION",
   customerPersonId: "",
   cnpjSpe: "",
   startDate: "",
@@ -400,6 +400,7 @@ const defaultUnitForm = {
   typology: "",
   blockId: "",
   floor: "",
+  idealFraction: "",
   privateArea: "",
   totalArea: "",
   salePrice: "",
@@ -752,6 +753,7 @@ function toFormProject(project) {
     description: project.description ?? "",
     status: project.status ?? "draft",
     projectType: project.projectType ?? "residential_vertical",
+    developmentType: project.developmentType ?? "",
     customerPersonId: project.customerPersonId ?? "",
     cnpjSpe: project.cnpjSpe ?? "",
     startDate: project.startDate ? String(project.startDate).slice(0, 10) : "",
@@ -804,6 +806,7 @@ function toFormUnit(unit) {
     typology: unit.typology ?? "",
     blockId: unit.blockId ?? "",
     floor: unit.floor ?? "",
+    idealFraction: unit.idealFraction == null ? "" : String(unit.idealFraction),
     privateArea: unit.privateArea === null || unit.privateArea === undefined ? "" : String(unit.privateArea),
     totalArea: unit.totalArea === null || unit.totalArea === undefined ? "" : String(unit.totalArea),
     salePrice: formatCurrencyFromNumber(unit.salePrice),
@@ -855,6 +858,7 @@ function toApiProject(formProject) {
     description: formProject.description,
     status: formProject.status,
     projectType: formProject.projectType,
+    developmentType: formProject.developmentType,
     customerPersonId: formProject.customerPersonId,
     cnpjSpe: formProject.cnpjSpe,
     startDate: formProject.startDate,
@@ -1052,7 +1056,7 @@ function buildSalePaymentSourcesFromForm(formSale) {
     .filter((paymentSource) => paymentSource.amountValue > 0)
 }
 
-function requiredSaleFieldError(formSale, { isEditing = false } = {}) {
+function requiredSaleFieldError(formSale) {
   if (!String(formSale.buyerPersonId ?? "").trim()) {
     return "Informe a pessoa compradora para confirmar a venda."
   }
@@ -1464,7 +1468,6 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   )
 
   const hasActiveFilters = Object.values(filters).some(Boolean)
-
 
   const summaryItems = useMemo(() => {
     const activeProjects = projects.filter((project) => project.status === "active").length
@@ -3158,9 +3161,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       return
     }
 
-    const validationError = requiredSaleFieldError(saleUnitForm, {
-      isEditing: saleTargetUnit.status === "sold",
-    })
+    const validationError = requiredSaleFieldError(saleUnitForm)
     if (validationError) {
       bridge?.feedback?.warning?.(validationError)
       return
@@ -4446,6 +4447,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           mode={unitModalMode}
           unitForm={unitForm}
           blocks={blocks}
+          units={units}
+          editingUnitId={editingUnitId}
           onClose={closeUnitModal}
           onChange={handleUnitFieldChange}
           onSubmit={handleUnitSubmit}
@@ -5076,6 +5079,7 @@ function ProjectDetailHeader({ project, units, schedulePhases, onBack, onEdit, o
           value={projectTypeLabel[project.projectType] ?? project.projectType}
           hint={project.cnpjSpe ? `SPE ${project.cnpjSpe}` : null}
         />
+        <DetailMetaItem label="Regime da obra" value={({ INCORPORATION: "Incorporação", CONTRACT_WORK: "Empreitada" })[project.developmentType] || "Não informado"} />
         <DetailMetaItem label="Prazo" value={periodLabel} hint={periodHint} />
         <DetailMetaItem
           label="Unidades"
@@ -5460,6 +5464,12 @@ function UnitDetailPanel({
       {activeTab === "assistance" ? <AssistancePanel key={unit.id} bridge={bridge} projectId={unit.projectId} unitId={unit.id} /> : null}
       {activeTab === "summary" ? (
         <div className={styles.integrationGrid}>
+          <article className={styles.integrationCard}>
+            <h3>Fração ideal</h3>
+            <p className={styles.metricValue}>{unit.idealFraction == null ? "Não informada" : Number(unit.idealFraction).toFixed(10)}</p>
+            <p className={styles.metricHint}>Data de entrega: {formatDate(unit.deliveredAt)}</p>
+            <p className={styles.metricHint}>Data de distrato: {formatDate(unit.terminatedAt)}</p>
+          </article>
           <article className={styles.integrationCard}>
             <h3>Custo medido</h3>
             <p className={styles.metricValue}>{formatCurrencyFromNumber(measuredCost)}</p>
@@ -6801,7 +6811,6 @@ function CommissionModal({
   unit,
   commissionForm,
   people,
-  loadingPeople,
   personLookupError,
   onClose,
   onChange,
@@ -8242,7 +8251,6 @@ function ProjectModal({
   mode,
   projectForm,
   people,
-  loadingPeople,
   personLookupError,
   zipLookup,
   receiptTemplates,
@@ -8310,6 +8318,14 @@ function ProjectModal({
                     {option.label}
                   </option>
                 ))}
+              </select>
+            </label>
+            <label className={styles.filterControl}>
+              <span>Regime da obra</span>
+              <select value={projectForm.developmentType} onChange={(event) => onChange("developmentType", event.target.value)}>
+                <option value="">Selecione</option>
+                <option value="INCORPORATION">Incorporação</option>
+                <option value="CONTRACT_WORK">Empreitada</option>
               </select>
             </label>
             <PersonPicker
@@ -8551,7 +8567,11 @@ function BlockModal({ mode, blockForm, onClose, onChange, onSubmit, loading }) {
   )
 }
 
-function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loading }) {
+function UnitModal({ mode, unitForm, blocks, units, editingUnitId, onClose, onChange, onSubmit, loading }) {
+  const otherUnits = units.filter((unit) => unit.id !== editingUnitId)
+  const fractionTotal = otherUnits.reduce((total, unit) => total + Number(unit.idealFraction || 0), 0) + Number(unitForm.idealFraction || 0) * (mode === "create" ? Number(unitForm.quantity || 1) : 1)
+  const areaTotal = otherUnits.reduce((total, unit) => total + Number(unit.privateArea || 0), 0) + Number(unitForm.privateArea || 0) * (mode === "create" ? Number(unitForm.quantity || 1) : 1)
+
   const unitQuantity = Number(unitForm.quantity)
   const submitLabel = mode === "create" && unitQuantity > 1 ? `Criar ${unitQuantity} unidades` : "Criar unidade"
   // O codigo da unidade batiza o centro de custo -- `CONST-{obra}-{unidade}` --
@@ -8673,6 +8693,12 @@ function UnitModal({ mode, unitForm, blocks, onClose, onChange, onSubmit, loadin
               <input type="text" value={unitForm.floor} onChange={(event) => onChange("floor", event.target.value)} />
             </label>
             <label className={styles.filterControl}>
+              <span>Fração ideal</span>
+              <input type="number" min="0.0000000001" max="1" step="0.0000000001" value={unitForm.idealFraction} onChange={(event) => onChange("idealFraction", event.target.value)} />
+              <small className={styles.rowSecondaryText}>Total da obra com esta edição: {fractionTotal.toFixed(10)}. A apropriação exige 1.</small>
+              <button type="button" className={styles.secondaryButton} disabled={loading || areaTotal <= 0 || Number(unitForm.privateArea) <= 0} onClick={() => onChange("idealFraction", (Number(unitForm.privateArea) / areaTotal).toFixed(10))}>Sugerir pela área privativa</button>
+            </label>
+            <label className={styles.filterControl}>
               <span>Área privativa</span>
               <input
                 type="number"
@@ -8791,7 +8817,6 @@ function SaleUnitModal({
   const isEditing = unit?.status === "sold"
   const grossSalePrice = parseCurrencyFormValue(saleForm.salePrice)
   const discountAmount = parseCurrencyFormValue(saleForm.discountAmount)
-  const netSalePrice = Math.max(grossSalePrice - discountAmount, 0)
 
   const sources = salePaymentSourceDefinitions.map((definition) => {
     const amountValue = parseCurrencyFormValue(saleForm[definition.amountField])

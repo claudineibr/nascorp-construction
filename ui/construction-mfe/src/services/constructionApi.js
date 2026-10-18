@@ -12,6 +12,7 @@ const toProjectView = (project) => ({
   description: project.description ?? "",
   status: project.status,
   projectType: project.project_type,
+  developmentType: project.development_type ?? "",
   customerPersonId: project.customer_person_id ?? null,
   cnpjSpe: project.cnpj_spe ?? "",
   address: project.address_json ?? null,
@@ -75,6 +76,9 @@ const toUnitView = (unit) => ({
   unitType: unit.unit_type,
   typology: unit.typology ?? "",
   floor: unit.floor ?? "",
+  idealFraction: unit.ideal_fraction ?? null,
+  deliveredAt: unit.delivered_at ?? null,
+  terminatedAt: unit.terminated_at ?? null,
   privateArea: unit.private_area ?? null,
   totalArea: unit.total_area ?? null,
   salePrice: unit.sale_price ?? null,
@@ -411,6 +415,7 @@ const toProjectPayload = (projectData = {}) => ({
   description: toNullableString(projectData.description),
   status: projectData.status,
   project_type: projectData.projectType,
+  development_type: toNullableString(projectData.developmentType),
   customer_person_id: toNullableString(projectData.customerPersonId),
   cnpj_spe: toNullableString(projectData.cnpjSpe),
   address_json: toAddressPayload(projectData.address),
@@ -488,6 +493,7 @@ const toUnitPayload = (unitData = {}) => ({
   typology: toNullableString(unitData.typology),
   block_id: toNullableString(unitData.blockId),
   floor: toNullableString(unitData.floor),
+  ideal_fraction: toNullableString(unitData.idealFraction),
   private_area: toNullableNumber(unitData.privateArea),
   total_area: toNullableNumber(unitData.totalArea),
   sale_price: toNullableNumber(unitData.salePrice),
@@ -2162,7 +2168,6 @@ export {
   toMeasurementPayload,
   toUnitPayload,
 }
-
 
 export const bankSlipErpOperation = ({ bridge, path, method = "POST", body = null }) =>
   requestJson({ bridge, baseUrl: erpBaseUrl(bridge), path: `/v1/bank-slips${path}`, method, body })
