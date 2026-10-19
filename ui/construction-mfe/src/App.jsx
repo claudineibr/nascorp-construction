@@ -24,6 +24,7 @@ import {
   bankSlipSelectionMode,
 } from "./features/unitInstallments.js"
 import { InstallmentObservationModal } from "./features/InstallmentObservationModal.jsx"
+import { formatUnitType, unitTypeOptions } from "./features/unitTypes.js"
 import { Pagination as StandalonePagination } from "./components/Pagination.jsx"
 import {
   canLinkPayable,
@@ -40,7 +41,6 @@ import {
   CheckCircle,
   ClipboardList,
   Clock,
-  FileCog,
   FileText,
   HandCoins,
   MessageSquareText,
@@ -258,7 +258,6 @@ const projectDetailTabs = [
   { id: "accountsPayable", label: "Contas a pagar", icon: HandCoins },
   { id: "subcontracts", label: "Empreitada", icon: FileText },
   { id: "reports", label: "Relatórios", icon: BarChart3 },
-  { id: "integrations", label: "Integrações", icon: FileCog },
 ]
 
 const unitDetailTabs = [
@@ -1354,7 +1353,6 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [procurementForm, setProcurementForm] = useState(defaultProcurementForm)
   const [submittingProcurement, setSubmittingProcurement] = useState(false)
 
-  const [personLookupQuery, setPersonLookupQuery] = useState("")
   const [personSummaries, setPersonSummaries] = useState([])
   const [viewingProcurementOrderId, setViewingProcurementOrderId] = useState(null)
   // Qual parcela esta gerando/baixando recibo. Um por vez: o PDF nasce no
@@ -1785,7 +1783,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }, [loadPersonSummaries, personSummaries.length, projectDetailTab, viewMode])
 
   useEffect(() => {
-    if (viewMode !== "projectDetail" || !["overview", "reports", "integrations"].includes(projectDetailTab)) {
+    if (viewMode !== "projectDetail" || !["overview", "reports"].includes(projectDetailTab)) {
       return
     }
 
@@ -1823,14 +1821,6 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const handleProjectPageSizeChange = (value) => {
     setProjectPageSize(Number(value) || defaultProjectPageSize)
     setProjectPage(1)
-  }
-
-  const handlePersonLookupQueryChange = (value) => {
-    setPersonLookupQuery(value)
-  }
-
-  const handlePersonLookupSearch = async () => {
-    await loadPersonSummaries(personLookupQuery)
   }
 
   const clearFilters = () => {
@@ -4376,25 +4366,6 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
             />
           ) : null}
 
-          {projectDetailTab === "integrations" ? (
-            <DomainCard
-              title="Integrações"
-              subtitle="Referências ERP para pessoas, financeiro e compras sincronizadas no módulo."
-              content={
-                <IntegrationPanel
-                  personLookupQuery={personLookupQuery}
-                  onPersonLookupQueryChange={handlePersonLookupQueryChange}
-                  onPersonLookupSearch={handlePersonLookupSearch}
-                  loadingPeople={loadingPersonSummaries}
-                  personLookupError={personLookupError}
-                  people={personSummaries}
-                  measurements={measurements}
-                  procurementRequests={procurementRequests}
-                  units={units}
-                />
-              }
-            />
-          ) : null}
         </>
       ) : null}
 
@@ -5394,7 +5365,7 @@ function UnitDetailPanel({
               {unitStatusLabel[unit.status] ?? unit.status}
             </span>
           </div>
-          <p className={styles.textMuted}>{unit.unitType}{unit.typology ? ` - ${unit.typology}` : ""}</p>
+          <p className={styles.textMuted}>{formatUnitType(unit.unitType)}{unit.typology ? ` - ${unit.typology}` : ""}</p>
         </div>
         <div className={styles.tableHeaderActions}>
           <button type="button" className={styles.primaryButton} onClick={() => onEdit(unit)}>
@@ -5433,7 +5404,7 @@ function UnitDetailPanel({
         <DetailMetaItem label="Centro unidade" value={unit.analyticCostCenterId ? "Vinculado" : "Pendente"} />
         <DetailMetaItem label="Preço" value={formatMoney(unit.salePrice)} />
         <DetailMetaItem
-          label="Contrato ERP"
+          label="Contrato financeiro"
           value={
             unit.externalContractId
               ? translateErpStatus(erpContractStatusLabel, unit.externalContractStatus, "Vinculado")
@@ -7176,12 +7147,9 @@ function UnitsList({
         <thead>
           <tr>
             <th>Descrição</th>
-            <th>Tipo</th>
             <th>Bloco</th>
             <th>Status</th>
-            <th>Centro unidade</th>
             <th>Preço</th>
-            <th>Contrato ERP</th>
             <th>Ações</th>
           </tr>
         </thead>
@@ -7198,34 +7166,13 @@ function UnitsList({
                   <strong>{unit.description || unit.code}</strong>
                   <div className={styles.rowSecondaryText}>{unit.code}</div>
                 </td>
-                <td>
-                  <strong>{unit.unitType}</strong>
-                  <div className={styles.rowSecondaryText}>{unit.typology || "-"}</div>
-                </td>
                 <td>{unit.blockId ? blockNameById[unit.blockId] ?? unit.blockId : "-"}</td>
                 <td>
                   <span className={`${styles.statusPill} ${styles[`status${unit.status}`] || ""}`}>
                     {unitStatusLabel[unit.status] ?? unit.status}
                   </span>
                 </td>
-                <td>
-                  <span className={unit.analyticCostCenterId ? styles.badgeSuccess : styles.badgeMuted}>
-                    {unit.analyticCostCenterId ? "Vinculado" : "Pendente"}
-                  </span>
-                </td>
                 <td>{formatMoney(unit.salePrice)}</td>
-                <td>
-                  {unit.externalContractId ? (
-                    <div>
-                      <div className={styles.rowSecondaryText}>
-                        {translateErpStatus(erpContractStatusLabel, unit.externalContractStatus, "Ativo")}
-                      </div>
-                      <span className={styles.badgeSuccess}>Vinculado</span>
-                    </div>
-                  ) : (
-                    <span className={styles.badgeMuted}>Pendente</span>
-                  )}
-                </td>
                 <td>
                   <RowActionsMenu
                     actions={[
@@ -8007,7 +7954,7 @@ function MeasurementModal({
               <div className={styles.detailMetaItem}>
                 <span>Unidade*</span>
                 <strong>
-                  {lockedUnit.code} - {lockedUnit.description || lockedUnit.unitType}
+                  {lockedUnit.code} - {lockedUnit.description || formatUnitType(lockedUnit.unitType)}
                 </strong>
               </div>
             ) : (
@@ -8017,7 +7964,7 @@ function MeasurementModal({
                   <option value="">Selecione</option>
                   {units.map((unit) => (
                     <option key={unit.id} value={unit.id}>
-                      {unit.code} - {unit.description || unit.unitType}
+                      {unit.code} - {unit.description || formatUnitType(unit.unitType)}
                     </option>
                   ))}
                 </select>
@@ -8181,69 +8128,6 @@ const QUALIFICATION_WARNINGS = {
   none: "Este fornecedor nunca foi qualificado. A obra pode seguir, mas a auditoria da Caixa pede a avaliacao registrada.",
   expired: "A qualificacao deste fornecedor venceu. Registre uma nova avaliacao no cadastro da pessoa.",
   rejected: "Este fornecedor foi REPROVADO na qualificacao. Confirme com o responsavel antes de seguir.",
-}
-
-function IntegrationPanel({
-  personLookupQuery,
-  onPersonLookupQueryChange,
-  onPersonLookupSearch,
-  loadingPeople,
-  personLookupError,
-  people,
-  measurements,
-  procurementRequests,
-  units,
-}) {
-  const linkedMeasurements = measurements.filter((measurement) => measurement.externalAccountsPayableId).length
-  const linkedProcurementRequests = procurementRequests.filter(
-    (procurementRequest) => procurementRequest.externalProcurementId
-  ).length
-  const linkedUnitContracts = units.filter((unit) => unit.externalContractId).length
-
-  return (
-    <div className={styles.integrationPanel}>
-      <div className={styles.integrationGrid}>
-        <article className={styles.integrationCard}>
-          <h3>Pessoas ERP</h3>
-          <p className={styles.textMuted}>Lookup para vincular comprador e fornecedor nos fluxos operacionais.</p>
-          <div className={styles.inlineForm}>
-            <input
-              type="text"
-              value={personLookupQuery}
-              onChange={(event) => onPersonLookupQueryChange(event.target.value)}
-              placeholder="Buscar por nome, documento ou telefone"
-            />
-            <button type="button" className={styles.secondaryButton} onClick={onPersonLookupSearch} disabled={loadingPeople}>
-              {loadingPeople ? "Buscando..." : "Buscar"}
-            </button>
-          </div>
-          {personLookupError ? <p className={styles.formError}>{personLookupError}</p> : null}
-          <p className={styles.rowSecondaryText}>{people.length} pessoa(s) carregada(s)</p>
-        </article>
-
-        <article className={styles.integrationCard}>
-          <h3>Financeiro ERP</h3>
-          <p className={styles.textMuted}>Sincronização de medições aprovadas com contas a pagar.</p>
-          <p className={styles.metricValue}>{linkedMeasurements}</p>
-          <p className={styles.metricHint}>medições com documento financeiro vinculado</p>
-        </article>
-
-        <article className={styles.integrationCard}>
-          <h3>Compras ERP</h3>
-          <p className={styles.textMuted}>Requisições enviadas para a fila de compras.</p>
-          <p className={styles.metricValue}>{linkedProcurementRequests}</p>
-          <p className={styles.metricHint}>requisições vinculadas externamente</p>
-        </article>
-
-        <article className={styles.integrationCard}>
-          <h3>Contratos ERP</h3>
-          <p className={styles.textMuted}>Unidades vendidas com contrato e recebíveis vinculados.</p>
-          <p className={styles.metricValue}>{linkedUnitContracts}</p>
-          <p className={styles.metricHint}>unidades com contrato sincronizado</p>
-        </article>
-      </div>
-    </div>
-  )
 }
 
 function ProjectModal({
@@ -8662,12 +8546,16 @@ function UnitModal({ mode, unitForm, blocks, units, editingUnitId, onClose, onCh
             )}
             <label className={styles.filterControl}>
               <span>Tipo*</span>
-              <input
-                type="text"
+              <select
                 value={unitForm.unitType}
                 onChange={(event) => onChange("unitType", event.target.value)}
                 required
-              />
+              >
+                <option value="">Selecione o tipo</option>
+                {unitTypeOptions(unitForm.unitType).map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
             </label>
             <label className={styles.filterControl}>
               <span>Tipologia</span>
