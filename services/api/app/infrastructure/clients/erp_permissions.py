@@ -19,6 +19,7 @@ class EffectivePermissions:
     #: insumos para deduzi-la.
     record_access_unrestricted: bool = True
     allowed_project_ids: frozenset[UUID] = frozenset()
+    timezone: str = "America/Sao_Paulo"
 
 
 class ErpPermissionClient:
@@ -42,6 +43,7 @@ class ErpPermissionClient:
             payload = response.json()
 
         return EffectivePermissions(
+            timezone=payload.get("timezone", "America/Sao_Paulo"),
             company_id=UUID(payload["company_id"]),
             user_id=UUID(payload["user_id"]),
             person_id=UUID(payload["person_id"]) if payload.get("person_id") else None,

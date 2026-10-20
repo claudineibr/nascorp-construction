@@ -1,3 +1,4 @@
+import { formatBusinessDate } from "../../utils/brazilDate.js"
 import styles from "./AssistancePrint.module.css"
 import stylesheet from "./AssistancePrint.module.css?inline"
 import pageStylesheet from "./AssistancePrintPage.module.css?inline"
@@ -15,7 +16,7 @@ const escape = (value) =>
         "'": "&#39;",
       }[char])
   )
-const date = (value) => (value ? new Date(value).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }) : "")
+const date = (value) => (value ? formatBusinessDate(value) : "")
 const unique = (values) => [...new Set(values.filter(Boolean))].join(", ")
 const signature = (name, label, when = "") =>
   `<td><div class="${styles.signatureName}">${escape(name)}</div>${escape(label)}<div class="${
@@ -76,7 +77,7 @@ export const assistancePrintDocument = ({ sat, people, city, company_name, compa
         `<tr><td class="${styles.item}">${escape(item.original_number ?? index + 1)}</td><td>${escape(
           item.description
         )}</td><td>${escape(
-          item.due_date ? new Date(`${item.due_date}T12:00:00`).toLocaleDateString("pt-BR") : ""
+          item.due_date ? formatBusinessDate(item.due_date) : ""
         )}</td></tr>`
     )
     .join("")}</tbody></table>

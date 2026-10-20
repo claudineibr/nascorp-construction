@@ -980,7 +980,7 @@ async def list_unit_commissions(
     try:
         commissions = await service.list_unit_commissions(company_id=ctx.company_id, unit_id=unit_id)
         return ConstructionUnitCommissionListResponse(
-            items=[ConstructionUnitCommissionResponse.model_validate(commission) for commission in commissions],
+            items=[service.to_commission_response(commission) for commission in commissions],
             total=len(commissions),
         )
     except ConstructionDomainError as exc:
@@ -1002,7 +1002,7 @@ async def create_unit_commissions(
             actor_user_id=ctx.user_id,
         )
         return ConstructionUnitCommissionListResponse(
-            items=[ConstructionUnitCommissionResponse.model_validate(commission) for commission in commissions],
+            items=[service.to_commission_response(commission) for commission in commissions],
             total=len(commissions),
         )
     except ConstructionDomainError as exc:
@@ -1023,7 +1023,7 @@ async def update_unit_commission(
             request=request_data,
             actor_user_id=ctx.user_id,
         )
-        return ConstructionUnitCommissionResponse.model_validate(commission)
+        return service.to_commission_response(commission)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 
@@ -1041,7 +1041,7 @@ async def settle_unit_commission(
             commission_id=commission_id,
             payment_date=request_data.payment_date,
         )
-        return ConstructionUnitCommissionResponse.model_validate(commission)
+        return service.to_commission_response(commission)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 

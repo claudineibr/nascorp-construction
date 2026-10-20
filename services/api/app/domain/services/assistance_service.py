@@ -3,7 +3,7 @@ import logging
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from app.domain.business_date import brazil_today
+from app.domain.business_clock import current_business_timezone, get_business_today
 from app.domain.exceptions import ConstructionDomainError, ConstructionNotFoundError
 from app.infrastructure.database.models.assistance import (
     AssistanceRequest,
@@ -63,7 +63,7 @@ def serialize_summary(row, labels=None):
         "completed_at",
     )
     result = {key: getattr(row, key) for key in fields}
-    today = brazil_today()
+    today = get_business_today(current_business_timezone())
     result["overdue"] = any(s.due_date and s.due_date < today and not s.executed_at for s in active(row.services))
     result["pending_stage"] = pending_stage(row)
     if labels:

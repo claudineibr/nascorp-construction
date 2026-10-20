@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from app.core.security import get_construction_context, require_permission
-from app.domain.business_date import brazil_today
+from app.domain.business_clock import current_business_timezone, get_business_today
 from app.domain.exceptions import ConstructionDomainError
 from app.domain.permissions import ConstructionFeature, PermissionAction
 from app.domain.services.assistance_service import AssistanceRequestService, serialize, serialize_summary
@@ -59,7 +59,7 @@ async def list_requests(
         overdue=overdue,
     )
     rows, total = await service.repository.list(
-        ctx.company_id, filters, brazil_today(), page, page_size
+        ctx.company_id, filters, get_business_today(current_business_timezone()), page, page_size
     )
     labels = await service.repository.labels(rows)
     return dict(

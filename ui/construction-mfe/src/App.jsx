@@ -26,7 +26,7 @@ import {
 import { InstallmentObservationModal } from "./features/InstallmentObservationModal.jsx"
 import { formatUnitType, unitTypeOptions } from "./features/unitTypes.js"
 import { commissionStatusLabel } from "./features/unitCommissions.js"
-import { brazilTodayISO } from "./utils/brazilDate.js"
+import { brazilTodayISO, setBusinessTimezone, formatBusinessDate } from "./utils/brazilDate.js"
 import { Pagination as StandalonePagination } from "./components/Pagination.jsx"
 import {
   canLinkPayable,
@@ -286,7 +286,6 @@ const statusOptions = Object.entries(statusLabel)
   .filter(([value]) => value !== "canceled")
   .map(([value, label]) => ({ value, label }))
 
-const dateFormatter = new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" })
 const moneyFormatter = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" })
 
 const stripNonDigits = (value) => String(value ?? "").replace(/\D/g, "")
@@ -1199,6 +1198,34 @@ function requiredProcurementFieldError(formProcurement) {
 
 export default function ConstructionApp({ bridge: providedBridge } = {}) {
   const bridge = useMemo(() => providedBridge ?? resolveConstructionBridge(), [providedBridge])
+  const companyId = bridge.companyContext?.companyId
+  const [companyClock, setCompanyClock] = useState(null)
+  const configuredTimezone = bridge.companyContext?.timezone
+  useEffect(() => {
+    if (configuredTimezone || !companyId) return undefined
+    let active = true
+    fetch(`${bridge.erpApiBaseUrl}/v1/company/${companyId}`, { headers: bridge.getAuthHeaders() })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Não foi possível carregar o fuso horário da empresa.")
+        return response.json()
+      })
+      .then((company) => { if (active) setCompanyClock({ companyId, timezone: company.timezone }) })
+      .catch((error) => {
+        if (active) {
+          setCompanyClock({ companyId, error: error.message })
+          bridge.feedback?.error?.(error.message)
+        }
+      })
+    return () => { active = false }
+  }, [bridge, companyId, configuredTimezone])
+  const timezone = configuredTimezone || (companyClock?.companyId === companyId ? companyClock.timezone : null)
+  setBusinessTimezone(timezone)
+  if (companyId && !timezone) {
+    const error = companyClock?.companyId === companyId ? companyClock.error : null
+    return <p className={styles.emptyState} role={error ? "alert" : "status"}>
+      {error || "Carregando configuração da empresa..."}
+    </p>
+  }
   return bridge.assistanceView ? <AssistancePanel key={bridge.companyContext?.companyId} bridge={bridge} /> : <ConstructionWorkspace bridge={bridge} />
 }
 
@@ -9912,7 +9939,7 @@ function formatDate(value) {
     return "-"
   }
 
-  return dateFormatter.format(parsedDate)
+  return formatBusinessDate(value)
 }
 
 function formatMoney(value) {

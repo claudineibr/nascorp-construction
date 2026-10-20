@@ -5,7 +5,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.domain.business_date import brazil_today
 from app.domain.constants import (
     ConstructionBlockStatus,
     ConstructionProjectStatus,
@@ -450,14 +449,6 @@ class ConstructionUnitCommissionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    @model_validator(mode="after")
-    def _status_by_due_date(self):
-        self.status = unit_commission_status(
-            due_date=self.due_date,
-            payment_date=self.payment_date,
-            today=brazil_today(),
-        )
-        return self
 
 
 class ConstructionUnitCommissionListResponse(BaseModel):

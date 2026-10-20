@@ -30,6 +30,9 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=procurement_lifespan,
     )
+    from app.domain.business_clock import BusinessClockMiddleware
+
+    app.add_middleware(BusinessClockMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allowed_origins,

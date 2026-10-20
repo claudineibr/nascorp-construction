@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.domain import business_date
+from app.domain import business_date, business_clock
 from app.domain.exceptions import ConstructionInvalidValueError
 from app.domain.services import ConstructionProjectService
 from app.domain.services.assistance_service import serialize_summary
@@ -38,6 +38,7 @@ def _freeze_clock(monkeypatch, instant):
             return instant.astimezone(tz)
 
     monkeypatch.setattr(business_date, "datetime", FrozenDatetime)
+    monkeypatch.setattr(business_clock, "datetime", FrozenDatetime)
 
 
 @pytest.mark.parametrize(
@@ -191,7 +192,7 @@ def test_commission_response_carries_the_status_by_due_date(brasilia_today, due_
         updated_at=datetime(2026, 3, 1, tzinfo=UTC),
     )
 
-    assert ConstructionUnitCommissionResponse.model_validate(commission).status == expected
+    assert ConstructionProjectService.to_commission_response(commission).status == expected
 
 
 @pytest.mark.parametrize(("due_date", "expected"), [(date(2026, 3, 9), False), (date(2026, 3, 8), True)])

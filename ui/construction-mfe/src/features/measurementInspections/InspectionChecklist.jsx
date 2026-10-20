@@ -1,3 +1,4 @@
+import { getBusinessTimezone } from "../../utils/brazilDate.js"
 import { useMemo, useState } from "react"
 import { CheckCircle, History, Plus, ShieldOff, Trash2, TriangleAlert } from "lucide-react"
 
@@ -24,7 +25,7 @@ const formatMoment = (value) => {
   const moment = new Date(value)
   return Number.isNaN(moment.getTime())
     ? ""
-    : moment.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })
+    : moment.toLocaleString("pt-BR", { timeZone: getBusinessTimezone(), day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })
 }
 
 /**

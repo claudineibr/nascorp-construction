@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 import httpx
 
-from app.domain.business_date import brazil_today
+from app.domain.business_clock import current_business_timezone, get_business_today
 from app.domain.constants import (
     ConstructionInspectionRoundSource,
     BLOCK_STATUSES,
@@ -205,6 +205,18 @@ REINSPECTION_REQUIRED_MESSAGE = (
 
 
 class ConstructionProjectService:
+    @staticmethod
+    def to_commission_response(commission):
+        from app.schemas.construction.project import ConstructionUnitCommissionResponse
+
+        response = ConstructionUnitCommissionResponse.model_validate(commission)
+        response.status = unit_commission_status(
+            due_date=response.due_date,
+            payment_date=response.payment_date,
+            today=get_business_today(current_business_timezone()),
+        )
+        return response
+
     #: Empresas cujo catalogo de documentacao ja foi semeado neste processo.
     #: O seed e idempotente; isto so evita repetir a consulta a cada tecla do
     #: combobox. Nasce vazio a cada boot, entao um banco restaurado por baixo
@@ -954,7 +966,7 @@ class ConstructionProjectService:
         unit.status = ConstructionUnitStatus.RESERVED
         unit.buyer_person_id = request.buyer_person_id
         unit.reserved_at = datetime.now(tz=UTC)
-        unit.reservation_expires_at = request.reservation_expires_at or (brazil_today() + timedelta(days=7))
+        unit.reservation_expires_at = request.reservation_expires_at or (get_business_today(current_business_timezone()) + timedelta(days=7))
         await self.repository.commit()
         await self.repository.refresh(unit)
         return unit
@@ -2508,7 +2520,7 @@ class ConstructionProjectService:
                 sequence_number=sequence_number,
                 problem=problem or f"Reprovado na verificação: {inspection.description}",
                 status=ConstructionOccurrenceStatus.OPEN,
-                opened_at=opened_on or brazil_today(),
+                opened_at=opened_on or get_business_today(current_business_timezone()),
                 inspector_person_id=inspector_person_id,
                 registered_by_user_id=actor_user_id,
             )
@@ -2570,7 +2582,7 @@ class ConstructionProjectService:
             problem=request.problem.strip(),
             solution=(request.solution or "").strip() or None,
             status=ConstructionOccurrenceStatus.OPEN,
-            opened_at=request.opened_at or brazil_today(),
+            opened_at=request.opened_at or get_business_today(current_business_timezone()),
             inspector_person_id=request.inspector_person_id or item.inspector_person_id,
             registered_by_user_id=actor_user_id,
         )
@@ -2612,7 +2624,7 @@ class ConstructionProjectService:
                 )
 
             if not updates.get("closed_at") and occurrence.closed_at is None:
-                updates["closed_at"] = brazil_today()
+                updates["closed_at"] = get_business_today(current_business_timezone())
 
         if next_status == ConstructionOccurrenceStatus.OPEN:
             updates["closed_at"] = None
@@ -4583,7 +4595,7 @@ class ConstructionProjectService:
             (commission.amount for commission in commissions if commission.payment_date is not None),
             Decimal("0"),
         )
-        today = brazil_today()
+        today = get_business_today(current_business_timezone())
         return {
             "construction_unit_id": unit.id,
             "unit_code": unit.code,
@@ -4648,7 +4660,7 @@ class ConstructionProjectService:
 
     @staticmethod
     def _validate_not_in_the_future(*, start_date, end_date) -> None:
-        today = brazil_today()
+        today = get_business_today(current_business_timezone())
         if start_date is not None and start_date > today:
             raise ConstructionInvalidValueError(
                 message="A data de início não pode ser futura.",

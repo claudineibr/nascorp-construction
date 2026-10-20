@@ -13,6 +13,7 @@ from fastapi import Depends, Header, HTTPException, status
 
 from app.core.config import settings
 from app.core.context import ConstructionContext
+from app.domain.business_clock import bind_business_timezone
 from app.domain.record_scope import ProjectScope
 from app.infrastructure.clients import EffectivePermissions, ErpPermissionClient
 
@@ -57,7 +58,9 @@ async def get_construction_context(
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Contexto de permissão não confere")
 
+    bind_business_timezone(effective_permissions.timezone)
     return ConstructionContext(
+        timezone=effective_permissions.timezone,
         company_id=x_company_id,
         user_id=user_id,
         person_id=effective_permissions.person_id,

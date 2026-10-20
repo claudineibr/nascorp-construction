@@ -1,3 +1,4 @@
+import { getBusinessTimezone } from "../../utils/brazilDate.js"
 import { useCallback, useEffect, useId, useState } from "react"
 import { Plus, RefreshCw, Printer, Eye, X } from "lucide-react"
 import { subcontractRequest, fetchConstructionAddressByZip } from "../../services/constructionApi"
@@ -27,7 +28,7 @@ const eventLabels = {
   reopened: "Reaberta",
   deleted: "Excluída",
 }
-const day = (value) => (value ? new Date(value).toLocaleString("pt-BR") : "Não informado")
+const day = (value) => (value ? new Date(value).toLocaleString("pt-BR", { timeZone: getBusinessTimezone() }) : "Não informado")
 const localDate = (value) =>
   value
     ? new Date(new Date(value).getTime() - new Date(value).getTimezoneOffset() * 60000).toISOString().slice(0, 16)
