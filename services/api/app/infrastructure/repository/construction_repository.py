@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date
+import logging
+from datetime import UTC, date, datetime
 from uuid import UUID, uuid4
 
 from decimal import Decimal
@@ -57,6 +58,9 @@ def _buyer_unit_conditions(buyer_person_id: UUID) -> list:
         ),
         ConstructionUnit.status.in_(BUYER_HOLDING_UNIT_STATUSES),
     ]
+
+
+logger = logging.getLogger(__name__)
 
 
 class ConstructionRepository:
@@ -769,6 +773,24 @@ class ConstructionRepository:
         )
         return list(result.scalars().all())
 
+    async def delete_unpaid_unit_commissions(self, *, company_id, unit_id):
+        result = await self.session.execute(
+            update(ConstructionUnitCommission).where(
+                ConstructionUnitCommission.company_id == company_id,
+                ConstructionUnitCommission.unit_id == unit_id,
+                ConstructionUnitCommission.payment_date.is_(None),
+                ConstructionUnitCommission.deleted_at.is_(None),
+                *scope_conditions(ConstructionUnitCommission, self.scope),
+            ).values(
+                deleted_at=datetime.now(UTC),
+                deleted_by_user_id=self.session.info.get("actor_user_id"),
+            )
+        )
+        logger.info(
+            f"[construction_commission] delete_unpaid: company_id={company_id} "
+            f"unit_id={unit_id} count={result.rowcount}"
+        )
+
     async def list_unit_commissions(
         self,
         *,
@@ -780,6 +802,7 @@ class ConstructionRepository:
             .where(
                 ConstructionUnitCommission.company_id == company_id,
                 ConstructionUnitCommission.unit_id == unit_id,
+                ConstructionUnitCommission.unit.has(ConstructionUnit.deleted_at.is_(None)),
                 *scope_conditions(ConstructionUnitCommission, self.scope),
             )
             .order_by(ConstructionUnitCommission.sequence_number)
@@ -796,6 +819,7 @@ class ConstructionRepository:
             select(ConstructionUnitCommission).where(
                 ConstructionUnitCommission.company_id == company_id,
                 ConstructionUnitCommission.id == commission_id,
+                ConstructionUnitCommission.unit.has(ConstructionUnit.deleted_at.is_(None)),
                 *scope_conditions(ConstructionUnitCommission, self.scope),
             )
         )

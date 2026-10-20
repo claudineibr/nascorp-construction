@@ -663,7 +663,7 @@ class ConstructionUnitDocumentation(Base):
     documentation_type: Mapped[ConstructionDocumentationType] = relationship(lazy="selectin")
 
 
-class ConstructionUnitCommission(Base):
+class ConstructionUnitCommission(PreservedHistory, Base):
     """O sinal do legado: a comissao do corretor, paga pelo comprador.
 
     Nao e conta a receber da construtora -- o dinheiro vai direto ao corretor.

@@ -232,12 +232,17 @@ class FakeConstructionRepository:
             key=lambda documentation: documentation.sequence_number,
         )
 
+    async def delete_unpaid_unit_commissions(self, *, company_id, unit_id):
+        for commission in self.unit_commissions.values():
+            if commission.company_id == company_id and commission.unit_id == unit_id and commission.payment_date is None:
+                commission.deleted_at = datetime.now(UTC)
+
     async def list_unit_commissions(self, *, company_id, unit_id):
         return sorted(
             (
                 commission
                 for (stored_company_id, _), commission in self.unit_commissions.items()
-                if stored_company_id == company_id and commission.unit_id == unit_id
+                if stored_company_id == company_id and commission.unit_id == unit_id and commission.deleted_at is None
             ),
             key=lambda commission: commission.sequence_number,
         )
@@ -4240,3 +4245,39 @@ async def test_procurement_item_cannot_point_to_another_project(field_name) -> N
                 supplier_person_id=uuid4(), title="Materiais", items=[{**item, field_name: uuid4()}]
             ),
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via_event", [False, True])
+async def test_termination_deletes_only_unpaid_commissions_of_the_unit(via_event):
+    from app.schemas.construction.project import ConstructionUnitUpdate
+
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    unit = ConstructionUnit(id=uuid4(), company_id=company_id, project_id=uuid4(), code="U1",
+        unit_type="Casa", status="sold", sold_at=datetime(2026, 1, 1, tzinfo=UTC))
+    repository.units[(company_id, unit.id)] = unit
+    commissions = [
+        ConstructionUnitCommission(id=uuid4(), company_id=tenant, unit_id=owner,
+            sequence_number=index, amount=Decimal("100"), due_date=date(2026, 10, 16), payment_date=paid)
+        for index, (tenant, owner, paid) in enumerate([
+            (company_id, unit.id, None),
+            (company_id, unit.id, date(2026, 10, 15)),
+            (company_id, uuid4(), None),
+            (uuid4(), unit.id, None),
+        ], 1)
+    ]
+    for commission in commissions:
+        repository.unit_commissions[(commission.company_id, commission.id)] = commission
+    service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository())
+    if via_event:
+        event = make_erp_contract_status_updated_event(company_id=company_id, unit_id=unit.id, contract_status="CANCELED")
+        await service.apply_contract_status_updated_event(event=event)
+        await service.apply_contract_status_updated_event(event=event)
+    else:
+        await service.update_unit(company_id=company_id, unit_id=unit.id,
+            request=ConstructionUnitUpdate(status="terminated"), actor_user_id=uuid4())
+    assert commissions[0].deleted_at is not None
+    assert all(commission.deleted_at is None for commission in commissions[1:])
+    assert await repository.list_unit_commissions(company_id=company_id, unit_id=unit.id) == [commissions[1]]
+    assert repository.commits == 1

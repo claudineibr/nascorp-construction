@@ -852,7 +852,7 @@ class ConstructionProjectService:
             if next_status == ConstructionUnitStatus.DELIVERED:
                 unit.delivered_at = datetime.now(UTC)
             elif next_status == ConstructionUnitStatus.TERMINATED:
-                self._record_unit_termination(unit)
+                await self._record_unit_termination(unit)
         reclassify = next_status is not None and next_status != previous_status and "delivered" in {
             previous_status, next_status,
         }
@@ -1126,8 +1126,8 @@ class ConstructionProjectService:
         await self.repository.refresh(unit)
         return unit
 
-    @staticmethod
-    def _record_unit_termination(unit):
+    async def _record_unit_termination(self, unit):
+        await self.repository.delete_unpaid_unit_commissions(company_id=unit.company_id, unit_id=unit.id)
         terminated_at = datetime.now(UTC)
         if unit.sold_at:
             unit.cost_sale_history = [*(unit.cost_sale_history or []),
@@ -1156,7 +1156,7 @@ class ConstructionProjectService:
         contract_status = str(event.payload.get("contract_status") or "")
         if contract_status.upper() == "CANCELED":
             unit.status = ConstructionUnitStatus.AVAILABLE
-            self._record_unit_termination(unit)
+            await self._record_unit_termination(unit)
             unit.sold_at = None
             unit.external_contract_status = contract_status
 
