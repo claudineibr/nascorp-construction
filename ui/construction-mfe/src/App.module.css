@@ -1279,12 +1279,16 @@
   }
 
   .tabList {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
     width: 100%;
   }
 
   .tabButton {
-    justify-content: center;
-    width: 100%;
+    flex: 0 0 auto;
+    scroll-snap-align: start;
+    white-space: nowrap;
   }
 
   .heroActions,

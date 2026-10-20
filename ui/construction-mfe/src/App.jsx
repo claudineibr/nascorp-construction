@@ -271,6 +271,14 @@ const unitDetailTabs = [
   { id: "debt_confession", label: "T.C.D", icon: FileText },
 ]
 
+const revealActiveTab = (node) => {
+  const list = node?.parentElement
+  if (!list || list.scrollWidth <= list.clientWidth) return
+  const listBox = list.getBoundingClientRect()
+  const box = node.getBoundingClientRect()
+  if (box.left < listBox.left || box.right > listBox.right) list.scrollLeft += box.left - listBox.left
+}
+
 const statusOptions = Object.entries(statusLabel)
   .filter(([value]) => value !== "canceled")
   .map(([value, label]) => ({ value, label }))
@@ -4112,6 +4120,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                   <button
                     key={tab.id}
                     type="button"
+                    ref={projectDetailTab === tab.id ? revealActiveTab : undefined}
                     className={`${styles.tabButton} ${projectDetailTab === tab.id ? styles.tabButtonActive : ""}`}
                     onClick={() => setProjectDetailTab(tab.id)}
                   >
@@ -5421,6 +5430,7 @@ function UnitDetailPanel({
               <button
                 key={tab.id}
                 type="button"
+                ref={activeTab === tab.id ? revealActiveTab : undefined}
                 className={`${styles.tabButton} ${activeTab === tab.id ? styles.tabButtonActive : ""}`}
                 onClick={() => onTabChange(tab.id)}
               >
