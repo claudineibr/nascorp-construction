@@ -153,6 +153,7 @@ import {
   getErpReceiptByInstallment,
   generateErpReceiptForInstallment,
   downloadErpReceiptPdf,
+  downloadErpCommissionReceiptPdf,
 } from "./services/constructionApi.js"
 
 const defaultFilters = {
@@ -2908,6 +2909,26 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   // Contas a Receber -- nao um segundo documento. Ja existe, baixa; parcela
   // paga e sem recibo, emite e baixa. A ordem importa: `generate` promove um
   // provisorio se houver, entao consultar antes evita queimar numeracao.
+  const handleCommissionReceipt = async (commission) => {
+    if (receiptBusyId) return
+    setReceiptBusyId(commission.id)
+    try {
+      const blob = await downloadErpCommissionReceiptPdf({ bridge, commissionId: commission.id })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = `recibo-sinal-${commission.sequenceNumber}-${commission.id}.pdf`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível baixar o recibo do sinal.")
+    } finally {
+      setReceiptBusyId(null)
+    }
+  }
+
   const handleInstallmentReceipt = async (installment) => {
     if (receiptBusyId) {
       return
@@ -4228,6 +4249,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                     onPayInstallment={handleOpenPayInstallment}
                     onDeleteInstallment={handleDeleteInstallment}
                     onDeleteAdjustment={handleOpenDeleteAdjustment}
+                    onCommissionReceipt={bridge?.canRead?.("receipt") ? handleCommissionReceipt : null}
                     onInstallmentReceipt={handleInstallmentReceipt}
                     receiptBusyId={receiptBusyId}
                     onCreateInstallment={handleOpenCreateInstallment}
@@ -5342,6 +5364,7 @@ function UnitDetailPanel({
   receiptBusyId,
   onCreateInstallment,
   onRebuildPlan,
+  onCommissionReceipt,
   people,
   onCreateCommission,
   onSettleCommission,
@@ -5533,6 +5556,8 @@ function UnitDetailPanel({
           onCreate={onCreateCommission}
           onSettle={onSettleCommission}
           onDelete={onDeleteCommission}
+          onReceipt={onCommissionReceipt}
+          receiptBusyId={receiptBusyId}
         />
       ) : null}
 
@@ -6650,6 +6675,8 @@ function UnitCommissionsPanel({
   onCreate,
   onSettle,
   onDelete,
+  onReceipt,
+  receiptBusyId,
 }) {
   if (loading) {
     return (
@@ -6754,7 +6781,17 @@ function UnitCommissionsPanel({
                     </td>
                     <td className={styles.actionsCell}>
                       <RowActionsMenu
+                        busy={receiptBusyId === commission.id}
+                        busyLabel="Recibo..."
                         actions={[
+                          ...(onReceipt ? [{
+                            key: "receipt",
+                            label: "Baixar recibo",
+                            icon: FileText,
+                            disabled: !commission.paymentDate || Boolean(receiptBusyId),
+                            title: !commission.paymentDate ? "Baixe o sinal antes de emitir o recibo." : undefined,
+                            onSelect: () => onReceipt(commission),
+                          }] : []),
                           {
                             key: "settle",
                             label: commission.paymentDate ? "Estornar baixa" : "Baixar sinal",
@@ -8322,6 +8359,19 @@ function ProjectModal({
 
           <h4 className={styles.sectionTitle}>Endereço</h4>
           <div className={styles.formGrid}>
+            <label className={styles.filterControl}>
+              <span>CEP</span>
+              <input
+                type="text"
+                value={projectForm.addressZipCode}
+                onChange={(event) => onChange("addressZipCode", event.target.value)}
+                onBlur={onZipLookup}
+                inputMode="numeric"
+                placeholder="00000-000"
+              />
+              {zipLookup?.loading ? <small className={styles.fieldHint}>Buscando CEP...</small> : null}
+              {zipLookup?.error ? <small className={styles.formError}>{zipLookup.error}</small> : null}
+            </label>
             <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
               <span>Logradouro</span>
               <input
@@ -8361,19 +8411,6 @@ function ProjectModal({
                 value={projectForm.addressState}
                 onChange={(event) => onChange("addressState", event.target.value)}
               />
-            </label>
-            <label className={styles.filterControl}>
-              <span>CEP</span>
-              <input
-                type="text"
-                value={projectForm.addressZipCode}
-                onChange={(event) => onChange("addressZipCode", event.target.value)}
-                onBlur={onZipLookup}
-                inputMode="numeric"
-                placeholder="00000-000"
-              />
-              {zipLookup?.loading ? <small className={styles.fieldHint}>Buscando CEP...</small> : null}
-              {zipLookup?.error ? <small className={styles.formError}>{zipLookup.error}</small> : null}
             </label>
           </div>
 

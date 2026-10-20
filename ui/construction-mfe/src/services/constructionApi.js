@@ -2171,3 +2171,8 @@ export {
 
 export const bankSlipErpOperation = ({ bridge, path, method = "POST", body = null }) =>
   requestJson({ bridge, baseUrl: erpBaseUrl(bridge), path: `/v1/bank-slips${path}`, method, body })
+
+export const downloadErpCommissionReceiptPdf = ({ bridge, commissionId }) => downloadErpPdf({
+  bridge, path: `/v1/receipts/construction-commissions/${commissionId}/pdf`,
+  fallbackMessage: "Não foi possível baixar o recibo do sinal.",
+})

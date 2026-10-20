@@ -3,6 +3,7 @@
 .card { display: grid; gap: 0.8rem; padding: calc(1.25rem * var(--density)); border: 1px solid var(--color-border); border-radius: 14px; background: var(--color-surface); }
 .card h3 { margin: 0; }
 .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 1rem; border: 0; padding: 0; }
+.field, .field input, .field select { box-sizing: border-box; min-width: 0; }
 .field { display: flex; flex-direction: column; gap: 0.4rem; color: var(--color-text); font-size: 0.85rem; }
 .field input, .field select { width: 100%; padding: calc(0.7rem * var(--density-control)); border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface-muted); color: var(--color-text); font: inherit; }
 .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }

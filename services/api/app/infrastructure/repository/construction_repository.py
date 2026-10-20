@@ -291,7 +291,7 @@ class ConstructionRepository:
         ).with_for_update().execution_options(populate_existing=True))
 
     async def valid_contract_template(self, company_id, template_id):
-        result = await self.session.execute(text("SELECT id FROM public.contract_templates WHERE id=:template AND company_id=:company AND deleted_at IS NULL AND is_active=true AND file_path IS NOT NULL"),
+        result = await self.session.execute(text("SELECT id FROM public.contract_templates WHERE id=:template AND company_id=:company AND document_type='unit_sale' AND deleted_at IS NULL AND is_active=true AND file_path IS NOT NULL"),
             {"template": template_id, "company": company_id})
         return result.scalar_one_or_none()
 
