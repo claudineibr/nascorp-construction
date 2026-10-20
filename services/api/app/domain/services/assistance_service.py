@@ -2,8 +2,8 @@ import json
 import logging
 from datetime import UTC, datetime
 from uuid import uuid4
-from zoneinfo import ZoneInfo
 
+from app.domain.business_date import brazil_today
 from app.domain.exceptions import ConstructionDomainError, ConstructionNotFoundError
 from app.infrastructure.database.models.assistance import (
     AssistanceRequest,
@@ -63,7 +63,7 @@ def serialize_summary(row, labels=None):
         "completed_at",
     )
     result = {key: getattr(row, key) for key in fields}
-    today = datetime.now(ZoneInfo("America/Sao_Paulo")).date()
+    today = brazil_today()
     result["overdue"] = any(s.due_date and s.due_date < today and not s.executed_at for s in active(row.services))
     result["pending_stage"] = pending_stage(row)
     if labels:

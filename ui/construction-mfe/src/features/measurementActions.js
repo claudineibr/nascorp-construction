@@ -14,7 +14,6 @@ export const canLinkPayable = (measurement) =>
 
 const PAYABLE_STATUS_LABELS = {
   OPEN: "Em aberto",
-  OVERDUE: "Vencido",
   PAID: "Pago",
   PARTIALLY_PAID: "Parcial",
   CANCELED: "Cancelado",
@@ -26,11 +25,10 @@ export const payableStatusLabel = (status) => PAYABLE_STATUS_LABELS[status] ?? s
 
 export const measurementPayableBadge = (measurement) => {
   if (measurement.externalAccountsPayableId) {
-    const status = payableStatusLabel(measurement.externalAccountsPayableStatus)
     return {
       tone: "success",
       label: "Vinculado",
-      detail: measurement.externalAccountsPayableShared ? `DNF da empreitada · ${status}` : status,
+      detail: measurement.externalAccountsPayableShared ? "DNF da empreitada" : null,
     }
   }
   if (measurement.status === "approved" && !measurement.subcontractId && isZeroValueMeasurement(measurement)) {

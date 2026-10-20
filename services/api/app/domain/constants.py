@@ -144,6 +144,12 @@ class ConstructionOccurrenceStatus:
     ALL_STATUSES = {OPEN, RESOLVED, CANCELLED}
 
 
+class ConstructionUnitCommissionStatus:
+    OPEN = "open"
+    OVERDUE = "overdue"
+    PAID = "paid"
+
+
 class ConstructionProcurementStatus:
     DRAFT = "draft"
     PENDING_APPROVAL = "pending_approval"

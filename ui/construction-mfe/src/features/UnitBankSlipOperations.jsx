@@ -7,6 +7,7 @@ import {
   isBankSlipBatchRunning,
   toggleSelectionPage,
 } from "./UnitBankSlips.jsx"
+import { brazilTodayISO } from "../utils/brazilDate.js"
 import styles from "../App.module.css"
 
 const CANCEL_MESSAGE = "Solicitar a baixa no banco? O boleto continua ativo até o Sicredi confirmar. "
@@ -19,8 +20,7 @@ export const reconcilableBankSlip = (row) => latestSlipIn(row, ACTIVE_BANK_SLIP_
 export const retryableBankSlip = (row) => latestSlipIn(row, RETRYABLE_BANK_SLIP_STATUSES)
 
 export const bankSlipGenerationReason = (row) => {
-  if (row.status === "OVERDUE" || row.dueDate <
-    new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" })) {
+  if (row.status === "OVERDUE" || row.dueDate < brazilTodayISO()) {
     return "Parcela vencida: não é permitido gerar boleto."
   }
   if (!["OPEN", "OVERDUE"].includes(row.status)) return "Parcela quitada ou cancelada: não se emite boleto novo."

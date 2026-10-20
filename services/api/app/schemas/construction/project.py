@@ -5,13 +5,16 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.domain.business_date import brazil_today
 from app.domain.constants import (
     ConstructionBlockStatus,
     ConstructionProjectStatus,
     ConstructionProjectType,
     ConstructionSchedulePhaseStatus,
+    ConstructionUnitCommissionStatus,
     ConstructionUnitStatus,
 )
+from app.domain.unit_commission_status import unit_commission_status
 
 
 class ConstructionProjectCreate(BaseModel):
@@ -439,12 +442,22 @@ class ConstructionUnitCommissionResponse(BaseModel):
     amount: Decimal
     due_date: date
     payment_date: date | None = None
+    status: str = ConstructionUnitCommissionStatus.OPEN
     composes_sale_price: bool
     receipt_template_id: UUID | None = None
     document_number: str | None = None
     notes: str | None = None
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="after")
+    def _status_by_due_date(self):
+        self.status = unit_commission_status(
+            due_date=self.due_date,
+            payment_date=self.payment_date,
+            today=brazil_today(),
+        )
+        return self
 
 
 class ConstructionUnitCommissionListResponse(BaseModel):
@@ -597,7 +610,6 @@ class ConstructionMeasurementResponse(BaseModel):
     non_compliant_inspections_count: int | None = None
     open_occurrences_count: int | None = None
     external_accounts_payable_id: UUID | None = None
-    external_accounts_payable_status: str | None = None
     external_accounts_payable_shared: bool = False
     created_at: datetime
     updated_at: datetime

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import { FileText } from "lucide-react"
 import { downloadErpPdf, printErpBankSlips } from "../services/constructionApi.js"
 import { bankSlipActionLabel } from "./unitInstallments.js"
+import { brazilTodayISO } from "../utils/brazilDate.js"
 import styles from "../App.module.css"
 
 export const bankSlipStatusLabel = {
@@ -19,7 +20,7 @@ export const isBankSlipBatchRunning = (batch) =>
 const moneyFormatter = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" })
 export const formatBankSlipMoney = (amount) => moneyFormatter.format(Number(amount))
 const overdue = (slip) => ACTIVE_BANK_SLIP_STATUSES.includes(slip.status)
-  && slip.due_date < new Date().toLocaleDateString("en-CA", { timeZone: "America/Sao_Paulo" })
+  && slip.due_date < brazilTodayISO()
 const save = (blob, filename) => {
   const url = URL.createObjectURL(blob)
   const link = document.createElement("a")

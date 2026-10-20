@@ -745,12 +745,14 @@
 }
 
 .statusinactive,
+.statusopen,
 .statusplanned {
   background: var(--status-open-bg);
   color: var(--status-open-text);
 }
 
-.statusin_progress {
+.statusin_progress,
+.statusoverdue {
   background: var(--status-overdue-bg);
   color: var(--status-overdue-text);
 }

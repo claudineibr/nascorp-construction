@@ -25,6 +25,8 @@ import {
 } from "./features/unitInstallments.js"
 import { InstallmentObservationModal } from "./features/InstallmentObservationModal.jsx"
 import { formatUnitType, unitTypeOptions } from "./features/unitTypes.js"
+import { commissionStatusLabel } from "./features/unitCommissions.js"
+import { brazilTodayISO } from "./utils/brazilDate.js"
 import { Pagination as StandalonePagination } from "./components/Pagination.jsx"
 import {
   canLinkPayable,
@@ -287,13 +289,6 @@ const statusOptions = Object.entries(statusLabel)
 const dateFormatter = new Intl.DateTimeFormat("pt-BR", { timeZone: "UTC" })
 const moneyFormatter = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" })
 
-// A forma ingenua (`toISOString().slice(0, 10)`) devolve a data em UTC, e o
-// arquivo ja tinha quatro copias dela.
-const todayISO = () => {
-  const now = new Date()
-  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
-}
-
 const stripNonDigits = (value) => String(value ?? "").replace(/\D/g, "")
 
 const formatCurrencyInput = (value = "") => {
@@ -460,7 +455,7 @@ const newInstallmentLine = (defaults = {}) => ({
   key: `installment-line-${(installmentLineSeq += 1)}`,
   paymentMethod: defaults.paymentMethod ?? "",
   amount: defaults.amount ?? "",
-  paidAt: defaults.paidAt || todayISO(),
+  paidAt: defaults.paidAt || brazilTodayISO(),
   documentNumber: "",
   companyBankAccountId: defaults.companyBankAccountId ?? "",
   cashRegisterId: "",
@@ -2616,7 +2611,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       ...defaultCreateInstallmentForm,
       receivableId: series?.receivableId ?? "",
       startingNumber: String(nextNumber),
-      firstDueDate: new Date().toISOString().slice(0, 10),
+      firstDueDate: brazilTodayISO(),
     })
     setIsCreateInstallmentOpen(true)
   }
@@ -3064,7 +3059,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
     // Estornar devolve o sinal para em aberto: e o caminho para corrigir um
     // sinal que compoe a venda e foi baixado por engano.
-    const paymentDate = commission.paymentDate ? null : new Date().toISOString().slice(0, 10)
+    const paymentDate = commission.paymentDate ? null : brazilTodayISO()
     try {
       await settleConstructionUnitCommission({
         bridge,
@@ -6777,7 +6772,13 @@ function UnitCommissionsPanel({
                     <td>{formatDate(commission.dueDate)}</td>
                     <td>{formatMoney(commission.amount)}</td>
                     <td>
-                      {commission.paymentDate ? formatDate(commission.paymentDate) : "Em aberto"}
+                      {commission.paymentDate ? (
+                        formatDate(commission.paymentDate)
+                      ) : (
+                        <span className={`${styles.statusPill} ${styles[`status${commission.status}`] || ""}`}>
+                          {commissionStatusLabel(commission.status)}
+                        </span>
+                      )}
                     </td>
                     <td className={styles.actionsCell}>
                       <RowActionsMenu

@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 import httpx
 
+from app.domain.business_date import brazil_today
 from app.domain.constants import (
     ConstructionInspectionRoundSource,
     BLOCK_STATUSES,
@@ -45,6 +46,7 @@ from app.domain.events.contracts import EventEnvelope
 from app.domain.services.construction_integration_dispatcher import ConstructionIntegrationDispatchResult
 from app.domain.services.construction_service_template_parser import parse_service_template_spreadsheet
 from app.domain.services.subcontract_service import SubcontractService
+from app.domain.unit_commission_status import unit_commission_status
 from app.infrastructure.database.models import (
     ConstructionBlock,
     ConstructionDocumentationType as ConstructionDocumentationTypeModel,
@@ -952,7 +954,7 @@ class ConstructionProjectService:
         unit.status = ConstructionUnitStatus.RESERVED
         unit.buyer_person_id = request.buyer_person_id
         unit.reserved_at = datetime.now(tz=UTC)
-        unit.reservation_expires_at = request.reservation_expires_at or (date.today() + timedelta(days=7))
+        unit.reservation_expires_at = request.reservation_expires_at or (brazil_today() + timedelta(days=7))
         await self.repository.commit()
         await self.repository.refresh(unit)
         return unit
@@ -2506,7 +2508,7 @@ class ConstructionProjectService:
                 sequence_number=sequence_number,
                 problem=problem or f"Reprovado na verificação: {inspection.description}",
                 status=ConstructionOccurrenceStatus.OPEN,
-                opened_at=opened_on or datetime.now(tz=UTC).date(),
+                opened_at=opened_on or brazil_today(),
                 inspector_person_id=inspector_person_id,
                 registered_by_user_id=actor_user_id,
             )
@@ -2568,7 +2570,7 @@ class ConstructionProjectService:
             problem=request.problem.strip(),
             solution=(request.solution or "").strip() or None,
             status=ConstructionOccurrenceStatus.OPEN,
-            opened_at=request.opened_at or datetime.now(tz=UTC).date(),
+            opened_at=request.opened_at or brazil_today(),
             inspector_person_id=request.inspector_person_id or item.inspector_person_id,
             registered_by_user_id=actor_user_id,
         )
@@ -2610,7 +2612,7 @@ class ConstructionProjectService:
                 )
 
             if not updates.get("closed_at") and occurrence.closed_at is None:
-                updates["closed_at"] = datetime.now(tz=UTC).date()
+                updates["closed_at"] = brazil_today()
 
         if next_status == ConstructionOccurrenceStatus.OPEN:
             updates["closed_at"] = None
@@ -4581,6 +4583,7 @@ class ConstructionProjectService:
             (commission.amount for commission in commissions if commission.payment_date is not None),
             Decimal("0"),
         )
+        today = brazil_today()
         return {
             "construction_unit_id": unit.id,
             "unit_code": unit.code,
@@ -4608,6 +4611,11 @@ class ConstructionProjectService:
                     "amount": commission.amount,
                     "due_date": commission.due_date,
                     "payment_date": commission.payment_date,
+                    "status": unit_commission_status(
+                        due_date=commission.due_date,
+                        payment_date=commission.payment_date,
+                        today=today,
+                    ),
                     "composes_sale_price": commission.composes_sale_price,
                     "receipt_template_id": commission.receipt_template_id,
                     "document_number": commission.document_number,
@@ -4640,7 +4648,7 @@ class ConstructionProjectService:
 
     @staticmethod
     def _validate_not_in_the_future(*, start_date, end_date) -> None:
-        today = datetime.now(tz=UTC).date()
+        today = brazil_today()
         if start_date is not None and start_date > today:
             raise ConstructionInvalidValueError(
                 message="A data de início não pode ser futura.",

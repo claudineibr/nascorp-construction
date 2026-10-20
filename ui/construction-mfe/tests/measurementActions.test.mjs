@@ -40,12 +40,12 @@ test("linked, unapproved or supplierless measurement cannot link a title", () =>
 test("financial badge tells own title, subcontract DNF, zero value and pending apart", () => {
   const base = { status: "approved", supplierPersonId: "supplier" }
   assert.deepEqual(
-    measurementPayableBadge({ ...base, netAmount: "810.00", externalAccountsPayableId: "t", externalAccountsPayableStatus: "PAID" }),
-    { tone: "success", label: "Vinculado", detail: "Pago" },
+    measurementPayableBadge({ ...base, netAmount: "810.00", externalAccountsPayableId: "t" }),
+    { tone: "success", label: "Vinculado", detail: null },
   )
   assert.equal(
-    measurementPayableBadge({ ...base, netAmount: "0.00", externalAccountsPayableId: "t", externalAccountsPayableStatus: "OPEN", externalAccountsPayableShared: true }).detail,
-    "DNF da empreitada · Em aberto",
+    measurementPayableBadge({ ...base, netAmount: "0.00", externalAccountsPayableId: "t", externalAccountsPayableShared: true }).detail,
+    "DNF da empreitada",
   )
   assert.equal(measurementPayableBadge({ ...base, netAmount: "0.00" }).label, "Sem valor")
   assert.equal(measurementPayableBadge({ ...base, netAmount: "0.00", subcontractId: "contract" }).label, "Pendente")

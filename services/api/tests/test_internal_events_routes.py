@@ -206,7 +206,7 @@ def test_internal_event_route_applies_accounts_payable_status_update() -> None:
     assert payload["id"] == str(measurement_id)
     assert payload["company_id"] == str(company_id)
     assert payload["status"] == "approved"
-    assert payload["external_accounts_payable_status"] == "PAID"
+    assert "external_accounts_payable_status" not in payload
     assert fake_service.received_event.event_type == "erp.accounts_payable.updated.v1"
 
 
