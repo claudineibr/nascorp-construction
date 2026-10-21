@@ -487,6 +487,8 @@ const defaultSaleUnitForm = {
   brokerPersonId: "",
   salePrice: "",
   discountAmount: "",
+  financingCompleted: false,
+  financingDate: "",
   contractSignatureDate: "",
   saleNotes: "",
   downPaymentAmount: "",
@@ -2459,6 +2461,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       brokerPersonId: unit.brokerPersonId ?? "",
       salePrice: formatCurrencyFromNumber(unit.salePrice),
       discountAmount: formatCurrencyFromNumber(unit.discountAmount),
+      financingCompleted: unit.financingCompleted ?? false,
+      financingDate: unit.financingDate ?? "",
       contractSignatureDate: unit.contractSignatureDate ?? "",
       saleNotes: unit.saleNotes ?? "",
       terminationTerms: unit.currentSaleId ? null : selectedProject?.terminationDefaults ?? emptyTerminationTerms(),
@@ -2557,6 +2561,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         brokerPersonId: unit.brokerPersonId ?? "",
         salePrice: formatCurrencyFromNumber(unit.salePrice),
         discountAmount: formatCurrencyFromNumber(unit.discountAmount),
+        financingCompleted: unit.financingCompleted ?? false,
+        financingDate: unit.financingDate ?? "",
         contractSignatureDate: unit.contractSignatureDate ?? "",
         saleNotes: unit.saleNotes ?? "",
         ...planFields,
@@ -9102,6 +9108,23 @@ function SaleUnitModal({
                 value={saleForm.discountAmount}
                 onChange={(event) => onChange("discountAmount", formatCurrencyInput(event.target.value))}
                 placeholder="0,00"
+              />
+            </label>
+            <label className={styles.checkboxControl}>
+              <input
+                type="checkbox"
+                checked={saleForm.financingCompleted}
+                disabled={loading}
+                onChange={(event) => onChange("financingCompleted", event.target.checked)}
+              />
+              <span>Financiamento concluído</span>
+            </label>
+            <label className={styles.filterControl}>
+              <span>Data do financiamento</span>
+              <input
+                type="date"
+                value={saleForm.financingDate}
+                onChange={(event) => onChange("financingDate", event.target.value)}
               />
             </label>
             <label className={styles.filterControl}>

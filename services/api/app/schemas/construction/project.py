@@ -233,6 +233,8 @@ class ConstructionUnitResponse(BaseModel):
     discount_amount: Decimal | None = None
     net_sale_price: Decimal | None = None
     contract_signature_date: date | None = None
+    financing_completed: bool = False
+    financing_date: date | None = None
     sale_notes: str | None = None
     reserved_at: datetime | None = None
     reservation_expires_at: date | None = None
@@ -330,6 +332,8 @@ class ConstructionUnitSaleConfirmRequest(BaseModel):
     sale_price: Decimal | None = Field(default=None, gt=0)
     discount_amount: Decimal | None = Field(default=None, ge=0)
     contract_signature_date: date | None = None
+    financing_completed: bool = False
+    financing_date: date | None = None
     sale_notes: str | None = None
     first_due_date: date
     installments: int = Field(default=1, ge=1, le=120)
@@ -380,6 +384,8 @@ class ConstructionUnitSaleResponse(BaseModel):
     discount_amount: Decimal | None = None
     sold_at: datetime | None = None
     contract_signature_date: date | None = None
+    financing_completed: bool = False
+    financing_date: date | None = None
     external_contract_id: UUID | None = None
     termination_terms: dict[str, Any] = Field(default_factory=dict)
     terminated_at: datetime | None = None

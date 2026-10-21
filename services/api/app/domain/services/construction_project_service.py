@@ -1133,6 +1133,19 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_UNIT_WITHOUT_INSTALLMENT_SOURCE",
             )
 
+        if request.financing_date is not None:
+            if request.financing_date > get_business_today(current_business_timezone()):
+                raise ConstructionInvalidValueError(
+                    message="A data do financiamento não pode ser futura.",
+                    error_code="CONSTRUCTION_FINANCING_FUTURE_DATE",
+                )
+
+            if not any(source["source_type"] == "financing" and source["amount"] > 0 for source in payment_sources):
+                raise ConstructionInvalidValueError(
+                    message="A data do financiamento exige financiamento maior que zero.",
+                    error_code="CONSTRUCTION_FINANCING_REQUIRED",
+                )
+
         await self._replace_unit_payment_sources(unit=unit, payment_sources=payment_sources)
         await self._replace_unit_documentations(unit=unit, documentations=documentations)
 
@@ -1142,6 +1155,8 @@ class ConstructionProjectService:
         unit.broker_person_id = request.broker_person_id
         unit.sale_price = sale_price
         unit.discount_amount = discount_amount
+        unit.financing_completed = request.financing_completed
+        unit.financing_date = request.financing_date
         unit.contract_signature_date = request.contract_signature_date
         unit.sale_notes = (request.sale_notes or "").strip() or None
         unit.sold_at = unit.sold_at or datetime.now(tz=UTC)
@@ -1211,6 +1226,8 @@ class ConstructionProjectService:
         sale.discount_amount = unit.discount_amount
         sale.sale_notes = unit.sale_notes
         sale.sold_at = unit.sold_at
+        sale.financing_completed = unit.financing_completed
+        sale.financing_date = unit.financing_date
         sale.contract_signature_date = unit.contract_signature_date
         sale.payment_sources = self._json_safe(payment_sources)
         sale.documentations = self._json_safe(documentations)
@@ -1272,6 +1289,8 @@ class ConstructionProjectService:
         unit.secondary_buyer_person_id = None
         unit.broker_person_id = None
         unit.discount_amount = None
+        unit.financing_completed = False
+        unit.financing_date = None
         unit.contract_signature_date = None
         unit.sale_notes = None
         unit.sold_at = None
@@ -1314,6 +1333,8 @@ class ConstructionProjectService:
             discount_amount=unit.discount_amount,
             sale_notes=unit.sale_notes,
             sold_at=unit.sold_at,
+            financing_completed=unit.financing_completed,
+            financing_date=unit.financing_date,
             contract_signature_date=unit.contract_signature_date,
             external_contract_id=unit.external_contract_id,
             external_receivable_id=unit.external_receivable_id,
@@ -1548,6 +1569,8 @@ class ConstructionProjectService:
         unit.broker_person_id = sale.broker_person_id
         unit.sale_price = sale.sale_price if sale.sale_price is not None else unit.sale_price
         unit.discount_amount = sale.discount_amount
+        unit.financing_completed = sale.financing_completed
+        unit.financing_date = sale.financing_date
         unit.contract_signature_date = sale.contract_signature_date
         unit.sale_notes = sale.sale_notes
         unit.sold_at = sale.sold_at
