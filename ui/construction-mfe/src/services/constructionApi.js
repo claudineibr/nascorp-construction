@@ -1,9 +1,51 @@
 import { currencyDecimal } from "../utils/procurementAmounts.js"
+import { currencyFromNumber } from "../utils/currencyInput.js"
 
 const DEFAULT_CONSTRUCTION_API_URL = "http://127.0.0.1:8010"
 const DEFAULT_ERP_API_URL = "http://127.0.0.1:8000"
 
 const stripNonDigits = (value) => String(value ?? "").replace(/\D/g, "")
+
+const toPercentView = (value) => (value != null ? String(value).replace(".", ",") : "")
+
+export const toTerminationTermsView = (terms) => ({
+  deductions: (terms?.deductions ?? []).map((deduction) => ({
+    type: deduction.type,
+    value: ["FIXED", "BROKERAGE"].includes(deduction.type)
+      ? currencyFromNumber(deduction.value)
+      : toPercentView(deduction.value),
+    label: deduction.label ?? "",
+  })),
+  minimumRefundPercent: toPercentView(terms?.minimum_refund_percent),
+  refundDeadlineDays: terms?.refund_deadline_days != null ? String(terms.refund_deadline_days) : "",
+  hasSegregatedAssets: terms?.has_segregated_assets ?? null,
+})
+
+const toPercentNumber = (value) => {
+  const parsed = Number(String(value ?? "").replace(",", "."))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+export const TERMINATION_TERMS_INCOMPLETE_MESSAGE = "Preencha o tipo e o valor de cada dedução ou remova a linha."
+
+export const terminationTermsError = (terms) =>
+  (terms?.deductions ?? []).some((deduction) => !deduction.type || !String(deduction.value ?? "").trim())
+    ? TERMINATION_TERMS_INCOMPLETE_MESSAGE
+    : null
+
+export const toTerminationTermsPayload = (terms) => ({
+  deductions: (terms?.deductions ?? [])
+    .filter((deduction) => deduction.type && String(deduction.value ?? "").trim())
+    .map((deduction) => ({
+      type: deduction.type,
+      value: ["FIXED", "BROKERAGE"].includes(deduction.type)
+        ? currencyDecimal(deduction.value)
+        : String(toPercentNumber(deduction.value)),
+      label: String(deduction.label ?? "").trim() || null,
+    })),
+  minimum_refund_percent: toPercentNumber(terms?.minimumRefundPercent),
+  refund_deadline_days: Number(terms?.refundDeadlineDays || 0),
+})
 
 const toProjectView = (project) => ({
   id: project.id,
@@ -27,6 +69,8 @@ const toProjectView = (project) => ({
   lot: project.lot ?? "",
   registration: project.registration ?? "",
   landArea: project.land_area ?? null,
+  terminationDefaults: toTerminationTermsView(project.termination_defaults),
+  hasSegregatedAssets: Boolean(project.has_segregated_assets),
   createdAt: project.created_at ?? null,
   updatedAt: project.updated_at ?? null,
   buyerUnits: (project.buyer_units ?? []).map((unit) => ({
@@ -97,6 +141,7 @@ const toUnitView = (unit) => ({
   externalReceivableId: unit.external_receivable_id ?? null,
   externalReceivableStatus: unit.external_receivable_status ?? null,
   analyticCostCenterId: unit.analytic_cost_center_id ?? null,
+  currentSaleId: unit.current_sale_id ?? null,
   status: unit.status,
   createdAt: unit.created_at ?? null,
   updatedAt: unit.updated_at ?? null,
@@ -288,6 +333,7 @@ const toMeasurementView = (measurement) => ({
   competenceDate: measurement.competence_date ?? null,
   description: measurement.description ?? "",
   grossAmount: measurement.gross_amount ?? null,
+  purpose: measurement.purpose ?? (measurement.subcontract_id ? "CONTRACT" : Number(measurement.gross_amount ?? measurement.measured_amount ?? 0) === 0 ? "CONTROL" : "SERVICE"),
   subcontractId: measurement.subcontract_id ?? null,
   subcontractVersionId: measurement.subcontract_version_id ?? null,
   retentionDetails: measurement.retention_details ?? [],
@@ -427,6 +473,8 @@ const toProjectPayload = (projectData = {}) => ({
   lot: toNullableString(projectData.lot),
   registration: toNullableString(projectData.registration),
   land_area: projectData.landArea ? Number(projectData.landArea) : null,
+  has_segregated_assets: Boolean(projectData.hasSegregatedAssets),
+  termination_defaults: projectData.terminationDefaults ? toTerminationTermsPayload(projectData.terminationDefaults) : null,
 })
 
 const toBlockPayload = (blockData = {}) => ({
@@ -500,6 +548,7 @@ const toUnitPayload = (unitData = {}) => ({
 })
 
 const toMeasurementPayload = (measurementData = {}) => ({
+  purpose: measurementData.purpose ?? null,
   subcontract_id: toNullableString(measurementData.subcontractId),
   retention_details: measurementData.retentionDetails ?? [],
   unit_id: toNullableString(measurementData.unitId),
@@ -1016,10 +1065,106 @@ export async function confirmConstructionUnitSale({ bridge, unitId, saleData }) 
       installments: Number(saleData.installments || paymentSources[0]?.installments || 1),
       payment_sources: paymentSources.length ? paymentSources : null,
       documentations: (saleData.documentations ?? []).map(toSaleDocumentationPayload),
+      ...(saleData.terminationTerms ? { termination_terms: toTerminationTermsPayload(saleData.terminationTerms) } : {}),
     },
   })
 
   return toUnitView(payload)
+}
+
+const toUnitSaleView = (sale) => ({
+  id: sale.id,
+  sequence: sale.sequence,
+  status: sale.status,
+  source: sale.source,
+  buyerPersonId: sale.buyer_person_id ?? null,
+  secondaryBuyerPersonId: sale.secondary_buyer_person_id ?? null,
+  brokerPersonId: sale.broker_person_id ?? null,
+  salePrice: sale.sale_price ?? null,
+  discountAmount: sale.discount_amount ?? null,
+  soldAt: sale.sold_at ?? null,
+  contractSignatureDate: sale.contract_signature_date ?? null,
+  terminationTerms: toTerminationTermsView(sale.termination_terms),
+  terminatedAt: sale.terminated_at ?? null,
+  terminationDate: sale.termination_date ?? null,
+  terminationReason: sale.termination_reason ?? "",
+  terminationNotes: sale.termination_notes ?? "",
+  externalTerminationId: sale.external_termination_id ?? null,
+  refundAmount: sale.refund_amount ?? null,
+  paidAmount: sale.paid_amount ?? null,
+})
+
+export async function listConstructionUnitSales({ bridge, unitId }) {
+  const payload = await requestJson({ bridge, path: `/v1/construction/units/${unitId}/sales` })
+  return (payload?.items ?? []).map(toUnitSaleView)
+}
+
+const toTerminationPayload = (terminationData = {}) => ({
+  termination_date: terminationData.terminationDate,
+  reason: String(terminationData.reason ?? "").trim(),
+  notes: toNullableString(terminationData.notes),
+  additional_refund: currencyDecimal(terminationData.additionalRefund || "0"),
+  preview_version: toNullableString(terminationData.previewVersion),
+  refund:
+    terminationData.destination === "refund"
+      ? {
+          first_due_date: terminationData.refundFirstDueDate,
+          installments: Number(terminationData.refundInstallments || 1),
+        }
+      : null,
+})
+
+export async function previewConstructionUnitTermination({ bridge, unitId, terminationData }) {
+  return requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/termination/preview`,
+    method: "POST",
+    body: toTerminationPayload(terminationData),
+  })
+}
+
+export async function terminateConstructionUnit({ bridge, unitId, terminationData }) {
+  return requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/termination`,
+    method: "POST",
+    body: toTerminationPayload(terminationData),
+  })
+}
+
+export async function reactivateConstructionUnitTermination({ bridge, unitId, reason }) {
+  return requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/termination/reactivate`,
+    method: "POST",
+    body: { reason: String(reason ?? "").trim() },
+  })
+}
+
+export async function listConstructionUnitBuyerCredits({ bridge, unitId }) {
+  return requestJson({ bridge, path: `/v1/construction/units/${unitId}/customer-credits` })
+}
+
+export async function offsetConstructionUnitInstallmentWithCredit({
+  bridge,
+  unitId,
+  installmentNumber,
+  receivableId = null,
+  amount,
+  paidAt,
+  observation,
+}) {
+  return requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/installments/${installmentNumber}/credit-offset`,
+    method: "POST",
+    body: {
+      receivable_id: toNullableString(receivableId),
+      amount: currencyDecimal(amount),
+      paid_at: paidAt,
+      observation: toNullableString(observation),
+    },
+  })
 }
 
 export async function updateConstructionUnitInstallment({
@@ -1673,8 +1818,8 @@ export async function downloadConstructionServiceTemplateExample({ bridge }) {
   return response.blob()
 }
 
-export async function importConstructionServiceTemplates({ bridge, files }) {
-  return uploadServiceTemplateFiles({ bridge, files, path: "/v1/construction/service-templates/import" })
+export async function importConstructionServiceTemplates({ bridge, files, mode = "create", revisions = {} }) {
+  return uploadServiceTemplateFiles({ bridge, files, revisions, path: `/v1/construction/service-templates/import?mode=${mode}` })
 }
 
 export async function importConstructionProjectServices({ bridge, projectId, files }) {
@@ -1685,7 +1830,7 @@ export async function importConstructionProjectServices({ bridge, projectId, fil
   })
 }
 
-async function uploadServiceTemplateFiles({ bridge, files, path }) {
+async function uploadServiceTemplateFiles({ bridge, files, path, revisions = {} }) {
   const apiBaseUrl = bridge?.constructionApiBaseUrl || DEFAULT_CONSTRUCTION_API_URL
   const headers = { ...(bridge?.getAuthHeaders?.() ?? {}) }
 
@@ -1694,6 +1839,7 @@ async function uploadServiceTemplateFiles({ bridge, files, path }) {
   }
 
   const formData = new FormData()
+  formData.append("expected_revisions", JSON.stringify(revisions))
   for (const file of files) {
     formData.append("files", file, file.name)
   }
@@ -1719,6 +1865,9 @@ async function uploadServiceTemplateFiles({ bridge, files, path }) {
 
   return {
     results: (payload.results ?? []).map((result) => ({
+      revisionToken: result.revision_token ?? null,
+      changes: result.changes ?? [],
+      existingItemsCount: result.existing_items_count ?? 0,
       fileName: result.file_name,
       status: result.status,
       serviceTemplateId: result.service_template_id ?? null,
@@ -1767,6 +1916,14 @@ export async function createConstructionMeasurementItem({ bridge, measurementId,
   })
 
   return toMeasurementItemView(payload)
+}
+
+export async function createConstructionMeasurementItems({ bridge, measurementId, items }) {
+  const payload = await requestJson({ bridge,
+    path: `/v1/construction/measurements/${measurementId}/items`, method: "POST",
+    body: items.map(toMeasurementItemPayload),
+  })
+  return { items: (payload.items ?? []).map(toMeasurementItemView), total: payload.total ?? 0 }
 }
 
 export async function updateConstructionMeasurementItem({ bridge, itemId, itemData }) {

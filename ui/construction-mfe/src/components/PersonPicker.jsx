@@ -225,7 +225,7 @@ export function PersonPicker({
           <span className={styles.name} title={nomeSelecionado}>
             {nomeSelecionado}
           </span>
-          <button
+          {!disabled && <button
             type="button"
             className={styles.clearButton}
             onClick={limpar}
@@ -234,7 +234,7 @@ export function PersonPicker({
             title="Remover"
           >
             <X size={14} />
-          </button>
+          </button>}
         </div>
       ) : (
         <div className={styles.search}>

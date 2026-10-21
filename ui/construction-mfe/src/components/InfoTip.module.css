@@ -60,3 +60,13 @@
 .infoButton:focus .tooltip {
   display: block;
 }
+
+.floating {
+  display: block;
+  position: fixed;
+  top: var(--info-top, 0px);
+  left: var(--info-left, 0px);
+  width: var(--info-width, 360px);
+  z-index: var(--z-popover, 1100);
+  pointer-events: none;
+}

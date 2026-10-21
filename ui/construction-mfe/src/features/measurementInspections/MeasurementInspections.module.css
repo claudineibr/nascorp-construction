@@ -589,3 +589,8 @@
     flex: 1;
   }
 }
+
+.primaryButton:hover:not(:disabled) {
+  background: var(--color-primary-strong);
+  border-color: var(--color-primary-strong);
+}

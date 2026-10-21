@@ -40,7 +40,7 @@ async def measurement(session, service, company_id, project, supplier, contract,
         document_type="NFS-e", document_number=code, retention_details=[])
     session.add(parent)
     await session.flush()
-    item = ConstructionMeasurementItem(id=uuid4(), company_id=company_id, measurement_id=parent.id,
+    item = ConstructionMeasurementItem(company_id=company_id, measurement_id=parent.id,
         sequence_number=1, description="Parede", amount=Decimal("30"))
     await service.bind_item(parent, item, contract["items"][0]["id"], Decimal(quantity))
     session.add(item)

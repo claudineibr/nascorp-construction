@@ -1,4 +1,6 @@
 import calendar
+import hashlib
+import json
 import logging
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -7,7 +9,7 @@ from uuid import UUID, uuid4
 
 import httpx
 
-from app.domain.business_clock import current_business_timezone, get_business_today
+from app.domain.business_clock import BRAZIL_TIMEZONES, current_business_timezone, get_business_today
 from app.domain.constants import (
     ConstructionInspectionRoundSource,
     BLOCK_STATUSES,
@@ -46,7 +48,9 @@ from app.domain.events.contracts import EventEnvelope
 from app.domain.services.construction_integration_dispatcher import ConstructionIntegrationDispatchResult
 from app.domain.services.construction_service_template_parser import parse_service_template_spreadsheet
 from app.domain.services.subcontract_service import SubcontractService
+from app.domain.measurement_workflow import assert_measurement_editable, measurement_purpose, resolve_measurement_purpose
 from app.domain.unit_commission_status import unit_commission_status
+from app.domain.unit_termination_terms import normalize_termination_terms
 from app.infrastructure.database.models import (
     ConstructionBlock,
     ConstructionDocumentationType as ConstructionDocumentationTypeModel,
@@ -67,6 +71,7 @@ from app.infrastructure.database.models import (
     ConstructionProject,
     ConstructionSchedulePhase,
     ConstructionUnit,
+    ConstructionUnitSale,
 )
 from app.infrastructure.repository.construction_repository import ConstructionRepository
 from app.infrastructure.repository.event_repository import EventRepository
@@ -103,6 +108,8 @@ from app.schemas.construction import (
     ConstructionUnitInstallmentPaymentRequest,
     ConstructionUnitReserveRequest,
     ConstructionUnitSaleConfirmRequest,
+    ConstructionUnitTerminationReactivateRequest,
+    ConstructionUnitTerminationRequest,
     ConstructionUnitUpdate,
 )
 
@@ -277,6 +284,15 @@ class ConstructionProjectService:
             lot=request.lot,
             registration=request.registration,
             land_area=request.land_area,
+            has_segregated_assets=request.has_segregated_assets,
+            termination_defaults=(
+                normalize_termination_terms(
+                    request.termination_defaults.model_dump(mode="json"),
+                    has_segregated_assets=request.has_segregated_assets,
+                )
+                if request.termination_defaults is not None
+                else None
+            ),
         )
         await self.repository.add(project)
         project_created_event = self._build_project_created_event(project=project, actor_user_id=actor_user_id)
@@ -612,6 +628,16 @@ class ConstructionProjectService:
             if existing_project and existing_project.id != project.id:
                 raise ConstructionDuplicateCodeError(resource_name="a obra", code=next_code)
 
+        if updates.get("has_segregated_assets", True) is None:
+            updates.pop("has_segregated_assets")
+        if "termination_defaults" in updates or "has_segregated_assets" in updates:
+            segregated = updates.get("has_segregated_assets", project.has_segregated_assets)
+            defaults = updates.get("termination_defaults", project.termination_defaults)
+            if defaults is not None:
+                updates["termination_defaults"] = normalize_termination_terms(
+                    defaults, has_segregated_assets=bool(segregated)
+                )
+
         self._apply_updates(entity=project, updates=updates)
         await self.repository.commit()
         await self.repository.refresh(project)
@@ -779,6 +805,7 @@ class ConstructionProjectService:
         next_status = updates.get("status")
         if next_status is not None:
             self._ensure_known_value(value=next_status, allowed_values=UNIT_STATUSES, field_name="status")
+            self._ensure_status_change_without_termination(current_status=unit.status, next_status=next_status)
 
         next_block_id = updates.get("block_id")
         if "block_id" in updates:
@@ -848,11 +875,8 @@ class ConstructionProjectService:
                 ) from request_error
 
         previous_status = unit.status
-        if next_status and next_status != previous_status:
-            if next_status == ConstructionUnitStatus.DELIVERED:
-                unit.delivered_at = datetime.now(UTC)
-            elif next_status == ConstructionUnitStatus.TERMINATED:
-                await self._record_unit_termination(unit)
+        if next_status and next_status != previous_status and next_status == ConstructionUnitStatus.DELIVERED:
+            unit.delivered_at = datetime.now(UTC)
         reclassify = next_status is not None and next_status != previous_status and "delivered" in {
             previous_status, next_status,
         }
@@ -882,6 +906,28 @@ class ConstructionProjectService:
         await self.repository.commit()
         await self.repository.refresh(unit)
         return unit
+
+    @staticmethod
+    def _ensure_status_change_without_termination(*, current_status: str, next_status: str) -> None:
+        if next_status == current_status:
+            return
+        sale_statuses = {ConstructionUnitStatus.SOLD, ConstructionUnitStatus.DELIVERED}
+        leaves_sale = current_status in sale_statuses and next_status not in sale_statuses
+        if (
+            next_status == ConstructionUnitStatus.TERMINATED
+            or leaves_sale
+            or current_status == ConstructionUnitStatus.TERMINATED
+        ):
+            _logger.info(
+                f"[unit_termination] status_refused: current={current_status} next={next_status}"
+            )
+            raise ConstructionInvalidValueError(
+                message=(
+                    "Para desfazer a venda use a ação Distratar da unidade: ela calcula a devolução, "
+                    "baixa as parcelas em aberto e devolve a unidade para Disponível."
+                ),
+                error_code="CONSTRUCTION_UNIT_STATUS_REQUIRES_TERMINATION",
+            )
 
     async def _refuse_when_unit_has_installments(self, *, company_id: UUID, unit: ConstructionUnit, acao: str) -> None:
         """Recusa tirar o dono da unidade enquanto houver parcela no ERP.
@@ -1060,7 +1106,9 @@ class ConstructionProjectService:
         documentations = await self._resolve_sale_documentations(unit=unit, request=request)
         documentation_total = self._sum_documentations(documentations=documentations)
         commission_offset = self._sum_composing_commissions(
-            await self.repository.list_unit_commissions(company_id=company_id, unit_id=unit_id)
+            await self.repository.list_unit_commissions(
+                company_id=company_id, unit_id=unit_id, sale_id=unit.current_sale_id
+            )
         )
         payment_sources = self._build_sale_payment_sources(
             request=request,
@@ -1100,6 +1148,14 @@ class ConstructionProjectService:
         unit.reservation_expires_at = None
 
         project = await self.repository.get_project(company_id=company_id, project_id=unit.project_id)
+        sale = await self._upsert_current_sale(
+            unit=unit,
+            project=project,
+            request=request,
+            payment_sources=payment_sources,
+            documentations=documentations,
+            actor_user_id=actor_user_id,
+        )
         sale_event = self._build_unit_sold_event(
             unit=unit,
             analytic_cost_center_id=unit.analytic_cost_center_id,
@@ -1113,6 +1169,7 @@ class ConstructionProjectService:
             commission_offset=commission_offset,
             receipt_template_id=project.receipt_template_id if project is not None else None,
             actor_user_id=actor_user_id,
+            sale=sale,
         )
         dispatch_result = await self._dispatch_integration_event(
             event=sale_event,
@@ -1121,18 +1178,517 @@ class ConstructionProjectService:
         if dispatch_result is not None and dispatch_result.response_event is not None:
             erp_event = dispatch_result.response_event
             self._apply_contract_snapshot_from_payload(unit=unit, payload=erp_event.payload)
+        sale.external_contract_id = unit.external_contract_id
+        sale.external_receivable_id = unit.external_receivable_id
 
         await self.repository.commit()
         await self.repository.refresh(unit)
         return unit
 
-    async def _record_unit_termination(self, unit):
-        await self.repository.delete_unpaid_unit_commissions(company_id=unit.company_id, unit_id=unit.id)
+    async def _upsert_current_sale(
+        self,
+        *,
+        unit: ConstructionUnit,
+        project: ConstructionProject | None,
+        request: ConstructionUnitSaleConfirmRequest,
+        payment_sources: list[dict[str, Any]],
+        documentations: list[dict[str, Any]],
+        actor_user_id: UUID | None,
+    ) -> ConstructionUnitSale:
+        sale = await self._ensure_current_sale(unit=unit, project=project, actor_user_id=actor_user_id)
+        if request.termination_terms is not None:
+            segregated = self._sale_has_segregated_assets(sale=sale, project=project)
+            sale.termination_terms = {
+                **normalize_termination_terms(
+                    request.termination_terms.model_dump(mode="json"), has_segregated_assets=segregated
+                ),
+                "has_segregated_assets": segregated,
+            }
+        sale.buyer_person_id = unit.buyer_person_id
+        sale.secondary_buyer_person_id = unit.secondary_buyer_person_id
+        sale.broker_person_id = unit.broker_person_id
+        sale.sale_price = unit.sale_price
+        sale.discount_amount = unit.discount_amount
+        sale.sale_notes = unit.sale_notes
+        sale.sold_at = unit.sold_at
+        sale.contract_signature_date = unit.contract_signature_date
+        sale.payment_sources = self._json_safe(payment_sources)
+        sale.documentations = self._json_safe(documentations)
+        return sale
+
+    @classmethod
+    def _json_safe(cls, value):
+        if isinstance(value, dict):
+            return {str(key): cls._json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._json_safe(item) for item in value]
+        if isinstance(value, Decimal):
+            return str(value)
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()
+        if isinstance(value, UUID):
+            return str(value)
+        return value
+
+    async def _record_unit_termination(self, unit, sale):
+        deleted_commissions = await self.repository.delete_unpaid_unit_commissions(
+            company_id=unit.company_id, unit_id=unit.id, sale_id=unit.current_sale_id
+        )
         terminated_at = datetime.now(UTC)
-        if unit.sold_at:
+        cost_history_appended = bool(unit.sold_at)
+        if cost_history_appended:
             unit.cost_sale_history = [*(unit.cost_sale_history or []),
                 {"sold_at": unit.sold_at.isoformat(), "terminated_at": terminated_at.isoformat()}]
+        sale.delivered_at = unit.delivered_at
+        sale.external_contract_status = unit.external_contract_status
+        sale.external_receivable_status = unit.external_receivable_status
+        sale.termination_snapshot = self._json_safe({
+            "cost_sale_history_appended": cost_history_appended,
+            "unit_status": unit.status,
+            "deleted_commissions": [
+                {
+                    "id": commission.id,
+                    "beneficiary_person_id": commission.beneficiary_person_id,
+                    "sequence_number": commission.sequence_number,
+                    "amount": commission.amount,
+                    "due_date": commission.due_date,
+                    "composes_sale_price": commission.composes_sale_price,
+                    "receipt_template_id": commission.receipt_template_id,
+                    "document_number": commission.document_number,
+                    "notes": commission.notes,
+                }
+                for commission in deleted_commissions
+            ],
+        })
         unit.terminated_at = terminated_at
+        unit.delivered_at = None
+        return terminated_at
+
+    async def _release_terminated_unit(self, unit):
+        await self._replace_unit_payment_sources(unit=unit, payment_sources=[])
+        await self._replace_unit_documentations(unit=unit, documentations=[])
+        unit.status = ConstructionUnitStatus.AVAILABLE
+        unit.buyer_person_id = None
+        unit.secondary_buyer_person_id = None
+        unit.broker_person_id = None
+        unit.discount_amount = None
+        unit.contract_signature_date = None
+        unit.sale_notes = None
+        unit.sold_at = None
+        unit.reserved_at = None
+        unit.reservation_expires_at = None
+        unit.external_contract_id = None
+        unit.external_contract_status = None
+        unit.external_receivable_id = None
+        unit.external_receivable_status = None
+        unit.current_sale_id = None
+
+    TERMINABLE_UNIT_STATUSES: ClassVar[set[str]] = {
+        ConstructionUnitStatus.SOLD,
+        ConstructionUnitStatus.DELIVERED,
+        ConstructionUnitStatus.TERMINATED,
+    }
+
+    @staticmethod
+    def _sale_has_segregated_assets(*, sale: ConstructionUnitSale | None, project: ConstructionProject | None) -> bool:
+        stored = (getattr(sale, "termination_terms", None) or {}).get("has_segregated_assets")
+        if stored is not None:
+            return bool(stored)
+        return bool(getattr(project, "has_segregated_assets", False))
+
+    def _build_current_sale(
+        self, *, unit: ConstructionUnit, project: ConstructionProject | None, actor_user_id: UUID | None, sequence: int
+    ) -> ConstructionUnitSale:
+        segregated = bool(getattr(project, "has_segregated_assets", False))
+        return ConstructionUnitSale(
+            id=uuid4(),
+            company_id=unit.company_id,
+            unit_id=unit.id,
+            sequence=sequence,
+            status="ACTIVE",
+            source="NATIVE",
+            buyer_person_id=unit.buyer_person_id,
+            secondary_buyer_person_id=unit.secondary_buyer_person_id,
+            broker_person_id=unit.broker_person_id,
+            sale_price=unit.sale_price,
+            discount_amount=unit.discount_amount,
+            sale_notes=unit.sale_notes,
+            sold_at=unit.sold_at,
+            contract_signature_date=unit.contract_signature_date,
+            external_contract_id=unit.external_contract_id,
+            external_receivable_id=unit.external_receivable_id,
+            created_by_user_id=actor_user_id,
+            termination_terms={
+                **normalize_termination_terms(
+                    getattr(project, "termination_defaults", None), has_segregated_assets=segregated
+                ),
+                "has_segregated_assets": segregated,
+            },
+        )
+
+    async def _create_current_sale(
+        self, *, unit: ConstructionUnit, project: ConstructionProject | None, actor_user_id: UUID | None
+    ) -> ConstructionUnitSale:
+        sequence = await self.repository.next_unit_sale_sequence(company_id=unit.company_id, unit_id=unit.id)
+        sale = self._build_current_sale(unit=unit, project=project, actor_user_id=actor_user_id, sequence=sequence)
+        await self.repository.add(sale)
+        unit.current_sale_id = sale.id
+        await self.repository.attach_unit_commissions_to_sale(
+            company_id=unit.company_id, unit_id=unit.id, sale_id=sale.id
+        )
+        _logger.info(f"[unit_sale] criada: unit_id={unit.id} sale_id={sale.id} sequence={sale.sequence}")
+        return sale
+
+    async def _get_active_current_sale(self, *, unit: ConstructionUnit) -> ConstructionUnitSale | None:
+        if unit.current_sale_id is None:
+            return None
+        sale = await self.repository.get_unit_sale(company_id=unit.company_id, sale_id=unit.current_sale_id, lock=True)
+        return sale if sale is not None and sale.status == "ACTIVE" else None
+
+    async def _ensure_current_sale(
+        self, *, unit: ConstructionUnit, project: ConstructionProject | None, actor_user_id: UUID | None
+    ) -> ConstructionUnitSale:
+        sale = await self._get_active_current_sale(unit=unit)
+        if sale is not None:
+            return sale
+        return await self._create_current_sale(unit=unit, project=project, actor_user_id=actor_user_id)
+
+    def _require_terminable_unit(self, unit: ConstructionUnit | None) -> ConstructionUnit:
+        if unit is None:
+            raise ConstructionNotFoundError(resource_name="a unidade")
+        if unit.status not in self.TERMINABLE_UNIT_STATUSES:
+            _logger.info(f"[unit_termination] recusado_status: unit_id={unit.id} status={unit.status}")
+            raise ConstructionInvalidValueError(
+                message="Só é possível distratar unidade vendida ou entregue.",
+                error_code="CONSTRUCTION_UNIT_INVALID_STATUS",
+            )
+        return unit
+
+    async def _termination_payload(
+        self,
+        *,
+        unit: ConstructionUnit,
+        sale: ConstructionUnitSale,
+        project: ConstructionProject | None,
+        request: ConstructionUnitTerminationRequest,
+    ) -> dict[str, Any]:
+        commissions = await self.repository.list_unit_commissions(
+            company_id=unit.company_id, unit_id=unit.id, sale_id=sale.id
+        )
+        broker_signal = sum(
+            (
+                Decimal(str(commission.amount))
+                for commission in commissions
+                if commission.composes_sale_price and commission.payment_date is not None
+            ),
+            Decimal("0"),
+        )
+        price = sale.sale_price if sale.sale_price is not None else unit.sale_price
+        discount = sale.discount_amount if sale.discount_amount is not None else unit.discount_amount
+        net = (Decimal(str(price)) - Decimal(str(discount or 0))) if price is not None else None
+        payload: dict[str, Any] = {
+            "construction_unit_id": str(unit.id),
+            "construction_sale_id": str(sale.id),
+            "contract_id": str(unit.external_contract_id) if unit.external_contract_id else None,
+            "termination_date": request.termination_date.isoformat(),
+            "reason": request.reason.strip(),
+            "notes": (request.notes or "").strip() or None,
+            "terms": {
+                key: value for key, value in (sale.termination_terms or {}).items() if key != "has_segregated_assets"
+            },
+            "has_segregated_assets": self._sale_has_segregated_assets(sale=sale, project=project),
+            "contract_amount": self._format_event_decimal(value=net) if net is not None and net > 0 else None,
+            "broker_signal_amount": self._format_event_decimal(value=broker_signal),
+            "additional_refund": self._format_event_decimal(value=request.additional_refund),
+            "preview_version": request.preview_version,
+        }
+        if request.refund is not None:
+            payload["refund"] = {
+                "first_due_date": request.refund.first_due_date.isoformat(),
+                "installments": request.refund.installments,
+            }
+        return payload
+
+    async def preview_unit_termination(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        request: ConstructionUnitTerminationRequest,
+        actor_user_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        try:
+            unit = self._require_terminable_unit(
+                await self.repository.lock_unit(company_id=company_id, unit_id=unit_id)
+            )
+            project = await self.repository.get_project(company_id=company_id, project_id=unit.project_id)
+            sale = await self._get_active_current_sale(unit=unit) or self._build_current_sale(
+                unit=unit, project=project, actor_user_id=actor_user_id, sequence=0
+            )
+            payload = await self._termination_payload(unit=unit, sale=sale, project=project, request=request)
+            try:
+                return await self.erp_client.preview_unit_termination(
+                    company_id=company_id, user_id=actor_user_id, payload=payload
+                )
+            except httpx.HTTPStatusError as request_error:
+                raise self._erp_domain_error(
+                    request_error=request_error,
+                    fallback_message="Não foi possível calcular o distrato no ERP.",
+                ) from request_error
+        finally:
+            await self.repository.rollback()
+
+    async def terminate_unit(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        request: ConstructionUnitTerminationRequest,
+        actor_user_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        _logger.info(f"[unit_termination] distratar: company_id={company_id} unit_id={unit_id} user={actor_user_id}")
+        unit = self._require_terminable_unit(await self.repository.lock_unit(company_id=company_id, unit_id=unit_id))
+        project = await self.repository.get_project(company_id=company_id, project_id=unit.project_id)
+        sale = await self._ensure_current_sale(unit=unit, project=project, actor_user_id=actor_user_id)
+        sale_id = sale.id
+        payload = await self._termination_payload(unit=unit, sale=sale, project=project, request=request)
+        await self.repository.commit()
+        try:
+            result = await self.erp_client.apply_unit_termination(
+                company_id=company_id, user_id=actor_user_id, payload=payload
+            )
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message="Não foi possível registrar o distrato no ERP.",
+            ) from request_error
+
+        unit = await self.repository.lock_unit(company_id=company_id, unit_id=unit_id)
+        sale = await self.repository.get_unit_sale(company_id=company_id, sale_id=sale_id, lock=True)
+        if sale.status != "ACTIVE" or unit.current_sale_id != sale_id:
+            _logger.info(f"[unit_termination] ja_registrado: unit_id={unit_id} sale_id={sale_id} status={sale.status}")
+            return {**result, "unit_status": unit.status}
+        erp_date = self._read_optional_date(result.get("termination_date"))
+        if erp_date is not None and erp_date != request.termination_date:
+            _logger.info(
+                f"[unit_termination] data_do_erp: unit_id={unit_id} sale_id={sale_id} "
+                f"pedido={request.termination_date} erp={erp_date}"
+            )
+        sale.status = "TERMINATED"
+        sale.terminated_at = await self._record_unit_termination(unit, sale)
+        sale.termination_date = erp_date or request.termination_date
+        sale.termination_reason = str(result.get("reason") or "").strip() or request.reason.strip()
+        sale.termination_notes = (request.notes or "").strip() or None
+        sale.external_termination_id = self._read_optional_uuid(result.get("termination_id"))
+        sale.refund_amount = Decimal(str(result.get("refund_amount") or 0))
+        sale.paid_amount = Decimal(str(result.get("paid_amount") or 0))
+        sale.terminated_by_user_id = actor_user_id
+        sale.external_contract_id = sale.external_contract_id or unit.external_contract_id
+        sale.external_receivable_id = sale.external_receivable_id or unit.external_receivable_id
+        await self._release_terminated_unit(unit)
+        await self.repository.commit()
+        await self.repository.refresh(unit)
+        _logger.info(
+            f"[unit_termination] distratada: unit_id={unit_id} sale_id={sale_id} "
+            f"termination_id={sale.external_termination_id} refund={sale.refund_amount}"
+        )
+        return {**result, "unit_status": unit.status}
+
+    async def reactivate_unit_termination(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        request: ConstructionUnitTerminationReactivateRequest,
+        actor_user_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        _logger.info(f"[unit_termination] reativar: company_id={company_id} unit_id={unit_id} user={actor_user_id}")
+        unit = await self.repository.lock_unit(company_id=company_id, unit_id=unit_id)
+        if unit is None:
+            raise ConstructionNotFoundError(resource_name="a unidade")
+        if unit.status != ConstructionUnitStatus.AVAILABLE or unit.current_sale_id is not None:
+            _logger.info(f"[unit_termination] reativar_recusado_status: unit_id={unit_id} status={unit.status}")
+            raise ConstructionInvalidValueError(
+                message="Só é possível reativar o distrato enquanto a unidade estiver disponível, sem nova venda.",
+                error_code="CONSTRUCTION_UNIT_INVALID_STATUS",
+            )
+        sale = await self.repository.get_latest_native_terminated_sale(company_id=company_id, unit_id=unit_id)
+        if sale is None:
+            _logger.info(f"[unit_termination] reativar_sem_distrato: unit_id={unit_id}")
+            raise ConstructionInvalidValueError(
+                message="A unidade não tem distrato que possa ser reativado.",
+                error_code="CONSTRUCTION_UNIT_TERMINATION_NOT_FOUND",
+            )
+        sale_id = sale.id
+        try:
+            result = await self.erp_client.reactivate_unit_termination(
+                company_id=company_id,
+                user_id=actor_user_id,
+                payload={
+                    "construction_unit_id": str(unit.id),
+                    "construction_sale_id": str(sale_id),
+                    "reason": request.reason.strip(),
+                },
+            )
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message="Não foi possível reativar o distrato no ERP.",
+            ) from request_error
+
+        snapshot = dict(sale.termination_snapshot or {})
+        unit.delivered_at = sale.delivered_at or unit.delivered_at
+        previous_status = snapshot.get("unit_status")
+        if previous_status in {ConstructionUnitStatus.SOLD, ConstructionUnitStatus.DELIVERED}:
+            unit.status = previous_status
+        else:
+            unit.status = ConstructionUnitStatus.DELIVERED if unit.delivered_at else ConstructionUnitStatus.SOLD
+        unit.buyer_person_id = sale.buyer_person_id
+        unit.secondary_buyer_person_id = sale.secondary_buyer_person_id
+        unit.broker_person_id = sale.broker_person_id
+        unit.sale_price = sale.sale_price if sale.sale_price is not None else unit.sale_price
+        unit.discount_amount = sale.discount_amount
+        unit.contract_signature_date = sale.contract_signature_date
+        unit.sale_notes = sale.sale_notes
+        unit.sold_at = sale.sold_at
+        unit.external_contract_id = sale.external_contract_id
+        unit.external_contract_status = sale.external_contract_status
+        unit.external_receivable_id = sale.external_receivable_id
+        unit.external_receivable_status = sale.external_receivable_status
+        unit.current_sale_id = sale.id
+        history = list(unit.cost_sale_history or [])
+        if snapshot.get("cost_sale_history_appended", sale.sold_at is not None) and history and history[-1].get("terminated_at"):
+            history.pop()
+        unit.cost_sale_history = history
+        unit.terminated_at = None
+        await self._restore_terminated_commissions(unit=unit, sale=sale, snapshot=snapshot)
+        await self._replace_unit_payment_sources(unit=unit, payment_sources=list(sale.payment_sources or []))
+        await self._replace_unit_documentations(
+            unit=unit,
+            documentations=[
+                {**row, "sequence_number": row.get("sequence_number") or index}
+                for index, row in enumerate(sale.documentations or [], start=1)
+                if row.get("documentation_type_id")
+            ],
+        )
+        sale.status = "ACTIVE"
+        sale.terminated_at = None
+        sale.termination_date = None
+        sale.termination_reason = None
+        sale.termination_notes = None
+        sale.external_termination_id = None
+        sale.refund_amount = None
+        sale.paid_amount = None
+        sale.terminated_by_user_id = None
+        sale.termination_snapshot = None
+        await self.repository.commit()
+        await self.repository.refresh(unit)
+        _logger.info(f"[unit_termination] reativada: unit_id={unit_id} sale_id={sale_id}")
+        return {**result, "unit_status": unit.status}
+
+    async def _restore_terminated_commissions(self, *, unit, sale, snapshot):
+        deleted = [row for row in snapshot.get("deleted_commissions") or [] if row.get("id")]
+        if not deleted:
+            return
+        restored = await self.repository.restore_unit_commissions(
+            company_id=unit.company_id,
+            unit_id=unit.id,
+            sale_id=sale.id,
+            commission_ids=[UUID(str(row["id"])) for row in deleted],
+        )
+        missing = [row for row in deleted if UUID(str(row["id"])) not in restored]
+        if not missing:
+            return
+        sequence = await self.repository.get_next_commission_sequence(company_id=unit.company_id, unit_id=unit.id)
+        for offset, row in enumerate(missing):
+            await self.repository.add(
+                ConstructionUnitCommissionModel(
+                    id=uuid4(),
+                    company_id=unit.company_id,
+                    unit_id=unit.id,
+                    sale_id=sale.id,
+                    beneficiary_person_id=UUID(str(row["beneficiary_person_id"])),
+                    sequence_number=sequence + offset,
+                    amount=Decimal(str(row["amount"])),
+                    due_date=date.fromisoformat(str(row["due_date"])),
+                    composes_sale_price=bool(row.get("composes_sale_price", True)),
+                    receipt_template_id=self._read_optional_uuid(row.get("receipt_template_id")),
+                    document_number=row.get("document_number"),
+                    notes=row.get("notes"),
+                )
+            )
+        _logger.info(f"[unit_termination] sinais_recriados: unit_id={unit.id} sale_id={sale.id} count={len(missing)}")
+
+    async def list_unit_sales(self, *, company_id: UUID, unit_id: UUID) -> list[ConstructionUnitSale]:
+        await self._get_unit(company_id=company_id, unit_id=unit_id)
+        return await self.repository.list_unit_sales(company_id=company_id, unit_id=unit_id)
+
+    async def list_unit_buyer_credits(
+        self, *, company_id: UUID, unit_id: UUID, actor_user_id: UUID | None = None
+    ) -> dict[str, Any]:
+        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        if unit.buyer_person_id is None:
+            return {"items": [], "total": 0, "page": 1, "page_size": 50, "total_pages": 1, "open_total": "0"}
+        try:
+            return await self.erp_client.list_person_customer_credits(
+                company_id=company_id, user_id=actor_user_id, person_id=unit.buyer_person_id
+            )
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message="Não foi possível consultar o saldo credor no ERP.",
+            ) from request_error
+
+    async def offset_unit_installment_with_credit(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        installment_number: int,
+        amount: Decimal,
+        paid_at: date,
+        receivable_id: UUID | None = None,
+        observation: str | None = None,
+        actor_user_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        unit, target_receivable_id = await self._resolve_unit_receivable_target(
+            company_id=company_id,
+            unit_id=unit_id,
+            receivable_id=receivable_id,
+        )
+        try:
+            return await self.erp_client.offset_unit_installment_with_credit(
+                company_id=company_id,
+                user_id=actor_user_id,
+                payload={
+                    "receivable_id": str(target_receivable_id),
+                    "installment_number": installment_number,
+                    "amount": self._format_event_decimal(value=amount),
+                    "paid_at": paid_at.isoformat(),
+                    "observation": observation,
+                },
+            )
+        except httpx.HTTPStatusError as request_error:
+            raise self._erp_domain_error(
+                request_error=request_error,
+                fallback_message="Não foi possível abater o saldo credor no ERP.",
+            ) from request_error
+
+    @staticmethod
+    def _read_optional_uuid(value: Any) -> UUID | None:
+        try:
+            return UUID(str(value)) if value else None
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _read_optional_date(value: Any) -> date | None:
+        if isinstance(value, date):
+            return value
+        try:
+            return date.fromisoformat(str(value)[:10]) if value else None
+        except ValueError:
+            return None
 
     async def apply_contract_status_updated_event(self, *, event: EventEnvelope) -> ConstructionUnit:
         if event.event_type not in {ErpEventType.CONTRACT_RECEIVABLE_CREATED, ErpEventType.CONTRACT_STATUS_UPDATED}:
@@ -1154,11 +1710,23 @@ class ConstructionProjectService:
 
         self._apply_contract_snapshot_from_payload(unit=unit, payload=event.payload)
         contract_status = str(event.payload.get("contract_status") or "")
-        if contract_status.upper() == "CANCELED":
-            unit.status = ConstructionUnitStatus.AVAILABLE
-            await self._record_unit_termination(unit)
-            unit.sold_at = None
-            unit.external_contract_status = contract_status
+        if contract_status.upper() == "CANCELED" and unit.status in self.TERMINABLE_UNIT_STATUSES:
+            project = await self.repository.get_project(company_id=unit.company_id, project_id=unit.project_id)
+            sale = await self._ensure_current_sale(unit=unit, project=project, actor_user_id=None)
+            reason = str(event.payload.get("reason") or "").strip() or "Contrato cancelado no ERP"
+            _logger.info(
+                f"[unit_termination] contrato_cancelado_no_erp: unit_id={unit.id} sale_id={sale.id} event_id={event.event_id}"
+            )
+            sale.status = "TERMINATED"
+            sale.terminated_at = await self._record_unit_termination(unit, sale)
+            company_timezone = await self.repository.get_company_timezone(company_id=unit.company_id)
+            if company_timezone not in BRAZIL_TIMEZONES:
+                company_timezone = current_business_timezone()
+            sale.termination_date = get_business_today(company_timezone)
+            sale.termination_reason = reason[:500]
+            sale.external_contract_id = sale.external_contract_id or unit.external_contract_id
+            sale.external_receivable_id = sale.external_receivable_id or unit.external_receivable_id
+            await self._release_terminated_unit(unit)
 
         await self.repository.commit()
         await self.repository.refresh(unit)
@@ -1500,7 +2068,11 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_MEASUREMENT_NET_INVALID",
             )
 
+        purpose = resolve_measurement_purpose(request.purpose, request.subcontract_id, gross_amount)
+        if purpose == "CONTROL" and (retentions_amount or net_amount):
+            raise ConstructionInvalidValueError(message="OS de controle não tem valor próprio nem retenções.")
         measurement = ConstructionMeasurement(
+            purpose=purpose,
             company_id=company_id,
             project_id=project_id,
             subcontract_id=subcontract.id if subcontract else None,
@@ -1835,12 +2407,8 @@ class ConstructionProjectService:
         request: ConstructionMeasurementUpdate,
         actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurement:
-        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
-        if measurement.status in {ConstructionMeasurementStatus.APPROVED, ConstructionMeasurementStatus.PAID}:
-            raise ConstructionInvalidValueError(
-                message="Medição aprovada não pode ser alterada.",
-                error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
-            )
+        measurement = await self._get_editable_measurement(company_id=company_id, measurement_id=measurement_id)
+        assert_measurement_editable(measurement)
 
         updates = request.model_dump(exclude_unset=True)
         if "subcontract_id" in updates or getattr(measurement, "subcontract_id", None):
@@ -1901,10 +2469,57 @@ class ConstructionProjectService:
         updates["net_amount"] = net_amount
         updates["measured_amount"] = net_amount
 
+        contract_id = updates.get("subcontract_id", measurement.subcontract_id)
+        purpose = resolve_measurement_purpose(updates.get("purpose") or ("CONTRACT" if contract_id else "SERVICE" if measurement.subcontract_id else measurement_purpose(measurement)), contract_id, gross_amount)
+        if purpose == "CONTROL" and any((gross_amount, retentions_amount, net_amount)):
+            raise ConstructionInvalidValueError(message="OS de controle não tem valor próprio nem retenções.")
+        if purpose != measurement_purpose(measurement):
+            items = await self.repository.list_measurement_items(company_id=company_id, measurement_id=measurement_id)
+            if items:
+                raise ConstructionInvalidValueError(message="Remova os itens antes de trocar a finalidade da medição.")
+        updates["purpose"] = purpose
         self._apply_updates(entity=measurement, updates=updates)
         await self.repository.commit()
         await self.repository.refresh(measurement)
         return measurement
+
+    async def _assert_measurement_references(self, measurement):
+        if not measurement.unit_id:
+            raise ConstructionInvalidValueError(
+                message="Vincule a medição a uma unidade antes de enviar ou aprovar.",
+                error_code="CONSTRUCTION_MEASUREMENT_UNIT_REQUIRED",
+            )
+
+        if not measurement.schedule_phase_id:
+            raise ConstructionInvalidValueError(
+                message="Vincule a medição a uma fase do cronograma antes de enviar ou aprovar.",
+                error_code="CONSTRUCTION_MEASUREMENT_PHASE_REQUIRED",
+            )
+
+        unit = await self._get_unit(company_id=measurement.company_id, unit_id=measurement.unit_id)
+        if not unit.analytic_cost_center_id:
+            raise ConstructionInvalidValueError(
+                message="A unidade precisa de um centro de custo analítico antes de enviar ou aprovar medições.",
+                error_code="CONSTRUCTION_UNIT_COST_CENTER_REQUIRED",
+            )
+
+        if not measurement.supplier_person_id:
+            raise ConstructionInvalidValueError(
+                message="Informe o fornecedor da medição antes de enviar ou aprovar.",
+                error_code="CONSTRUCTION_MEASUREMENT_SUPPLIER_REQUIRED",
+            )
+
+
+        if measurement.subcontract_id:
+            contracts = SubcontractService(self)
+            contract = await contracts.get(measurement.company_id, measurement.subcontract_id)
+            if contract.status != "RELEASED":
+                raise ConstructionInvalidValueError(message="Libere a planilha do contrato antes de enviar a medição.")
+            version = await contracts.repository.version_by_id(measurement.company_id, contract.id, measurement.subcontract_version_id) if measurement.subcontract_version_id else await contracts.repository.version(measurement.company_id, contract.id, contract.released_version)
+            if version is None or measurement.competence_date is None or not (
+                date.fromisoformat(version.sheet["valid_from"]) <= measurement.competence_date <= date.fromisoformat(version.sheet["valid_to"])
+            ):
+                raise ConstructionInvalidValueError(message="Informe competência dentro da vigência do contrato antes de enviar.")
 
     async def submit_measurement(
         self,
@@ -1913,12 +2528,9 @@ class ConstructionProjectService:
         measurement_id: UUID,
         actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurement:
-        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
-        if measurement.status == ConstructionMeasurementStatus.APPROVED:
-            raise ConstructionInvalidValueError(
-                message="Medição aprovada não pode ser enviada de novo.",
-                error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
-            )
+        measurement = await self._get_editable_measurement(company_id=company_id, measurement_id=measurement_id)
+        assert_measurement_editable(measurement)
+        await self._assert_measurement_references(measurement)
 
         await self._assert_measurement_inspections_are_approved(
             company_id=company_id,
@@ -1944,7 +2556,9 @@ class ConstructionProjectService:
         reason: str | None = None,
         actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurement:
-        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
+        measurement = await self.repository.lock_measurement(company_id, measurement_id)
+        if measurement is None:
+            raise ConstructionNotFoundError(resource_name="a medição")
         if measurement.status in {ConstructionMeasurementStatus.APPROVED, ConstructionMeasurementStatus.PAID}:
             raise ConstructionInvalidValueError(
                 message="Medição aprovada não pode ser rejeitada.",
@@ -1967,7 +2581,9 @@ class ConstructionProjectService:
         actor_user_id: UUID | None = None,
         actor_can_self_approve: bool = False,
     ) -> ConstructionMeasurement:
-        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
+        measurement = await self.repository.lock_measurement(company_id, measurement_id)
+        if measurement is None:
+            raise ConstructionNotFoundError(resource_name="a medição")
         if getattr(measurement, "subcontract_id", None):
             measurement = await SubcontractService(self).repository.measurement(company_id, measurement_id, True)
             if measurement.reversal_pending:
@@ -1997,30 +2613,7 @@ class ConstructionProjectService:
             action_label="aprovar",
         )
 
-        if not measurement.unit_id:
-            raise ConstructionInvalidValueError(
-                message="Vincule a medição a uma unidade antes de aprovar.",
-                error_code="CONSTRUCTION_MEASUREMENT_UNIT_REQUIRED",
-            )
-
-        if not measurement.schedule_phase_id:
-            raise ConstructionInvalidValueError(
-                message="Vincule a medição a uma fase do cronograma antes de aprovar.",
-                error_code="CONSTRUCTION_MEASUREMENT_PHASE_REQUIRED",
-            )
-
-        unit = await self._get_unit(company_id=company_id, unit_id=measurement.unit_id)
-        if not unit.analytic_cost_center_id:
-            raise ConstructionInvalidValueError(
-                message="A unidade precisa de um centro de custo analítico antes de aprovar medições.",
-                error_code="CONSTRUCTION_UNIT_COST_CENTER_REQUIRED",
-            )
-
-        if not measurement.supplier_person_id:
-            raise ConstructionInvalidValueError(
-                message="Informe o fornecedor da medição antes de aprovar.",
-                error_code="CONSTRUCTION_MEASUREMENT_SUPPLIER_REQUIRED",
-            )
+        await self._assert_measurement_references(measurement)
 
         is_own_measurement = actor_user_id is not None and actor_user_id in {
             measurement.submitted_by_user_id,
@@ -2082,8 +2675,24 @@ class ConstructionProjectService:
         measurement_id: UUID,
         request: ConstructionMeasurementItemCreate,
         actor_user_id: UUID | None = None,
+        commit=True,
     ) -> ConstructionMeasurementItem:
         measurement = await self._get_editable_measurement(company_id=company_id, measurement_id=measurement_id)
+
+        contract_item = None
+        if measurement.subcontract_id:
+            contract_version, contract_item = await SubcontractService(self).contract_item(measurement, request.subcontract_item_id, request.quantity)
+            request = request.model_copy(update={
+                "service_template_id": UUID(contract_item["service_template_id"]) if contract_item.get("service_template_id") else None,
+                "description": contract_item["description"],
+            })
+        elif request.subcontract_item_id or request.quantity is not None:
+            raise ConstructionInvalidValueError(message="Vincule a medição ao contrato antes de selecionar o item contratado.")
+        elif measurement_purpose(measurement) == "CONTROL":
+            if request.amount not in {None, Decimal("0")}:
+                raise ConstructionInvalidValueError(message="Os serviços da OS de controle não têm valor próprio.")
+        elif request.amount is None or request.amount <= 0:
+            raise ConstructionInvalidValueError(message="Informe valor positivo para o serviço avulso.")
 
         service_template = None
         if request.service_template_id is not None:
@@ -2093,7 +2702,7 @@ class ConstructionProjectService:
             )
             if service_template is None:
                 raise ConstructionNotFoundError(resource_name="o serviço do catálogo")
-            if not service_template.is_active:
+            if not service_template.is_active and contract_item is None:
                 raise ConstructionInvalidValueError(
                     message=f"O serviço {service_template.name} está desativado no catálogo.",
                     error_code="CONSTRUCTION_SERVICE_TEMPLATE_INACTIVE",
@@ -2103,7 +2712,7 @@ class ConstructionProjectService:
             company_id=company_id,
             project_id=measurement.project_id,
         )
-        if project_service_ids:
+        if project_service_ids and contract_item is None:
             if service_template is None:
                 _logger.info(
                     "construction.project_services.rejected measurement_id=%s reason=free_text",
@@ -2142,7 +2751,10 @@ class ConstructionProjectService:
             same_template = (
                 service_template is not None and existing_item.service_template_id == service_template.id
             )
-            if same_template or existing_item.description.casefold() == description.casefold():
+            duplicate = existing_item.subcontract_item_id == request.subcontract_item_id if contract_item else (
+                same_template or existing_item.description.casefold() == description.casefold()
+            )
+            if duplicate:
                 raise ConstructionInvalidValueError(
                     message=f"O serviço {description} já faz parte desta medição.",
                     error_code="CONSTRUCTION_MEASUREMENT_ITEM_DUPLICATE_SERVICE",
@@ -2182,7 +2794,8 @@ class ConstructionProjectService:
             created_by_user_id=actor_user_id,
         )
         if getattr(measurement, "subcontract_id", None):
-            await SubcontractService(self).bind_item(measurement, item, request.subcontract_item_id, request.quantity)
+            await SubcontractService(self).bind_item(measurement, item, request.subcontract_item_id, request.quantity,
+                terms=(contract_version, contract_item))
         elif request.subcontract_item_id or request.quantity is not None:
             raise ConstructionInvalidValueError(message="Vincule a medição ao contrato antes de selecionar o item contratado.")
         self._validate_item_period(start_date=item.start_date, end_date=item.end_date)
@@ -2197,8 +2810,7 @@ class ConstructionProjectService:
             )
 
         await self.repository.add(item)
-        await self.repository.commit()
-        await self.repository.refresh(item)
+        await self.repository.flush()
 
         if service_template is not None:
             inspection_sequence = 0
@@ -2220,11 +2832,31 @@ class ConstructionProjectService:
                             rounds_count=0,
                         )
                     )
-            await self.repository.commit()
+            await self.repository.flush()
 
         await self._sync_measurement_amounts_from_items(measurement=measurement)
-        await self.repository.commit()
+        if commit:
+            await self.repository.commit()
         return await self.get_measurement_item(company_id=company_id, item_id=item.id)
+
+    async def create_measurement_items(self, company_id, measurement_id, requests, actor_user_id):
+        if not requests or len(requests) > 100:
+            raise ConstructionInvalidValueError(message="Envie entre 1 e 100 itens por vez.")
+        measurement = await self.repository.lock_measurement(company_id, measurement_id)
+        if measurement is None:
+            raise ConstructionNotFoundError(resource_name="a medição")
+        assert_measurement_editable(measurement)
+        _logger.info(f"[measurement] add_items: company_id={company_id} measurement_id={measurement_id} count={len(requests)}")
+        created = []
+        try:
+            for request in requests:
+                created.append(await self.create_measurement_item(company_id=company_id,
+                    measurement_id=measurement_id, request=request, actor_user_id=actor_user_id, commit=False))
+            await self.repository.commit()
+        except Exception:
+            await self.repository.rollback()
+            raise
+        return created
 
     async def update_measurement_item(
         self,
@@ -2259,6 +2891,12 @@ class ConstructionProjectService:
         if "product_description" in updates:
             updates["product_description"] = (updates["product_description"] or "").strip() or None
 
+        if "subcontract_item_id" in updates and updates["subcontract_item_id"] != item.subcontract_item_id:
+            raise ConstructionInvalidValueError(message="Remova o item e inclua a linha contratada correta para preservar a FVS.")
+        if "amount" in updates and measurement_purpose(measurement) == "CONTROL" and updates["amount"] not in {None, Decimal("0")}:
+            raise ConstructionInvalidValueError(message="Os serviços da OS de controle não têm valor próprio.")
+        if "amount" in updates and measurement_purpose(measurement) == "SERVICE" and (updates["amount"] is None or updates["amount"] <= 0):
+            raise ConstructionInvalidValueError(message="Informe valor positivo para o serviço avulso.")
         if "amount" in updates and updates["amount"] is not None:
             updates["amount"] = updates["amount"].quantize(Decimal("0.01"))
 
@@ -2378,12 +3016,7 @@ class ConstructionProjectService:
         """
         inspection = await self._get_inspection(company_id=company_id, inspection_id=inspection_id)
         item = await self.get_measurement_item(company_id=company_id, item_id=inspection.measurement_item_id)
-        measurement = await self.get_measurement(company_id=company_id, measurement_id=item.measurement_id)
-        if measurement.status == ConstructionMeasurementStatus.APPROVED:
-            raise ConstructionInvalidValueError(
-                message="Medição aprovada não aceita novas verificações.",
-                error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
-            )
+        measurement = await self._get_editable_measurement(company_id=company_id, measurement_id=item.measurement_id)
 
         if request.status == ConstructionInspectionStatus.WAIVED and not actor_can_waive:
             raise ConstructionInvalidValueError(
@@ -2396,7 +3029,7 @@ class ConstructionProjectService:
         # numa medicao em aprovacao e' materia de ocorrencia.
         if (
             inspection.status == ConstructionInspectionStatus.COMPLIANT
-            and measurement.status != ConstructionMeasurementStatus.DRAFT
+            and measurement.status not in {ConstructionMeasurementStatus.DRAFT, ConstructionMeasurementStatus.REJECTED}
         ):
             raise ConstructionInvalidValueError(
                 message=(
@@ -2560,7 +3193,7 @@ class ConstructionProjectService:
         actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurementItemOccurrence:
         item = await self.get_measurement_item(company_id=company_id, item_id=item_id)
-        await self.get_measurement(company_id=company_id, measurement_id=item.measurement_id)
+        await self._get_editable_measurement(company_id=company_id, measurement_id=item.measurement_id)
         if request.inspector_person_id != item.inspector_person_id:
             await self._require_company_people(
                 company_id=company_id,
@@ -2600,6 +3233,9 @@ class ConstructionProjectService:
         actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurementItemOccurrence:
         occurrence = await self._get_occurrence(company_id=company_id, occurrence_id=occurrence_id)
+
+        item = await self.get_measurement_item(company_id=company_id, item_id=occurrence.measurement_item_id)
+        await self._get_editable_measurement(company_id=company_id, measurement_id=item.measurement_id)
 
         updates = request.model_dump(exclude_unset=True)
         if updates.get("inspector_person_id") != occurrence.inspector_person_id:
@@ -2986,6 +3622,7 @@ class ConstructionProjectService:
         actor_user_id: UUID | None = None,
         actor_person_id: UUID | None = None,
     ) -> ConstructionServiceTemplate:
+        await self.repository.lock_service_template(company_id, service_template_id)
         service_template = await self.get_service_template(
             company_id=company_id,
             service_template_id=service_template_id,
@@ -3220,6 +3857,7 @@ class ConstructionProjectService:
         items are a copy, not a reference, so revising the sheet never rewrites
         what was already checked on site.
         """
+        await self.repository.lock_service_template(company_id, service_template_id)
         service_template = await self.get_service_template(
             company_id=company_id,
             service_template_id=service_template_id,
@@ -3257,7 +3895,7 @@ class ConstructionProjectService:
                 normalized_sections=normalized_sections,
             ),
         )
-        await self.repository.commit()
+        await self.repository.flush()
         replaced = await self.get_service_template(
             company_id=company_id,
             service_template_id=service_template.id,
@@ -3294,6 +3932,7 @@ class ConstructionProjectService:
         taken out of circulation by deactivating it, which keeps it readable in
         the measurements that reference it.
         """
+        await self.repository.lock_service_template(company_id, service_template_id)
         service_template = await self.get_service_template(
             company_id=company_id,
             service_template_id=service_template_id,
@@ -3482,6 +4121,8 @@ class ConstructionProjectService:
         files: list[tuple[str, bytes]],
         actor_user_id: UUID | None = None,
         actor_person_id: UUID | None = None,
+        mode="create",
+        expected_revisions=None,
     ) -> list[dict[str, Any]]:
         if not files:
             raise ConstructionInvalidValueError(
@@ -3489,6 +4130,8 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_TEMPLATE_NO_FILE",
             )
 
+        if len({name for name, _ in files}) != len(files):
+            raise ConstructionInvalidValueError(message="Use nomes de arquivo distintos na mesma importação.")
         results: list[dict[str, Any]] = []
         for file_name, content in files:
             try:
@@ -3507,6 +4150,54 @@ class ConstructionProjectService:
                 company_id=company_id,
                 name=parsed.name,
             )
+            previous = [(section.name, item.description, item.verification_method) for section in existing_template.sections for item in section.items] if existing_template else []
+            incoming = [(section.name, item.description, item.verification_method) for section in parsed.sections for item in section.items]
+            if mode != "preview" and existing_template is not None:
+                await self.repository.lock_service_template(company_id, existing_template.id)
+                existing_template = await self.get_service_template(company_id=company_id, service_template_id=existing_template.id)
+            revision = {
+                "id": str(existing_template.id) if existing_template else None,
+                "name": existing_template.name if existing_template else parsed.name,
+                "active": existing_template.is_active if existing_template else None,
+                "product_id": str(existing_template.product_id) if existing_template and existing_template.product_id else None,
+                "sections": [(section.name, [(item.description, item.verification_method, item.requires_comment, item.requires_photo)
+                    for item in section.items]) for section in existing_template.sections] if existing_template else [],
+                "file_digest": hashlib.sha256(content).hexdigest(),
+            }
+            token = hashlib.sha256(json.dumps(revision, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+            changes = [f"Remover: {section} / {description} ({method})" for section, description, method in previous if (section, description, method) not in incoming]
+            changes += [f"Incluir: {section} / {description} ({method})" for section, description, method in incoming if (section, description, method) not in previous]
+            if previous != incoming and not changes:
+                changes.append("Alterar a ordem das linhas da ficha.")
+            if mode == "preview":
+                results.append({"file_name": file_name, "status": "preview",
+                    "service_template_id": existing_template.id if existing_template else None,
+                    "service_name": parsed.name, "items_count": len(parsed.items), "sections_count": len(parsed.sections),
+                    "existing_items_count": len(previous), "revision_token": token, "changes": changes,
+                    "message": "Ficha existente: aplicação requer escolha explícita." if existing_template else "Novo serviço."})
+                continue
+            if mode == "replace":
+                expected = (expected_revisions or {}).get(file_name)
+                if expected != token:
+                    raise ConstructionInvalidValueError(message=f"A ficha {parsed.name} mudou desde a prévia. Gere outra prévia antes de aplicar.")
+                if existing_template is not None:
+                    flags = {(section.name, item.description): (item.requires_comment, item.requires_photo) for section in existing_template.sections for item in section.items}
+                    sections = [ConstructionServiceTemplateSection(company_id=company_id, service_template_id=existing_template.id,
+                        sequence_number=section.sequence_number, name=section.name,
+                        items=[ConstructionServiceTemplateItem(company_id=company_id, service_template_id=existing_template.id,
+                            sequence_number=item.sequence_number, description=item.description, verification_method=item.verification_method,
+                            requires_comment=flags.get((section.name, item.description), (False, False))[0],
+                            requires_photo=flags.get((section.name, item.description), (False, False))[1]) for item in section.items]) for section in parsed.sections]
+                    existing_template.source_file_name = file_name
+                    existing_template.updated_by_user_id = actor_user_id
+                    await self.repository.replace_service_template_sections(company_id=company_id, service_template_id=existing_template.id, sections=sections)
+                    await self.repository.flush()
+                    await self._record_import_audit(company_id=company_id, service_template_id=existing_template.id,
+                        event="replaced", file_name=file_name, actor_user_id=actor_user_id, actor_person_id=actor_person_id, commit=False)
+                    results.append({"file_name": file_name, "status": "updated", "service_template_id": existing_template.id,
+                        "service_name": parsed.name, "items_count": len(parsed.items), "sections_count": len(parsed.sections),
+                        "message": "Revisão aplicada ao catálogo. Inspeções já copiadas foram preservadas."})
+                    continue
             if existing_template is not None:
                 if any(section.items for section in existing_template.sections):
                     results.append(
@@ -3536,6 +4227,7 @@ class ConstructionProjectService:
                     file_name=file_name,
                     actor_user_id=actor_user_id,
                     actor_person_id=actor_person_id,
+                    commit=False,
                 )
                 results.append(
                     {
@@ -3558,8 +4250,7 @@ class ConstructionProjectService:
                 updated_by_user_id=actor_user_id,
             )
             await self.repository.add(service_template)
-            await self.repository.commit()
-            await self.repository.refresh(service_template)
+            await self.repository.flush()
 
             await self._persist_parsed_sections(
                 company_id=company_id,
@@ -3573,6 +4264,7 @@ class ConstructionProjectService:
                 file_name=file_name,
                 actor_user_id=actor_user_id,
                 actor_person_id=actor_person_id,
+                commit=False,
             )
             results.append(
                 {
@@ -3585,6 +4277,8 @@ class ConstructionProjectService:
                 }
             )
 
+        if mode != "preview":
+            await self.repository.commit()
         return results
 
     async def _record_import_audit(
@@ -3596,6 +4290,7 @@ class ConstructionProjectService:
         file_name: str,
         actor_user_id: UUID | None,
         actor_person_id: UUID | None,
+        commit=True,
     ) -> None:
         """Registra no historico o servico que acabou de vir de uma planilha.
 
@@ -3616,7 +4311,8 @@ class ConstructionProjectService:
             actor_user_id=actor_user_id,
             actor_person_id=actor_person_id,
         )
-        await self.repository.commit()
+        if commit:
+            await self.repository.commit()
 
     async def _persist_parsed_sections(
         self,
@@ -3646,7 +4342,7 @@ class ConstructionProjectService:
             ]
             await self.repository.add(section)
 
-        await self.repository.commit()
+        await self.repository.flush()
 
     async def _assert_every_inspection_is_approved(self, *, item: ConstructionMeasurementItem) -> None:
         """Toda linha da FVS precisa estar aprovada (ou dispensada) para fechar.
@@ -3658,6 +4354,8 @@ class ConstructionProjectService:
             company_id=item.company_id,
             measurement_item_id=item.id,
         )
+        if not inspections:
+            raise ConstructionInvalidValueError(message="Cadastre as linhas de inspeção do serviço antes de concluir.")
         if any(
             inspection.status == ConstructionInspectionStatus.NON_COMPLIANT for inspection in inspections
         ):
@@ -3679,6 +4377,25 @@ class ConstructionProjectService:
         measurement_id: UUID,
         action_label: str,
     ) -> None:
+        items = await self.repository.list_measurement_items(
+            company_id=company_id,
+            measurement_id=measurement_id,
+        )
+        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
+        if measurement.subcontract_id and sum((item.amount for item in items), Decimal("0")) <= 0:
+            raise ConstructionInvalidValueError(message="A medição contratual precisa de itens e valor positivo.")
+        missing = [item.description for item in items if not item.inspections]
+        if missing:
+            raise ConstructionInvalidValueError(
+                message=f"Cadastre a FVS dos serviços sem inspeção: {', '.join(missing[:5])}.",
+                error_code="CONSTRUCTION_MEASUREMENT_SERVICE_INSPECTIONS_REQUIRED",
+            )
+        if not items:
+            raise ConstructionInvalidValueError(
+                message=f"Inclua itens de inspeção na medição antes de {action_label}.",
+                error_code="CONSTRUCTION_MEASUREMENT_INSPECTIONS_REQUIRED",
+            )
+
         pending, non_compliant = await self.repository.summarize_measurement_inspection_blockers(
             company_id=company_id,
             measurement_id=measurement_id,
@@ -4314,8 +5031,10 @@ class ConstructionProjectService:
         company_id: UUID,
         unit_id: UUID,
     ) -> list[ConstructionUnitCommissionModel]:
-        await self._get_unit(company_id=company_id, unit_id=unit_id)
-        return await self.repository.list_unit_commissions(company_id=company_id, unit_id=unit_id)
+        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        return await self.repository.list_unit_commissions(
+            company_id=company_id, unit_id=unit_id, sale_id=unit.current_sale_id
+        )
 
     async def create_unit_commissions(
         self,
@@ -4353,6 +5072,7 @@ class ConstructionProjectService:
                 id=uuid4(),
                 company_id=company_id,
                 unit_id=unit_id,
+                sale_id=unit.current_sale_id,
                 beneficiary_person_id=request.beneficiary_person_id,
                 sequence_number=sequence_number + index,
                 amount=amount,
@@ -4543,6 +5263,7 @@ class ConstructionProjectService:
         commissions = await self.repository.list_unit_commissions(
             company_id=company_id,
             unit_id=unit_id,
+            sale_id=unit.current_sale_id,
         )
         sale_price = unit.sale_price or Decimal("0")
         discount_amount = unit.discount_amount or Decimal("0")
@@ -4679,12 +5400,10 @@ class ConstructionProjectService:
         company_id: UUID,
         measurement_id: UUID,
     ) -> ConstructionMeasurement:
-        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
-        if measurement.status == ConstructionMeasurementStatus.APPROVED:
-            raise ConstructionInvalidValueError(
-                message="Medição aprovada não pode ser alterada.",
-                error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
-            )
+        measurement = await self.repository.lock_measurement(company_id, measurement_id)
+        if measurement is None:
+            raise ConstructionNotFoundError(resource_name="a medição")
+        assert_measurement_editable(measurement)
 
         return measurement
 
@@ -4719,13 +5438,19 @@ class ConstructionProjectService:
         return occurrence
 
     async def _sync_measurement_amounts_from_items(self, *, measurement: ConstructionMeasurement) -> None:
+        if measurement_purpose(measurement) == "CONTROL":
+            measurement.gross_amount = measurement.net_amount = measurement.measured_amount = Decimal("0")
+            measurement.retentions_amount = Decimal("0")
+            return
         items_amount = await self.repository.get_measurement_items_amount(
             company_id=measurement.company_id,
             measurement_id=measurement.id,
         )
         if items_amount <= Decimal("0"):
             if getattr(measurement, "subcontract_id", None):
-                raise ConstructionInvalidValueError(message="A medição contratual precisa de itens e valor positivo.")
+                measurement.gross_amount = measurement.net_amount = measurement.measured_amount = Decimal("0")
+                return
+            measurement.gross_amount = measurement.net_amount = measurement.measured_amount = Decimal("0")
             return
 
         retentions_amount = measurement.retentions_amount or Decimal("0")
@@ -4770,12 +5495,8 @@ class ConstructionProjectService:
             )
 
     async def delete_measurement(self, *, company_id: UUID, measurement_id: UUID) -> None:
-        measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
-        if measurement.status == ConstructionMeasurementStatus.APPROVED:
-            raise ConstructionInvalidValueError(
-                message="Medição aprovada não pode ser excluída.",
-                error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
-            )
+        measurement = await self._get_editable_measurement(company_id=company_id, measurement_id=measurement_id)
+        assert_measurement_editable(measurement)
 
         await self._assert_history_can_be_deleted(measurement)
         await self.repository.delete(measurement)
@@ -5241,6 +5962,7 @@ class ConstructionProjectService:
         commission_offset: Decimal,
         receipt_template_id: UUID | None,
         actor_user_id: UUID | None,
+        sale: ConstructionUnitSale | None = None,
     ) -> EventEnvelope:
         event_id = uuid4()
         payload: dict[str, Any] = {
@@ -5285,6 +6007,10 @@ class ConstructionProjectService:
 
         if actor_user_id is not None:
             payload["user_id"] = str(actor_user_id)
+
+        if sale is not None:
+            payload["construction_sale_id"] = str(sale.id)
+            payload["sale_sequence"] = sale.sequence
 
         return EventEnvelope(
             event_id=event_id,

@@ -435,7 +435,7 @@ export function ServiceTemplateEditor({ template, submitting, onCancel, onSubmit
                                   })
                                 }
                               />
-                              Exige foto
+                              Evidência fotográfica prevista (captura ainda indisponível)
                             </label>
                           </div>
                         </div>

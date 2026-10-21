@@ -47,6 +47,7 @@ from app.infrastructure.database.models import (
     ConstructionUnitCommission,
     ConstructionUnitDocumentation,
     ConstructionUnitPaymentSource,
+    ConstructionUnitSale,
 )
 from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction
 
@@ -69,6 +70,7 @@ _CAMINHO = {
     ConstructionUnitPaymentSource: (ConstructionUnit, "unit_id"),
     ConstructionUnitDocumentation: (ConstructionUnit, "unit_id"),
     ConstructionUnitCommission: (ConstructionUnit, "unit_id"),
+    ConstructionUnitSale: (ConstructionUnit, "unit_id"),
     ConstructionMeasurementItem: (ConstructionMeasurement, "measurement_id"),
     # Inspeção, reinspeção e ocorrência penduram no ITEM, não na medição --
     # `inspection_id` existe em duas delas, mas leva à inspeção, não à obra.

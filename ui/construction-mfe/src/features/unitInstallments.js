@@ -9,6 +9,19 @@ export const bankSlipSelectionMode = (action, canCreate, hasSlips) =>
 export const bankSlipActionLabel = (slip) =>
   slip?.has_pdf === false ? "Imprimir original do boleto" : "Baixar PDF do boleto"
 
+// O saldo da parcela: com N recebimentos por parcela, `amount` deixou de ser o
+// que se baixa -- o que se baixa e o que ainda falta. Quem decide e o ERP, que
+// devolve o saldo pronto; a subtracao aqui so cobre a resposta antiga.
+export const installmentOutstanding = (installment) => {
+  if (installment?.outstandingAmount != null) {
+    return Number(installment.outstandingAmount)
+  }
+
+  const amount = Number(installment?.amount) || 0
+  const received = Number(installment?.paidAmount) || 0
+  return Math.max(0, amount - received)
+}
+
 export const hasObservation =(installment) => String(installment.observation ?? "").trim() !== ""
 
 export const observationEditHint = (installment, canUpdate) => installment.hasIssuedReceipt
@@ -52,6 +65,7 @@ export function buildInstallmentActions({
   onRetryBankSlip,
   onDownloadBankSlip,
   onViewBankSlips,
+  onOffsetCredit,
   canUpdate = false,
   icons = {},
 }) {
@@ -101,6 +115,14 @@ export function buildInstallmentActions({
       icon: icons.CheckCircle,
       onSelect: () => onPayInstallment(installment),
     })
+    if (onOffsetCredit) {
+      actions.push({
+        key: "credit-offset",
+        label: "Abater saldo credor",
+        icon: icons.CheckCircle,
+        onSelect: () => onOffsetCredit(installment),
+      })
+    }
     actions.push({
       key: "delete",
       label: "Excluir parcela",

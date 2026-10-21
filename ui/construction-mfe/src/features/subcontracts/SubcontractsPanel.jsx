@@ -61,6 +61,43 @@ const toDraft = (contract) => ({
   })),
 });
 
+const sheetPayload = (draft) => {
+  const body = Object.fromEntries(
+    [
+      "code",
+      "title",
+      "supplier_person_id",
+      "valid_from",
+      "valid_to",
+      "retention_rate",
+      "escrow_rate",
+      "notes",
+    ].map((key) => [key,
+      ["retention_rate", "escrow_rate"].includes(key)
+        ? plain(draft[key]) : draft[key] ?? "",
+    ]),
+  );
+  body.escrow_due_date = draft.escrow_due_date || null;
+  body.items = draft.items
+    .filter((item) => item.active !== false)
+    .map((item) => Object.fromEntries(
+      [
+        "id",
+        "product_id",
+        "service_template_id",
+        "description",
+        "unit_of_measure",
+        "quantity",
+        "material_unit_price",
+        "labor_unit_price",
+      ].filter((key) => item[key] != null).map((key) => [key,
+        key.endsWith("_unit_price") ? currencyDecimal(item[key])
+          : key === "quantity" ? plain(item[key]) : item[key],
+      ]),
+    ));
+  return body;
+};
+
 function StatusPill({ status, version }) {
   return (
     <span className={`${appStyles.statusPill} ${statusTone[status] ?? ""}`}>
@@ -139,7 +176,8 @@ function SubcontractsWorkspace({ bridge, projectId }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState(null);
-  const [dirty, setDirty] = useState(false);
+  const [savedSheet, setSavedSheet] = useState(null);
+  const dirty = Boolean(draft && JSON.stringify(sheetPayload(draft)) !== savedSheet);
   const [bills, setBills] = useState([]);
   const [services, setServices] = useState({ items: [], restricted: false });
   const [closure, setClosure] = useState(null);
@@ -189,6 +227,11 @@ function SubcontractsWorkspace({ bridge, projectId }) {
       active = false;
     };
   }, [bridge, projectId, editing]);
+  const applySavedContract = (contract) => {
+    const next = toDraft(contract);
+    setDraft(next);
+    setSavedSheet(JSON.stringify(sheetPayload(next)));
+  };
   const open = async (id) => {
     setBusy(true);
     try {
@@ -197,9 +240,8 @@ function SubcontractsWorkspace({ bridge, projectId }) {
         request(`/subcontracts/${id}/direct-bills`),
       ]);
       if (alive.current) {
-        setDraft(toDraft(contract));
+        applySavedContract(contract);
         setBills(credits.items);
-        setDirty(false);
         setError("");
       }
     } catch (failure) {
@@ -216,8 +258,7 @@ function SubcontractsWorkspace({ bridge, projectId }) {
       bridge.feedback?.success?.(message);
       setError("");
       if (result?.items) {
-        setDraft(toDraft(result));
-        setDirty(false);
+        applySavedContract(result);
       }
       await load();
       return result ?? true;
@@ -235,40 +276,8 @@ function SubcontractsWorkspace({ bridge, projectId }) {
   };
   const save = async (event) => {
     event.preventDefault();
-    const body = Object.fromEntries(
-      [
-        "code",
-        "title",
-        "supplier_person_id",
-        "valid_from",
-        "valid_to",
-        "retention_rate",
-        "escrow_rate",
-        "notes",
-      ].map((key) => [key, draft[key]]),
-    );
-    body.escrow_due_date = draft.escrow_due_date || null;
-    body.items = draft.items
-      .filter((item) => item.active !== false)
-      .map((item) =>
-        Object.fromEntries(
-          [
-            "id",
-            "product_id",
-            "service_template_id",
-            "description",
-            "unit_of_measure",
-            "quantity",
-            "material_unit_price",
-            "labor_unit_price",
-          ]
-            .filter((key) => item[key] != null)
-            .map((key) => [
-              key,
-              key.endsWith("_unit_price") ? currencyDecimal(item[key]) : item[key],
-            ]),
-        ),
-      );
+    if (draft.id && !dirty) return;
+    const body = sheetPayload(draft);
     await execute(
       draft.id
         ? `/subcontracts/${draft.id}`
@@ -282,7 +291,6 @@ function SubcontractsWorkspace({ bridge, projectId }) {
   };
   const patch = (changes) => {
     setDraft((current) => ({ ...current, ...changes }));
-    setDirty(true);
   };
   const patchItem = (index, changes) => {
     setDraft((current) => ({
@@ -291,7 +299,6 @@ function SubcontractsWorkspace({ bridge, projectId }) {
         position === index ? { ...item, ...changes } : item,
       ),
     }));
-    setDirty(true);
   };
   const removeItem = (index) => {
     setDraft((current) => ({
@@ -301,7 +308,6 @@ function SubcontractsWorkspace({ bridge, projectId }) {
         return item.id ? [{ ...item, active: false }] : [];
       }),
     }));
-    setDirty(true);
   };
   const closeContract = async (event) => {
     event.preventDefault();
@@ -342,7 +348,7 @@ function SubcontractsWorkspace({ bridge, projectId }) {
             onClick={() => {
               setDraft(emptyContract());
               setBills([]);
-              setDirty(false);
+              setSavedSheet(null);
               setError("");
             }}
           >
@@ -437,7 +443,7 @@ function SubcontractsWorkspace({ bridge, projectId }) {
               disabled={busy}
               onClick={() => {
                 setDraft(null);
-                setDirty(false);
+                setSavedSheet(null);
               }}
             >
               Fechar
@@ -564,7 +570,6 @@ function SubcontractsWorkspace({ bridge, projectId }) {
                     ...current,
                     items: [...current.items, emptyItem()],
                   }));
-                  setDirty(true);
                 }}
                 onRemove={removeItem}
               />
@@ -576,7 +581,7 @@ function SubcontractsWorkspace({ bridge, projectId }) {
                     Salvar cria uma nova versão em preparação.
                   </span>
                 )}
-                <button className={appStyles.primaryButton} disabled={busy}>
+                <button className={appStyles.primaryButton} disabled={busy || (Boolean(draft.id) && !dirty)}>
                   Salvar planilha
                 </button>
               </div>

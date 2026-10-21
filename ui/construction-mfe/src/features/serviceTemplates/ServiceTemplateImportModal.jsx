@@ -3,7 +3,7 @@ import { Download, FileSpreadsheet, Trash2, UploadCloud } from "lucide-react"
 
 import appStyles from "../../App.module.css"
 import styles from "./ServiceTemplates.module.css"
-import { downloadConstructionServiceTemplateExample } from "../../services/constructionApi"
+import { importConstructionServiceTemplates, downloadConstructionServiceTemplateExample } from "../../services/constructionApi"
 
 const MAX_FILES = 30
 const MAX_FILE_BYTES = 5 * 1024 * 1024
@@ -32,8 +32,29 @@ export function ServiceTemplateImportModal({
   onClose,
   onImport,
   title = "Importar planilha (FVS)",
+  allowRevision = false,
 }) {
   const [files, setFiles] = useState([])
+  const [preview, setPreview] = useState([])
+  const [reviewing, setReviewing] = useState(false)
+  const [reviseExisting, setReviseExisting] = useState(false)
+  const canRevise = Boolean(bridge?.canUpdate?.("construction_measurements"))
+  const review = async () => {
+    setReviewing(true)
+    try {
+      const result = await importConstructionServiceTemplates({ bridge, files, mode: "preview" })
+      setPreview(result.results)
+      setReviseExisting(false)
+    } catch (failure) {
+      bridge?.feedback?.error?.(failure?.message ?? "Não foi possível comparar as planilhas.")
+    } finally {
+      setReviewing(false)
+    }
+  }
+  const apply = () => onImport(files, {
+    mode: reviseExisting ? "replace" : "create",
+    revisions: Object.fromEntries(preview.map((row) => [row.fileName, row.revisionToken])),
+  })
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState("")
   const [downloading, setDownloading] = useState(false)
@@ -59,6 +80,9 @@ export function ServiceTemplateImportModal({
   }
 
   const acceptFiles = (incoming) => {
+    if (reviewing || submitting) return
+    setPreview([])
+    setReviseExisting(false)
     const candidates = Array.from(incoming ?? [])
     const rejected = candidates.filter(
       (file) => !ACCEPTED_EXTENSIONS.some((extension) => file.name.toLowerCase().endsWith(extension)),
@@ -102,6 +126,9 @@ export function ServiceTemplateImportModal({
   }
 
   const removeFile = (index) => {
+    if (reviewing || submitting) return
+    setPreview([])
+    setReviseExisting(false)
     setFiles((current) => current.filter((_, position) => position !== index))
   }
 
@@ -210,17 +237,33 @@ export function ServiceTemplateImportModal({
             </ul>
           ) : null}
 
+          {allowRevision && preview.length > 0 && (
+            <section>
+              <h4>Prévia da importação</h4>
+              <p>Revisões valem para os próximos serviços. As inspeções e rodadas já registradas nas OS serão preservadas. Marcações de comentário e foto nas linhas mantidas também serão preservadas.</p>
+              {preview.map((row) => <div key={row.fileName}>
+                <strong>{row.serviceName || row.fileName}</strong>
+                <p>{row.existingItemsCount} linhas atuais → {row.itemsCount} na planilha. {row.message}</p>
+                <ul>{row.changes.map((change, index) => <li key={`${index}:${change}`}>{change}</li>)}</ul>
+              </div>)}
+              {canRevise && preview.some((row) => row.serviceTemplateId) && <label>
+                <input type="checkbox" checked={reviseExisting} disabled={submitting || reviewing}
+                  onChange={(event) => setReviseExisting(event.target.checked)} />
+                Aplicar também as revisões às fichas existentes
+              </label>}
+            </section>
+          )}
           <div className={appStyles.modalFooter}>
-            <button type="button" className={appStyles.secondaryButton} onClick={onClose} disabled={submitting}>
+            <button type="button" className={appStyles.secondaryButton} onClick={onClose} disabled={submitting || reviewing}>
               {results.length > 0 ? "Fechar" : "Cancelar"}
             </button>
             <button
               type="button"
               className={appStyles.primaryButton}
-              onClick={() => onImport(files)}
-              disabled={submitting || files.length === 0}
+              onClick={allowRevision ? preview.length ? apply : review : () => onImport(files)}
+              disabled={submitting || reviewing || files.length === 0 || (allowRevision && preview.some((row) => row.status === "failed"))}
             >
-              {submitting ? "Importando..." : `Importar ${files.length || ""}`.trim()}
+              {submitting ? "Aplicando..." : reviewing ? "Comparando..." : allowRevision ? preview.length ? "Aplicar importação" : "Comparar planilhas" : `Importar ${files.length || ""}`.trim()}
             </button>
           </div>
         </div>

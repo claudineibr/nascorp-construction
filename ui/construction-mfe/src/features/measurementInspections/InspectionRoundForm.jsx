@@ -5,11 +5,13 @@ import { InspectorPicker } from "./InspectorPicker"
 import { roundStatusLabel } from "./inspectionVocabulary"
 
 const title = {
+  compliant: "Registrar conformidade",
   non_compliant: "Registrar não conformidade",
   waived: "Dispensar a reinspeção",
 }
 
 const hint = {
+  compliant: "Descreva a evidência ou observação que confirma a conformidade desta linha.",
   non_compliant: "O motivo é o que a reinspeção precisa para existir.",
   waived: "Explique por que esta linha não pode mais ser reinspecionada. Fica no histórico.",
 }
@@ -67,14 +69,14 @@ export function InspectionRoundForm({
       ) : null}
 
       <label className={styles.roundFormField}>
-        <span className={styles.fieldLabel}>Motivo*</span>
+        <span className={styles.fieldLabel}>{status === "compliant" ? "Comentário da conformidade*" : "Motivo*"}</span>
         <textarea
           ref={commentRef}
           className={styles.textarea}
           rows={2}
           value={comment}
           onChange={(event) => setComment(event.target.value)}
-          placeholder="diferença de 4 cm em relação à cota de projeto"
+          placeholder={status === "compliant" ? "Descreva a verificação realizada" : "Descreva o problema encontrado"}
           required
         />
         <span className={styles.fieldHint}>{hint[status]}</span>

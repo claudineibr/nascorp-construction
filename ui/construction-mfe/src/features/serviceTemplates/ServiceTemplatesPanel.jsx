@@ -132,10 +132,10 @@ export function ServiceTemplatesPanel({ bridge }) {
     }
   }
 
-  const handleImport = async (files) => {
+  const handleImport = async (files, options = {}) => {
     setImporting(true)
     try {
-      const response = await importConstructionServiceTemplates({ bridge, files })
+      const response = await importConstructionServiceTemplates({ bridge, files, ...options })
       setImportResults(response.results)
       bridge?.feedback?.success?.(
         `${response.created} criado(s), ${response.updated} atualizado(s), ` +
@@ -310,6 +310,7 @@ export function ServiceTemplatesPanel({ bridge }) {
         <ServiceTemplateImportModal
           bridge={bridge}
           submitting={importing}
+          allowRevision
           results={importResults}
           onClose={closeImport}
           onImport={handleImport}

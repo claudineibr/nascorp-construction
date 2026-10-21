@@ -37,8 +37,10 @@ from app.infrastructure.database.models import (
     ConstructionUnitCommission,
     ConstructionUnitDocumentation,
     ConstructionUnitPaymentSource,
+    ConstructionUnitSale,
 )
 from app.schemas.construction import (
+    ConstructionUnitTerminationRequest,
     ConstructionDocumentationTypeCreate,
     ConstructionDocumentationTypeUpdate,
     ConstructionMeasurementCreate,
@@ -82,10 +84,15 @@ class FakeConstructionRepository:
         self.documentation_types: dict[tuple[object, object], ConstructionDocumentationType] = {}
         self.unit_documentations: dict[tuple[object, object], ConstructionUnitDocumentation] = {}
         self.unit_commissions: dict[tuple[object, object], ConstructionUnitCommission] = {}
+        self.unit_sales: dict[tuple[object, object], ConstructionUnitSale] = {}
         self.project_service_links: set[tuple[object, object, object]] = set()
         self.foreign_receipt_template_ids: set = set()
+        self.company_timezones: dict = {}
         self.commits = 0
         self.replaced_children = 0
+
+    async def get_company_timezone(self, *, company_id):
+        return self.company_timezones.get(company_id)
 
     async def valid_receipt_template(self, company_id, template_id):
         return None if template_id in self.foreign_receipt_template_ids else template_id
@@ -232,17 +239,39 @@ class FakeConstructionRepository:
             key=lambda documentation: documentation.sequence_number,
         )
 
-    async def delete_unpaid_unit_commissions(self, *, company_id, unit_id):
-        for commission in self.unit_commissions.values():
-            if commission.company_id == company_id and commission.unit_id == unit_id and commission.payment_date is None:
-                commission.deleted_at = datetime.now(UTC)
+    async def delete_unpaid_unit_commissions(self, *, company_id, unit_id, sale_id=None):
+        deleted = [
+            commission
+            for commission in await self.list_unit_commissions(company_id=company_id, unit_id=unit_id, sale_id=sale_id)
+            if commission.payment_date is None
+        ]
+        for commission in deleted:
+            commission.deleted_at = datetime.now(UTC)
+        return deleted
 
-    async def list_unit_commissions(self, *, company_id, unit_id):
+    async def restore_unit_commissions(self, *, company_id, unit_id, sale_id, commission_ids):
+        restored = set()
+        for commission in self.unit_commissions.values():
+            if (commission.company_id == company_id and commission.unit_id == unit_id
+                    and commission.id in commission_ids and commission.deleted_at is not None):
+                commission.deleted_at = None
+                commission.sale_id = sale_id
+                restored.add(commission.id)
+        return restored
+
+    async def attach_unit_commissions_to_sale(self, *, company_id, unit_id, sale_id):
+        for commission in self.unit_commissions.values():
+            if (commission.company_id == company_id and commission.unit_id == unit_id
+                    and commission.sale_id is None and commission.deleted_at is None):
+                commission.sale_id = sale_id
+
+    async def list_unit_commissions(self, *, company_id, unit_id, sale_id=None):
         return sorted(
             (
                 commission
                 for (stored_company_id, _), commission in self.unit_commissions.items()
                 if stored_company_id == company_id and commission.unit_id == unit_id and commission.deleted_at is None
+                and commission.sale_id in {None, sale_id}
             ),
             key=lambda commission: commission.sequence_number,
         )
@@ -251,7 +280,11 @@ class FakeConstructionRepository:
         return self.unit_commissions.get((company_id, commission_id))
 
     async def get_next_commission_sequence(self, *, company_id, unit_id):
-        commissions = await self.list_unit_commissions(company_id=company_id, unit_id=unit_id)
+        commissions = [
+            commission
+            for (stored_company_id, _), commission in self.unit_commissions.items()
+            if stored_company_id == company_id and commission.unit_id == unit_id
+        ]
         if not commissions:
             return 1
 
@@ -413,7 +446,7 @@ class FakeConstructionRepository:
     async def list_measurement_items(self, *, company_id, measurement_id):
         return sorted(
             (
-                item
+                self._hydrate_item(company_id=company_id, item=item)
                 for (item_company_id, _), item in self.measurement_items.items()
                 if item_company_id == company_id and item.measurement_id == measurement_id
             ),
@@ -578,6 +611,10 @@ class FakeConstructionRepository:
             self.unit_commissions[(entity.company_id, entity.id)] = entity
             return
 
+        if isinstance(entity, ConstructionUnitSale):
+            self.unit_sales[(entity.company_id, entity.id)] = entity
+            return
+
         if isinstance(entity, ConstructionServiceTemplate):
             self.service_templates[(entity.company_id, entity.id)] = entity
             return
@@ -618,6 +655,9 @@ class FakeConstructionRepository:
 
     async def commit(self) -> None:
         self.commits += 1
+
+    async def flush(self) -> None:
+        return None
 
     async def replace_unit_children(self, model, *, company_id, unit_id, entities) -> None:
         rows = self.unit_documentations if model is ConstructionUnitDocumentation else self.unit_payment_sources
@@ -706,8 +746,41 @@ class FakeConstructionRepository:
     async def get_measurement(self, *, company_id, measurement_id):
         return self.measurements.get((company_id, measurement_id))
 
+    async def lock_measurement(self, company_id, measurement_id):
+        return self.measurements.get((company_id, measurement_id))
+
+    async def lock_service_template(self, company_id, template_id):
+        return self.service_templates.get((company_id, template_id))
+
     async def lock_unit(self, *, company_id, unit_id):
         return await self.get_unit(company_id=company_id, unit_id=unit_id)
+
+    async def get_unit_sale(self, *, company_id, sale_id, lock=False):
+        return self.unit_sales.get((company_id, sale_id))
+
+    async def list_unit_sales(self, *, company_id, unit_id):
+        sales = [sale for (tenant, _), sale in self.unit_sales.items() if tenant == company_id and sale.unit_id == unit_id]
+        sales.sort(key=lambda sale: sale.sequence, reverse=True)
+        sales.sort(key=lambda sale: sale.sold_at.timestamp() if sale.sold_at else float("-inf"), reverse=True)
+        sales.sort(key=lambda sale: sale.status != "ACTIVE")
+        return sales
+
+    async def get_latest_native_terminated_sale(self, *, company_id, unit_id):
+        candidates = [
+            sale
+            for sale in await self.list_unit_sales(company_id=company_id, unit_id=unit_id)
+            if sale.status == "TERMINATED" and sale.source == "NATIVE" and sale.external_termination_id is not None
+        ]
+        candidates.sort(key=lambda sale: sale.sequence, reverse=True)
+        candidates.sort(key=lambda sale: sale.terminated_at.timestamp() if sale.terminated_at else float("-inf"), reverse=True)
+        return candidates[0] if candidates else None
+
+    async def next_unit_sale_sequence(self, *, company_id, unit_id):
+        sales = await self.list_unit_sales(company_id=company_id, unit_id=unit_id)
+        return max((sale.sequence for sale in sales), default=0) + 1
+
+    async def rollback(self) -> None:
+        self.rollbacks = getattr(self, "rollbacks", 0) + 1
 
     async def get_unit(self, *, company_id, unit_id):
         return self.units.get((company_id, unit_id))
@@ -1415,6 +1488,7 @@ async def test_approve_measurement_does_not_create_accounts_payable() -> None:
         ),
     )
     measurement.supplier_person_id = uuid4()
+    await _build_verified_item(service, company_id, measurement, amount=Decimal("12500.50"))
 
     await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
     approved_first = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
@@ -1428,15 +1502,22 @@ async def test_approve_measurement_does_not_create_accounts_payable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_approve_measurement_requires_supplier() -> None:
+async def test_submit_and_approve_measurement_require_supplier() -> None:
     company_id, measurement, service = await _build_measurement_scenario()
+    await _build_verified_item(service, company_id, measurement)
     measurement.supplier_person_id = None
-    await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
 
-    with pytest.raises(ConstructionInvalidValueError) as error:
+    with pytest.raises(ConstructionInvalidValueError) as submit_error:
+        await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
+
+    assert submit_error.value.error_code == "CONSTRUCTION_MEASUREMENT_SUPPLIER_REQUIRED"
+    assert measurement.status == ConstructionMeasurementStatus.DRAFT
+
+    measurement.status = ConstructionMeasurementStatus.SUBMITTED
+    with pytest.raises(ConstructionInvalidValueError) as approve_error:
         await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
 
-    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_SUPPLIER_REQUIRED"
+    assert approve_error.value.error_code == "CONSTRUCTION_MEASUREMENT_SUPPLIER_REQUIRED"
     assert measurement.status == ConstructionMeasurementStatus.SUBMITTED
 
 
@@ -1551,11 +1632,13 @@ async def test_zero_value_measurement_is_approved_without_accounts_payable() -> 
         ),
     )
     measurement.supplier_person_id = uuid4()
+    await _build_verified_item(service, company_id, measurement, amount=None)
     await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
     approved = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
     approved_again = await service.approve_measurement(company_id=company_id, measurement_id=measurement.id)
 
     assert approved.status == ConstructionMeasurementStatus.APPROVED
+    assert approved.measured_amount == Decimal("0")
     assert approved.external_accounts_payable_id is None
     assert approved_again.status == ConstructionMeasurementStatus.APPROVED
     assert len(erp_client.events) == 0
@@ -1605,7 +1688,7 @@ async def test_apply_accounts_payable_updated_event_updates_measurement_once() -
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status,field", [("delivered", "delivered_at"), ("terminated", "terminated_at")])
+@pytest.mark.parametrize("status,field", [("delivered", "delivered_at")])
 async def test_unit_inventory_lifecycle_records_delivery_and_termination_dates(status, field):
     from app.schemas.construction.project import ConstructionUnitUpdate
 
@@ -1618,8 +1701,6 @@ async def test_unit_inventory_lifecycle_records_delivery_and_termination_dates(s
     result = await service.update_unit(company_id=company_id, unit_id=unit.id,
         request=ConstructionUnitUpdate(status=status), actor_user_id=uuid4())
     assert getattr(result, field) is not None
-    if status == "terminated":
-        assert result.cost_sale_history[0]["sold_at"] == "2026-01-01T00:00:00+00:00"
 
 
 @pytest.mark.asyncio
@@ -2146,11 +2227,13 @@ async def test_item_period_rejects_end_date_before_start_date() -> None:
     assert error.value.error_code == "CONSTRUCTION_INVALID_PERIOD"
 
 
-async def _build_item_with_one_line(service, company_id, measurement, *, description="Impermeabilizacao"):
+async def _build_item_with_one_line(
+    service, company_id, measurement, *, description="Impermeabilizacao", amount=Decimal("800.00")
+):
     item = await service.create_measurement_item(
         company_id=company_id,
         measurement_id=measurement.id,
-        request=ConstructionMeasurementItemCreate(description=description, amount=Decimal("800.00")),
+        request=ConstructionMeasurementItemCreate(description=description, amount=amount),
     )
     inspection = await service.create_measurement_item_inspection(
         company_id=company_id,
@@ -2170,6 +2253,12 @@ async def _verify(service, company_id, inspection_id, status, **extra):
         request=ConstructionMeasurementInspectionVerifyRequest(status=status, **extra),
         actor_user_id=extra.pop("actor_user_id", None) or uuid4(),
     )
+
+
+async def _build_verified_item(service, company_id, measurement, **item_fields):
+    item, inspection = await _build_item_with_one_line(service, company_id, measurement, **item_fields)
+    await _verify(service, company_id, inspection.id, "compliant")
+    return item
 
 
 @pytest.mark.asyncio
@@ -2384,24 +2473,33 @@ async def test_submitting_a_measurement_with_an_unverified_line_is_refused() -> 
 
 
 @pytest.mark.asyncio
-async def test_an_item_without_any_inspection_line_does_not_block_the_measurement() -> None:
-    """A armadilha mais provavel desta mudanca.
-
-    Item de texto livre nasce com `inspection_status = pending` e nunca tem linha
-    de FVS. Bloquear pelo rollup travaria toda medicao que tem um, para sempre e
-    sem destravar -- por isso o bloqueio conta LINHAS, nao o status do item.
-    """
+async def test_an_item_without_any_inspection_line_blocks_the_measurement_and_is_named() -> None:
     company_id, measurement, service = await _build_measurement_scenario()
-    item = await service.create_measurement_item(
+    await _build_verified_item(service, company_id, measurement)
+    await service.create_measurement_item(
         company_id=company_id,
         measurement_id=measurement.id,
         request=ConstructionMeasurementItemCreate(description="Servico avulso", amount=Decimal("500.00")),
     )
 
-    assert item.inspection_status == "pending"
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
 
-    submitted = await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
-    assert submitted.status == "submitted"
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_SERVICE_INSPECTIONS_REQUIRED"
+    assert "Servico avulso" in error.value.message
+    assert "Impermeabilizacao" not in error.value.message
+    assert measurement.status == ConstructionMeasurementStatus.DRAFT
+
+
+@pytest.mark.asyncio
+async def test_a_measurement_without_items_cannot_be_submitted() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.submit_measurement(company_id=company_id, measurement_id=measurement.id)
+
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_INSPECTIONS_REQUIRED"
+    assert measurement.status == ConstructionMeasurementStatus.DRAFT
 
 
 @pytest.mark.asyncio
@@ -2414,7 +2512,8 @@ async def test_reopening_an_approved_line_after_submission_is_refused() -> None:
     with pytest.raises(ConstructionInvalidValueError) as error:
         await _verify(service, company_id, inspection.id, "non_compliant", comment="reabrindo")
 
-    assert error.value.error_code == "CONSTRUCTION_INSPECTION_ALREADY_APPROVED"
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_LOCKED"
+    assert inspection.status == "compliant"
 
 
 @pytest.mark.asyncio
@@ -2520,6 +2619,7 @@ async def test_occurrence_requires_solution_to_be_resolved() -> None:
 @pytest.mark.asyncio
 async def test_submit_and_approve_record_who_did_each_step() -> None:
     company_id, measurement, service = await _build_measurement_scenario()
+    await _build_verified_item(service, company_id, measurement)
     submitter_id = uuid4()
     approver_id = uuid4()
 
@@ -2547,6 +2647,7 @@ async def test_submit_and_approve_record_who_did_each_step() -> None:
 @pytest.mark.asyncio
 async def test_approval_refuses_the_user_who_submitted_the_measurement() -> None:
     company_id, measurement, service = await _build_measurement_scenario()
+    await _build_verified_item(service, company_id, measurement)
     submitter_id = uuid4()
 
     await service.submit_measurement(
@@ -2569,6 +2670,7 @@ async def test_approval_refuses_the_user_who_submitted_the_measurement() -> None
 @pytest.mark.asyncio
 async def test_approval_accepts_the_submitter_with_self_approval_permission() -> None:
     company_id, measurement, service = await _build_measurement_scenario()
+    await _build_verified_item(service, company_id, measurement)
     submitter_id = uuid4()
 
     await service.submit_measurement(
@@ -2590,6 +2692,7 @@ async def test_approval_accepts_the_submitter_with_self_approval_permission() ->
 @pytest.mark.asyncio
 async def test_rejection_records_who_rejected_and_is_cleared_on_resubmit() -> None:
     company_id, measurement, service = await _build_measurement_scenario()
+    await _build_verified_item(service, company_id, measurement)
     rejecter_id = uuid4()
 
     await service.reject_measurement(
@@ -3040,7 +3143,10 @@ async def test_apply_contract_status_updated_event_cancellation_reverts_unit_to_
     second_result = await service.apply_contract_status_updated_event(event=event)
 
     assert first_result.status == "available"
-    assert first_result.external_contract_status == "CANCELED"
+    assert first_result.external_contract_id is None and first_result.current_sale_id is None
+    [sale] = await repository.list_unit_sales(company_id=company_id, unit_id=unit.id)
+    assert sale.status == "TERMINATED" and sale.termination_reason == "Contrato cancelado no ERP"
+    assert sale.external_contract_status == "CANCELED" and sale.terminated_at is not None
     assert second_result.status == "available"
     assert repository.commits == 1
 
@@ -3835,6 +3941,7 @@ async def test_approval_requires_submission(status):
 @pytest.mark.asyncio
 async def test_measurement_creator_cannot_approve_even_when_someone_else_submitted():
     company_id, measurement, service = await _build_measurement_scenario()
+    await _build_verified_item(service, company_id, measurement)
     creator = uuid4()
     measurement.created_by_user_id = creator
     await service.submit_measurement(company_id=company_id, measurement_id=measurement.id, actor_user_id=uuid4())
@@ -4275,9 +4382,452 @@ async def test_termination_deletes_only_unpaid_commissions_of_the_unit(via_event
         await service.apply_contract_status_updated_event(event=event)
         await service.apply_contract_status_updated_event(event=event)
     else:
-        await service.update_unit(company_id=company_id, unit_id=unit.id,
-            request=ConstructionUnitUpdate(status="terminated"), actor_user_id=uuid4())
+        with pytest.raises(ConstructionInvalidValueError):
+            await service.update_unit(company_id=company_id, unit_id=unit.id,
+                request=ConstructionUnitUpdate(status="terminated"), actor_user_id=uuid4())
+        service.erp_client = FakeTerminationClient()
+        await service.terminate_unit(company_id=company_id, unit_id=unit.id,
+            request=ConstructionUnitTerminationRequest(termination_date=date(2026, 10, 1), reason="Desistência"),
+            actor_user_id=uuid4())
+        repository.commits -= 1
     assert commissions[0].deleted_at is not None
     assert all(commission.deleted_at is None for commission in commissions[1:])
-    assert await repository.list_unit_commissions(company_id=company_id, unit_id=unit.id) == [commissions[1]]
+    [sale] = await repository.list_unit_sales(company_id=company_id, unit_id=unit.id)
+    assert sale.status == "TERMINATED" and unit.current_sale_id is None and unit.status == "available"
+    assert await repository.list_unit_commissions(company_id=company_id, unit_id=unit.id, sale_id=None) == []
+    assert await repository.list_unit_commissions(company_id=company_id, unit_id=unit.id, sale_id=sale.id) == [
+        commissions[1]
+    ]
+    assert [row["id"] for row in sale.termination_snapshot["deleted_commissions"]] == [str(commissions[0].id)]
     assert repository.commits == 1
+
+
+class FakeTerminationClient:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.calls = []
+
+    async def preview_unit_termination(self, *, company_id, user_id, payload):
+        self.calls.append(("preview", payload))
+        return {"refund_amount": "900.00", "paid_amount": "1000.00", "blockers": []}
+
+    async def apply_unit_termination(self, *, company_id, user_id, payload):
+        self.calls.append(("apply", payload))
+        if self.fail:
+            request = httpx.Request("POST", "http://erp/v1/internal/construction/unit-termination")
+            response = httpx.Response(422, json={"message": "Há boletos ativos"}, request=request)
+            raise httpx.HTTPStatusError("erro", request=request, response=response)
+        return {"termination_id": str(uuid4()), "refund_amount": "900.00", "paid_amount": "1000.00"}
+
+    async def reactivate_unit_termination(self, *, company_id, user_id, payload):
+        self.calls.append(("reactivate", payload))
+        return {"status": "REACTIVATED"}
+
+
+def _sold_unit_with_sale(repository, *, company_id, terms=None):
+    project = ConstructionProject(id=uuid4(), company_id=company_id, code="P1", name="Obra",
+        status="active", project_type="residential_horizontal", has_segregated_assets=False,
+        termination_defaults=terms)
+    repository.projects[(company_id, project.id)] = project
+    unit = ConstructionUnit(id=uuid4(), company_id=company_id, project_id=project.id, code="U1",
+        unit_type="Casa", status="sold", sold_at=datetime(2026, 1, 1, tzinfo=UTC),
+        buyer_person_id=uuid4(), sale_price=Decimal("100000"), discount_amount=Decimal("5000"),
+        external_contract_id=uuid4(), external_receivable_id=uuid4())
+    repository.units[(company_id, unit.id)] = unit
+    return project, unit
+
+
+@pytest.mark.asyncio
+async def test_terminate_unit_frees_unit_and_keeps_sale_in_history():
+    from app.schemas.construction.project import ConstructionUnitTerminationReactivateRequest
+
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    terms = {"deductions": [{"type": "PERCENT_OF_PAID", "value": "10"}]}
+    _, unit = _sold_unit_with_sale(repository, company_id=company_id, terms=terms)
+    buyer, contract = unit.buyer_person_id, unit.external_contract_id
+    client = FakeTerminationClient()
+    service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository(), erp_client=client)
+
+    result = await service.terminate_unit(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitTerminationRequest(termination_date=date(2026, 10, 1), reason="Desistência"),
+        actor_user_id=uuid4(),
+    )
+
+    payload = client.calls[0][1]
+    assert payload["terms"]["deductions"][0]["type"] == "PERCENT_OF_PAID"
+    assert payload["contract_amount"] == "95000"
+    assert payload["contract_id"] == str(contract)
+    assert result["unit_status"] == "available"
+    assert unit.status == "available" and unit.buyer_person_id is None and unit.external_contract_id is None
+    assert unit.current_sale_id is None and unit.terminated_at is not None
+    [sale] = await repository.list_unit_sales(company_id=company_id, unit_id=unit.id)
+    assert sale.status == "TERMINATED" and sale.buyer_person_id == buyer
+    assert sale.refund_amount == Decimal("900.00")
+    assert unit.cost_sale_history[-1]["terminated_at"]
+
+    await service.reactivate_unit_termination(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitTerminationReactivateRequest(reason="Voltou"),
+        actor_user_id=uuid4(),
+    )
+    assert unit.status == "sold" and unit.buyer_person_id == buyer and unit.current_sale_id == sale.id
+    assert sale.status == "ACTIVE" and unit.terminated_at is None and unit.cost_sale_history == []
+
+
+@pytest.mark.asyncio
+async def test_terminate_unit_keeps_unit_sold_when_erp_refuses():
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    _, unit = _sold_unit_with_sale(repository, company_id=company_id)
+    service = ConstructionProjectService(
+        repository=repository, event_repository=FakeEventRepository(), erp_client=FakeTerminationClient(fail=True)
+    )
+    with pytest.raises(ConstructionDomainError):
+        await service.terminate_unit(
+            company_id=company_id,
+            unit_id=unit.id,
+            request=ConstructionUnitTerminationRequest(termination_date=date(2026, 10, 1), reason="Desistência"),
+        )
+    assert unit.status == "sold" and unit.buyer_person_id is not None
+    [sale] = await repository.list_unit_sales(company_id=company_id, unit_id=unit.id)
+    assert sale.status == "ACTIVE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current,target", [("sold", "available"), ("delivered", "reserved"), ("terminated", "available")])
+async def test_status_patch_cannot_undo_a_sale(current, target):
+    from app.schemas.construction.project import ConstructionUnitUpdate
+
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    _, unit = _sold_unit_with_sale(repository, company_id=company_id)
+    unit.status = current
+    service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository())
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.update_unit(company_id=company_id, unit_id=unit.id,
+            request=ConstructionUnitUpdate(status=target), actor_user_id=uuid4())
+    assert error.value.error_code == "CONSTRUCTION_UNIT_STATUS_REQUIRES_TERMINATION"
+
+
+def test_termination_terms_respect_penalty_ceiling():
+    from app.domain.unit_termination_terms import normalize_termination_terms
+
+    with pytest.raises(ConstructionInvalidValueError):
+        normalize_termination_terms({"deductions": [{"type": "PERCENT_OF_PAID", "value": "26"}]}, has_segregated_assets=False)
+    terms = normalize_termination_terms(
+        {"deductions": [{"type": "PERCENT_OF_PAID", "value": "50"}], "refund_deadline_days": 180},
+        has_segregated_assets=True,
+    )
+    assert terms["deductions"][0]["label"] == "Multa sobre o valor pago"
+    assert terms["refund_deadline_days"] == 180
+
+
+class FakeSaleTerminationClient(FakeErpMeasurementClient):
+    def __init__(self, termination_result=None):
+        super().__init__()
+        self.termination_calls = []
+        self.termination_result = termination_result or {}
+
+    async def preview_unit_termination(self, *, company_id, user_id, payload):
+        self.termination_calls.append(("preview", payload))
+        return {"refund_amount": "0.00", "paid_amount": "0.00", "blockers": []}
+
+    async def apply_unit_termination(self, *, company_id, user_id, payload):
+        self.termination_calls.append(("apply", payload))
+        return {"termination_id": str(uuid4()), "refund_amount": "0.00", "paid_amount": "0.00",
+                **self.termination_result}
+
+    async def reactivate_unit_termination(self, *, company_id, user_id, payload):
+        self.termination_calls.append(("reactivate", payload))
+        return {"status": "REACTIVATED"}
+
+
+def _available_unit_for_sale(repository, *, company_id):
+    project = ConstructionProject(id=uuid4(), company_id=company_id, code="OBRA-R", name="Revenda",
+        status=ConstructionProjectStatus.ACTIVE, analytic_cost_center_id=uuid4(), has_segregated_assets=False)
+    unit = ConstructionUnit(id=uuid4(), company_id=company_id, project_id=project.id, code="R-1",
+        unit_type="apartment", sale_price=Decimal("200000.00"), analytic_cost_center_id=uuid4(), status="available")
+    repository.projects[(company_id, project.id)] = project
+    repository.units[(company_id, unit.id)] = unit
+    return project, unit
+
+
+def _sale_request():
+    return ConstructionUnitSaleConfirmRequest(
+        buyer_person_id=uuid4(), sale_price=Decimal("200000.00"), first_due_date=date(2026, 11, 10), installments=1
+    )
+
+
+def _termination_request(**fields):
+    return ConstructionUnitTerminationRequest(
+        termination_date=fields.pop("termination_date", date(2026, 10, 1)), reason="Desistência", **fields
+    )
+
+
+@pytest.mark.asyncio
+async def test_resale_after_termination_gets_sequence_two_and_ignores_first_sale_signal():
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    _, unit = _available_unit_for_sale(repository, company_id=company_id)
+    client = FakeSaleTerminationClient()
+    service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository(), erp_client=client)
+
+    await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=_sale_request())
+    first_sale_id = unit.current_sale_id
+    signal = ConstructionUnitCommission(id=uuid4(), company_id=company_id, unit_id=unit.id, sale_id=first_sale_id,
+        beneficiary_person_id=uuid4(), sequence_number=1, amount=Decimal("5000.00"), due_date=date(2026, 9, 1),
+        payment_date=date(2026, 9, 1), composes_sale_price=True)
+    repository.unit_commissions[(company_id, signal.id)] = signal
+
+    await service.terminate_unit(company_id=company_id, unit_id=unit.id, request=_termination_request())
+    await service.confirm_unit_sale(company_id=company_id, unit_id=unit.id, request=_sale_request())
+
+    second_sale = repository.unit_sales[(company_id, unit.current_sale_id)]
+    assert second_sale.id != first_sale_id and second_sale.sequence == 2
+    assert repository.unit_sales[(company_id, first_sale_id)].status == "TERMINATED"
+    assert "commission_offset" not in client.events[-1].payload
+    composition = await service.build_unit_sale_composition(company_id=company_id, unit_id=unit.id)
+    assert composition["commission_offset"] == Decimal("0.00") and composition["commissions"] == []
+    assert await service.list_unit_commissions(company_id=company_id, unit_id=unit.id) == []
+    [listed_first, *_] = await repository.list_unit_sales(company_id=company_id, unit_id=unit.id)
+    assert listed_first.id == second_sale.id
+
+
+@pytest.mark.asyncio
+async def test_preview_does_not_create_sale_for_unit_without_sale_history():
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    _, unit = _sold_unit_with_sale(repository, company_id=company_id)
+    client = FakeSaleTerminationClient()
+    service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository(), erp_client=client)
+
+    await service.preview_unit_termination(company_id=company_id, unit_id=unit.id, request=_termination_request())
+
+    assert repository.unit_sales == {} and unit.current_sale_id is None
+    assert repository.commits == 0 and repository.rollbacks == 1
+    assert client.termination_calls[0][1]["construction_sale_id"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_termination_records_date_and_reason_returned_by_erp():
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    _, unit = _sold_unit_with_sale(repository, company_id=company_id)
+    client = FakeSaleTerminationClient(
+        termination_result={"termination_date": "2026-09-15", "reason": "Distrato já aplicado"}
+    )
+    service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository(), erp_client=client)
+
+    await service.terminate_unit(
+        company_id=company_id, unit_id=unit.id, request=_termination_request(termination_date=date(2026, 10, 20))
+    )
+
+    [sale] = await repository.list_unit_sales(company_id=company_id, unit_id=unit.id)
+    assert sale.termination_date == date(2026, 9, 15)
+    assert sale.termination_reason == "Distrato já aplicado"
+
+
+@pytest.mark.asyncio
+async def test_reactivation_restores_delivery_signals_and_contract_snapshot():
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    _, unit = _sold_unit_with_sale(repository, company_id=company_id)
+    delivered_at = datetime(2026, 5, 1, tzinfo=UTC)
+    unit.status = "delivered"
+    unit.delivered_at = delivered_at
+    unit.external_contract_status = "ACTIVE"
+    unit.external_receivable_status = "OPEN"
+    unpaid = ConstructionUnitCommission(id=uuid4(), company_id=company_id, unit_id=unit.id,
+        beneficiary_person_id=uuid4(), sequence_number=1, amount=Decimal("700.00"), due_date=date(2026, 11, 1),
+        composes_sale_price=True)
+    repository.unit_commissions[(company_id, unpaid.id)] = unpaid
+    service = ConstructionProjectService(
+        repository=repository, event_repository=FakeEventRepository(), erp_client=FakeSaleTerminationClient()
+    )
+
+    await service.terminate_unit(company_id=company_id, unit_id=unit.id, request=_termination_request())
+    assert unit.delivered_at is None and unpaid.deleted_at is not None
+    unit.sale_price = Decimal("250000.00")
+
+    from app.schemas.construction.project import ConstructionUnitTerminationReactivateRequest
+
+    await service.reactivate_unit_termination(
+        company_id=company_id, unit_id=unit.id, request=ConstructionUnitTerminationReactivateRequest(reason="Voltou")
+    )
+
+    assert unit.status == "delivered" and unit.delivered_at == delivered_at
+    assert unit.sale_price == Decimal("100000")
+    assert unit.external_contract_status == "ACTIVE" and unit.external_receivable_status == "OPEN"
+    assert unpaid.deleted_at is None and unpaid.sale_id == unit.current_sale_id
+    assert await service.list_unit_commissions(company_id=company_id, unit_id=unit.id) == [unpaid]
+
+
+@pytest.mark.asyncio
+async def test_reactivation_keeps_cost_history_when_termination_did_not_append():
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    _, unit = _sold_unit_with_sale(repository, company_id=company_id)
+    unit.sold_at = None
+    previous = {"sold_at": "2025-01-01T00:00:00+00:00", "terminated_at": "2025-06-01T00:00:00+00:00"}
+    unit.cost_sale_history = [previous]
+    service = ConstructionProjectService(
+        repository=repository, event_repository=FakeEventRepository(), erp_client=FakeSaleTerminationClient()
+    )
+
+    await service.terminate_unit(company_id=company_id, unit_id=unit.id, request=_termination_request())
+
+    from app.schemas.construction.project import ConstructionUnitTerminationReactivateRequest
+
+    await service.reactivate_unit_termination(
+        company_id=company_id, unit_id=unit.id, request=ConstructionUnitTerminationReactivateRequest(reason="Voltou")
+    )
+    assert unit.cost_sale_history == [previous]
+
+
+@pytest.mark.asyncio
+async def test_reactivation_picks_latest_native_termination_over_legacy_sequence():
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    _, unit = _sold_unit_with_sale(repository, company_id=company_id)
+    client = FakeSaleTerminationClient()
+    service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository(), erp_client=client)
+    await service.terminate_unit(company_id=company_id, unit_id=unit.id, request=_termination_request())
+    [native] = await repository.list_unit_sales(company_id=company_id, unit_id=unit.id)
+    legacy = ConstructionUnitSale(id=uuid4(), company_id=company_id, unit_id=unit.id, sequence=native.sequence + 5,
+        status="TERMINATED", source="LEGACY", sold_at=datetime(2020, 1, 1, tzinfo=UTC),
+        terminated_at=datetime(2021, 1, 1, tzinfo=UTC), termination_terms={})
+    repository.unit_sales[(company_id, legacy.id)] = legacy
+
+    from app.schemas.construction.project import ConstructionUnitTerminationReactivateRequest
+
+    await service.reactivate_unit_termination(
+        company_id=company_id, unit_id=unit.id, request=ConstructionUnitTerminationReactivateRequest(reason="Voltou")
+    )
+    assert client.termination_calls[-1][1]["construction_sale_id"] == str(native.id)
+    assert native.status == "ACTIVE" and legacy.status == "TERMINATED"
+
+
+@pytest.mark.asyncio
+async def test_unit_sale_queries_refuse_unit_of_another_company():
+    from app.schemas.construction.project import ConstructionUnitTerminationReactivateRequest
+
+    company_a, company_b = uuid4(), uuid4()
+    repository = FakeConstructionRepository()
+    _, unit = _sold_unit_with_sale(repository, company_id=company_a)
+    client = FakeSaleTerminationClient()
+    service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository(), erp_client=client)
+
+    with pytest.raises(ConstructionNotFoundError):
+        await service.list_unit_sales(company_id=company_b, unit_id=unit.id)
+    with pytest.raises(ConstructionNotFoundError):
+        await service.list_unit_buyer_credits(company_id=company_b, unit_id=unit.id)
+    with pytest.raises(ConstructionNotFoundError):
+        await service.preview_unit_termination(company_id=company_b, unit_id=unit.id, request=_termination_request())
+    with pytest.raises(ConstructionNotFoundError):
+        await service.terminate_unit(company_id=company_b, unit_id=unit.id, request=_termination_request())
+    with pytest.raises(ConstructionNotFoundError):
+        await service.reactivate_unit_termination(
+            company_id=company_b, unit_id=unit.id, request=ConstructionUnitTerminationReactivateRequest(reason="Voltou")
+        )
+
+    assert client.termination_calls == []
+    assert unit.status == "sold" and unit.current_sale_id is None and repository.unit_sales == {}
+    assert await service.list_unit_sales(company_id=company_a, unit_id=unit.id) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keep_snapshot_status,expected", [(True, "delivered"), (False, "sold")])
+async def test_reactivation_restores_unit_status_recorded_at_termination(keep_snapshot_status, expected):
+    from app.schemas.construction.project import ConstructionUnitTerminationReactivateRequest
+
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    _, unit = _sold_unit_with_sale(repository, company_id=company_id)
+    unit.status = "delivered"
+    service = ConstructionProjectService(
+        repository=repository, event_repository=FakeEventRepository(), erp_client=FakeSaleTerminationClient()
+    )
+    await service.terminate_unit(company_id=company_id, unit_id=unit.id, request=_termination_request())
+    [sale] = await repository.list_unit_sales(company_id=company_id, unit_id=unit.id)
+    assert sale.termination_snapshot["unit_status"] == "delivered"
+    if not keep_snapshot_status:
+        sale.termination_snapshot = {
+            key: value for key, value in sale.termination_snapshot.items() if key != "unit_status"
+        }
+
+    await service.reactivate_unit_termination(
+        company_id=company_id, unit_id=unit.id, request=ConstructionUnitTerminationReactivateRequest(reason="Voltou")
+    )
+
+    assert unit.status == expected and unit.delivered_at is None
+
+
+@pytest.mark.asyncio
+async def test_contract_canceled_event_uses_company_timezone_and_is_not_reactivable():
+    from app.domain.business_clock import business_clock_scope
+    from app.schemas.construction.project import ConstructionUnitTerminationReactivateRequest
+
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    repository.company_timezones[company_id] = "America/Rio_Branco"
+    _, unit = _sold_unit_with_sale(repository, company_id=company_id)
+    client = FakeSaleTerminationClient()
+    service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository(), erp_client=client)
+    event = make_erp_contract_status_updated_event(company_id=company_id, unit_id=unit.id, contract_status="CANCELED")
+
+    with business_clock_scope("America/Sao_Paulo", instant=datetime(2026, 10, 21, 3, 30, tzinfo=UTC)):
+        await service.apply_contract_status_updated_event(event=event)
+
+    [sale] = await repository.list_unit_sales(company_id=company_id, unit_id=unit.id)
+    assert sale.status == "TERMINATED" and sale.external_termination_id is None
+    assert sale.termination_date == date(2026, 10, 20)
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.reactivate_unit_termination(
+            company_id=company_id, unit_id=unit.id, request=ConstructionUnitTerminationReactivateRequest(reason="Voltou")
+        )
+    assert error.value.error_code == "CONSTRUCTION_UNIT_TERMINATION_NOT_FOUND"
+    assert client.termination_calls == []
+
+
+@pytest.mark.asyncio
+async def test_termination_payload_uses_segregation_recorded_on_the_sale():
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    project, unit = _sold_unit_with_sale(repository, company_id=company_id)
+    project.has_segregated_assets = True
+    client = FakeSaleTerminationClient()
+    service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository(), erp_client=client)
+    await service.terminate_unit(company_id=company_id, unit_id=unit.id, request=_termination_request())
+    [sale] = await repository.list_unit_sales(company_id=company_id, unit_id=unit.id)
+    assert sale.termination_terms["has_segregated_assets"] is True
+    payload = client.termination_calls[-1][1]
+    assert payload["has_segregated_assets"] is True and "has_segregated_assets" not in payload["terms"]
+
+
+@pytest.mark.asyncio
+async def test_update_project_validates_termination_terms_against_segregation():
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    project = ConstructionProject(id=uuid4(), company_id=company_id, code="OBRA-T", name="Termos",
+        status=ConstructionProjectStatus.ACTIVE, has_segregated_assets=False)
+    repository.projects[(company_id, project.id)] = project
+    service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository())
+    over_common_ceiling = {"deductions": [{"type": "PERCENT_OF_PAID", "value": "30"}]}
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.update_project(company_id=company_id, project_id=project.id,
+            request=ConstructionProjectUpdate(termination_defaults=over_common_ceiling))
+    assert error.value.error_code == "CONSTRUCTION_TERMINATION_TERMS_INVALID"
+
+    await service.update_project(company_id=company_id, project_id=project.id,
+        request=ConstructionProjectUpdate(termination_defaults=over_common_ceiling, has_segregated_assets=True))
+    assert project.has_segregated_assets is True
+    assert project.termination_defaults["deductions"][0]["value"] == "30"
+
+    with pytest.raises(ConstructionInvalidValueError):
+        await service.update_project(company_id=company_id, project_id=project.id,
+            request=ConstructionProjectUpdate(has_segregated_assets=False))

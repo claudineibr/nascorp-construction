@@ -19,4 +19,8 @@ export const currencyFromNumber = (value) => {
 
 export const currencyNumber = (value) => Number(currencyDecimal(value))
 
+const brlFormatter = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" })
+
+export const formatBRL = (value) => (value == null || value === "" ? "-" : brlFormatter.format(Number(value)))
+
 export { currencyDecimal }

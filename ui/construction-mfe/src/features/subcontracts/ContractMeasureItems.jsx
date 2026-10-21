@@ -119,7 +119,7 @@ export function ContractMeasureItems({
         ) : !visible.length ? (
           <p className={styles.empty}>Nenhum item do contrato encontrado.</p>
         ) : (
-          <table className={`${styles.table} ${styles.itemsTable}`}>
+          <table className={`${styles.table} ${styles.itemsTable} ${styles.measureItemsTable}`}>
             <thead>
               <tr>
                 <th>Serviço</th>

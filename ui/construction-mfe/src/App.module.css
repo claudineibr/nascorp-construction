@@ -1407,3 +1407,69 @@
   min-width: 0;
   width: 100%;
 }
+
+.phaseNameLabel { display: inline-flex; align-items: center; gap: 0.35rem; }
+.phaseSuggestions { box-sizing: border-box; position: relative; display: inline-flex; flex-shrink: 0; }
+.phaseSuggestionsButton {
+  box-sizing: border-box;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: help;
+}
+.phaseSuggestionsButton:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.phaseSuggestionsTooltip {
+  box-sizing: border-box;
+  position: absolute;
+  z-index: var(--z-popover, 1100);
+  top: 100%;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: min(340px, calc(100vw - 6rem));
+  padding: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 0.85rem;
+  font-weight: 400;
+  line-height: 1.5;
+  text-transform: none;
+  letter-spacing: normal;
+  overflow-wrap: anywhere;
+  visibility: hidden;
+}
+.phaseSuggestionsStart { right: auto; left: 0; }
+.phaseSuggestions:hover .phaseSuggestionsTooltip,
+.phaseSuggestions:focus-within .phaseSuggestionsTooltip { visibility: visible; }
+
+@media (width <= 640px) {
+  .phaseSuggestionsTooltip {
+    position: fixed;
+    top: auto;
+    bottom: 1rem;
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    width: min(340px, calc(100vw - 2rem));
+  }
+}
+
+.measurementFormGrid {
+  align-items: start;
+}
+.measurementFormGrid > .filterControl input,
+.measurementFormGrid > .filterControl select {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+  height: 2.6rem;
+}

@@ -78,6 +78,10 @@ class ConstructionProject(PreservedHistory, Base):
     lot = mapped_column(String(120), nullable=True)
     registration = mapped_column(String(120), nullable=True)
     land_area = mapped_column(Numeric(14, 2), nullable=True)
+    termination_defaults = mapped_column(JSONB, nullable=True)
+    has_segregated_assets: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -187,6 +191,7 @@ class ConstructionUnit(PreservedHistory, Base):
     external_receivable_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     external_receivable_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     analytic_cost_center_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    current_sale_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default=ConstructionUnitStatus.AVAILABLE)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -220,6 +225,67 @@ class ConstructionUnit(PreservedHistory, Base):
             return None
 
         return self.sale_price - (self.discount_amount or Decimal("0"))
+
+
+class ConstructionUnitSale(Base):
+    __tablename__ = "construction_unit_sales"
+    __table_args__ = (
+        UniqueConstraint("unit_id", "sequence", name="uq_construction_unit_sales_sequence"),
+        CheckConstraint("status IN ('ACTIVE', 'TERMINATED')", name="ck_unit_sales_status"),
+        CheckConstraint("source IN ('NATIVE', 'LEGACY')", name="ck_unit_sales_source"),
+        Index(
+            "uq_construction_unit_sales_active",
+            "unit_id",
+            unique=True,
+            postgresql_where=text("status = 'ACTIVE'"),
+        ),
+        {"schema": CONSTRUCTION_SCHEMA},
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    company_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    unit_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_units.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="NATIVE", server_default=text("'NATIVE'"))
+    buyer_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    secondary_buyer_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    broker_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    sale_price: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    discount_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    payment_sources = mapped_column(JSONB, nullable=True)
+    documentations = mapped_column(JSONB, nullable=True)
+    sale_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sold_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    contract_signature_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    external_contract_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    external_receivable_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    external_contract_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    external_receivable_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    termination_snapshot = mapped_column(JSONB, nullable=True)
+    termination_terms = mapped_column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
+    terminated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    termination_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    termination_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    termination_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    external_termination_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    refund_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    paid_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    created_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    terminated_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 
 class ConstructionSchedulePhase(Base):
@@ -257,9 +323,11 @@ class ConstructionSchedulePhase(Base):
 
 
 class ConstructionMeasurement(PreservedHistory, Base):
+    purpose: Mapped[str | None] = mapped_column(String(20), nullable=True)
     __tablename__ = "construction_measurements"
     __table_args__ = (
         UniqueConstraint("project_id", "code", name="uq_construction_measurements_project_code"),
+        CheckConstraint("purpose IS NULL OR purpose IN ('CONTRACT', 'SERVICE', 'CONTROL')", name="ck_measurement_purpose"),
         {"schema": CONSTRUCTION_SCHEMA},
     )
 
@@ -684,6 +752,12 @@ class ConstructionUnitCommission(PreservedHistory, Base):
         PG_UUID(as_uuid=True),
         ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_units.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
+    )
+    sale_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_unit_sales.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     beneficiary_person_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)

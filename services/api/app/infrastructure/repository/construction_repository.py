@@ -33,6 +33,7 @@ from app.infrastructure.database.models import (
     ConstructionUnitCommission,
     ConstructionUnitDocumentation,
     ConstructionUnitPaymentSource,
+    ConstructionUnitSale,
     ConstructionMeasurementItem,
     ConstructionMeasurementItemInspection,
     ConstructionMeasurementItemOccurrence,
@@ -93,6 +94,23 @@ class ConstructionRepository:
 
     async def add(self, entity: object) -> None:
         self.session.add(entity)
+
+    async def flush(self):
+        await self.session.flush()
+
+    async def lock_service_template(self, company_id, template_id):
+        return await self.session.scalar(select(ConstructionServiceTemplate).where(
+            ConstructionServiceTemplate.company_id == company_id,
+            ConstructionServiceTemplate.id == template_id,
+            *scope_conditions(ConstructionServiceTemplate, self.scope),
+        ).with_for_update())
+
+    async def lock_measurement(self, company_id, measurement_id):
+        return await self.session.scalar(select(ConstructionMeasurement).where(
+            ConstructionMeasurement.company_id == company_id,
+            ConstructionMeasurement.id == measurement_id,
+            *scope_conditions(ConstructionMeasurement, self.scope),
+        ).with_for_update().execution_options(populate_existing=True))
 
     async def commit(self) -> None:
         await self.session.commit()
@@ -286,6 +304,62 @@ class ConstructionRepository:
         )
         return result.scalars().first()
 
+    async def get_unit_sale(self, *, company_id, sale_id, lock=False):
+        stmt = select(ConstructionUnitSale).where(
+            ConstructionUnitSale.company_id == company_id,
+            ConstructionUnitSale.id == sale_id,
+            *scope_conditions(ConstructionUnitSale, self.scope),
+        )
+        if lock:
+            stmt = stmt.with_for_update().execution_options(populate_existing=True)
+        return await self.session.scalar(stmt)
+
+    async def list_unit_sales(self, *, company_id, unit_id):
+        result = await self.session.execute(
+            select(ConstructionUnitSale)
+            .where(
+                ConstructionUnitSale.company_id == company_id,
+                ConstructionUnitSale.unit_id == unit_id,
+                *scope_conditions(ConstructionUnitSale, self.scope),
+            )
+            .order_by(
+                (ConstructionUnitSale.status != "ACTIVE").asc(),
+                ConstructionUnitSale.sold_at.desc().nulls_last(),
+                ConstructionUnitSale.sequence.desc(),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def get_latest_native_terminated_sale(self, *, company_id, unit_id):
+        return await self.session.scalar(
+            select(ConstructionUnitSale)
+            .where(
+                ConstructionUnitSale.company_id == company_id,
+                ConstructionUnitSale.unit_id == unit_id,
+                ConstructionUnitSale.status == "TERMINATED",
+                ConstructionUnitSale.source == "NATIVE",
+                ConstructionUnitSale.external_termination_id.is_not(None),
+                *scope_conditions(ConstructionUnitSale, self.scope),
+            )
+            .order_by(
+                ConstructionUnitSale.terminated_at.desc().nulls_last(),
+                ConstructionUnitSale.sequence.desc(),
+            )
+            .limit(1)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    async def next_unit_sale_sequence(self, *, company_id, unit_id) -> int:
+        return await self._next_scoped_sequence(
+            column=ConstructionUnitSale.sequence,
+            filters=(
+                ConstructionUnitSale.company_id == company_id,
+                ConstructionUnitSale.unit_id == unit_id,
+            ),
+            lock_scope=f"construction_unit_sales:{unit_id}",
+        )
+
     async def lock_unit(self, *, company_id, unit_id):
         return await self.session.scalar(select(ConstructionUnit).where(
             ConstructionUnit.company_id == company_id,
@@ -293,6 +367,13 @@ class ConstructionRepository:
             ConstructionUnit.deleted_at.is_(None),
             *scope_conditions(ConstructionUnit, self.scope),
         ).with_for_update().execution_options(populate_existing=True))
+
+    async def get_company_timezone(self, *, company_id):
+        result = await self.session.execute(
+            text("SELECT timezone FROM public.companies WHERE id=:company AND deleted_at IS NULL"),
+            {"company": company_id},
+        )
+        return result.scalar_one_or_none()
 
     async def valid_contract_template(self, company_id, template_id):
         result = await self.session.execute(text("SELECT id FROM public.contract_templates WHERE id=:template AND company_id=:company AND document_type='unit_sale' AND deleted_at IS NULL AND is_active=true AND file_path IS NOT NULL"),
@@ -310,7 +391,8 @@ class ConstructionRepository:
             return None
         project = await self.get_project(company_id=company_id, project_id=unit.project_id)
         signals = await self.session.execute(select(ConstructionUnitCommission).where(
-            ConstructionUnitCommission.company_id == company_id, ConstructionUnitCommission.unit_id == unit_id))
+            ConstructionUnitCommission.company_id == company_id, ConstructionUnitCommission.unit_id == unit_id,
+            self._sale_commission_condition(unit.current_sale_id)))
         documentation = await self.session.execute(select(ConstructionUnitDocumentation).where(
             ConstructionUnitDocumentation.company_id == company_id, ConstructionUnitDocumentation.unit_id == unit_id))
         return {"unit": {key: getattr(unit, key) for key in ("id", "project_id", "code", "description", "sale_price",
@@ -773,22 +855,67 @@ class ConstructionRepository:
         )
         return list(result.scalars().all())
 
-    async def delete_unpaid_unit_commissions(self, *, company_id, unit_id):
+    @staticmethod
+    def _sale_commission_condition(sale_id):
+        if sale_id is None:
+            return ConstructionUnitCommission.sale_id.is_(None)
+        return or_(ConstructionUnitCommission.sale_id.is_(None), ConstructionUnitCommission.sale_id == sale_id)
+
+    async def delete_unpaid_unit_commissions(self, *, company_id, unit_id, sale_id):
+        commissions = list((await self.session.scalars(
+            select(ConstructionUnitCommission).where(
+                ConstructionUnitCommission.company_id == company_id,
+                ConstructionUnitCommission.unit_id == unit_id,
+                ConstructionUnitCommission.payment_date.is_(None),
+                self._sale_commission_condition(sale_id),
+                *scope_conditions(ConstructionUnitCommission, self.scope),
+            ).order_by(ConstructionUnitCommission.sequence_number)
+        )).all())
+        if commissions:
+            await self.session.execute(
+                update(ConstructionUnitCommission).where(
+                    ConstructionUnitCommission.company_id == company_id,
+                    ConstructionUnitCommission.id.in_([commission.id for commission in commissions]),
+                    ConstructionUnitCommission.deleted_at.is_(None),
+                ).values(
+                    deleted_at=datetime.now(UTC),
+                    deleted_by_user_id=self.session.info.get("actor_user_id"),
+                ).execution_options(synchronize_session=False)
+            )
+        logger.info(
+            f"[construction_commission] delete_unpaid: company_id={company_id} "
+            f"unit_id={unit_id} sale_id={sale_id} count={len(commissions)}"
+        )
+        return commissions
+
+    async def restore_unit_commissions(self, *, company_id, unit_id, sale_id, commission_ids):
+        if not commission_ids:
+            return set()
         result = await self.session.execute(
             update(ConstructionUnitCommission).where(
                 ConstructionUnitCommission.company_id == company_id,
                 ConstructionUnitCommission.unit_id == unit_id,
-                ConstructionUnitCommission.payment_date.is_(None),
-                ConstructionUnitCommission.deleted_at.is_(None),
-                *scope_conditions(ConstructionUnitCommission, self.scope),
-            ).values(
-                deleted_at=datetime.now(UTC),
-                deleted_by_user_id=self.session.info.get("actor_user_id"),
-            )
+                ConstructionUnitCommission.id.in_(commission_ids),
+                ConstructionUnitCommission.deleted_at.is_not(None),
+            ).values(deleted_at=None, deleted_by_user_id=None, sale_id=sale_id)
+            .returning(ConstructionUnitCommission.id)
+            .execution_options(synchronize_session=False, include_deleted=True)
         )
+        restored = set(result.scalars().all())
         logger.info(
-            f"[construction_commission] delete_unpaid: company_id={company_id} "
-            f"unit_id={unit_id} count={result.rowcount}"
+            f"[construction_commission] restore: company_id={company_id} unit_id={unit_id} "
+            f"sale_id={sale_id} requested={len(commission_ids)} restored={len(restored)}"
+        )
+        return restored
+
+    async def attach_unit_commissions_to_sale(self, *, company_id, unit_id, sale_id):
+        await self.session.execute(
+            update(ConstructionUnitCommission).where(
+                ConstructionUnitCommission.company_id == company_id,
+                ConstructionUnitCommission.unit_id == unit_id,
+                ConstructionUnitCommission.sale_id.is_(None),
+                ConstructionUnitCommission.deleted_at.is_(None),
+            ).values(sale_id=sale_id).execution_options(synchronize_session=False)
         )
 
     async def list_unit_commissions(
@@ -796,6 +923,7 @@ class ConstructionRepository:
         *,
         company_id: UUID,
         unit_id: UUID,
+        sale_id: UUID | None,
     ) -> list[ConstructionUnitCommission]:
         result = await self.session.execute(
             select(ConstructionUnitCommission)
@@ -803,6 +931,7 @@ class ConstructionRepository:
                 ConstructionUnitCommission.company_id == company_id,
                 ConstructionUnitCommission.unit_id == unit_id,
                 ConstructionUnitCommission.unit.has(ConstructionUnit.deleted_at.is_(None)),
+                self._sale_commission_condition(sale_id),
                 *scope_conditions(ConstructionUnitCommission, self.scope),
             )
             .order_by(ConstructionUnitCommission.sequence_number)

@@ -162,7 +162,7 @@ async def test_deleting_the_unit_takes_its_commissions_with_it() -> None:
             )
             await service.delete_unit(company_id=company_id, unit_id=unit_id)
 
-            remaining = await repository.list_unit_commissions(company_id=company_id, unit_id=unit_id)
+            remaining = await repository.list_unit_commissions(company_id=company_id, unit_id=unit_id, sale_id=None)
 
             assert remaining == []
         finally:

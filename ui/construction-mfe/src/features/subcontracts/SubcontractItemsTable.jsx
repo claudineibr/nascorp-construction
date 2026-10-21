@@ -1,4 +1,5 @@
 import { Plus, Trash2 } from "lucide-react";
+import { InfoTip } from "../../components/InfoTip";
 import appStyles from "../../App.module.css";
 import { money } from "../sharedPayables/SharedPayableLinkModal";
 import { currencyNumber, formatCurrencyInput } from "../../utils/currencyInput";
@@ -51,9 +52,28 @@ export function SubcontractItemsTable({
               <th>{servicesRestricted ? "Serviço da obra*" : "Serviço"}</th>
               <th>Especificação*</th>
               <th>Unidade*</th>
-              <th>Qtd. contratada*</th>
-              <th>Material / un.*</th>
-              <th>Mão de obra / un.*</th>
+              <th>
+                Qtd. contratada*
+                <InfoTip floating label="Sobre a quantidade contratada">
+                  Quantidade total do serviço combinada no contrato, na unidade
+                  informada. As medições aprovadas consomem esse saldo.
+                </InfoTip>
+              </th>
+              <th>
+                Material / un.*
+                <InfoTip floating label="Sobre o material por unidade">
+                  Preço do material para uma unidade do serviço. Informe 0,00
+                  quando o preço contratado não incluir material.
+                </InfoTip>
+              </th>
+              <th>
+                Mão de obra / un.*
+                <InfoTip floating label="Sobre a mão de obra por unidade">
+                  Preço da mão de obra para uma unidade do serviço. O total do
+                  item é a quantidade contratada multiplicada pela soma dos
+                  preços de material e mão de obra. Informe 0,00 quando não houver.
+                </InfoTip>
+              </th>
               <th>Total</th>
               <th>Medido · saldo</th>
               <th aria-label="Ações" />

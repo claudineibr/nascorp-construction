@@ -1,3 +1,4 @@
+import { inspectionEligibleForBulk } from "../measurementWorkflow"
 import { getBusinessTimezone } from "../../utils/brazilDate.js"
 import { useMemo, useState } from "react"
 import { CheckCircle, History, Plus, ShieldOff, Trash2, TriangleAlert } from "lucide-react"
@@ -64,11 +65,16 @@ export function InspectionChecklist({
       total: inspections.length,
       blocking: countBlockingLines(inspections),
       pending: countPendingLines(inspections),
+      bulk: inspections.filter(inspectionEligibleForBulk).length,
     }),
     [inspections],
   )
 
   const handleQuickVerify = (inspection, status) => {
+    if (status === "compliant" && inspection.requiresComment) {
+      setOpenForm({ inspection, status });
+      return;
+    }
     onVerifyInspection(inspection, {
       status,
       comment: "",
@@ -109,19 +115,23 @@ export function InspectionChecklist({
             }}
           />
         </div>
-        {isLocked || !canVerify || summary.pending === 0 ? null : (
+        {isLocked || !canVerify || summary.bulk === 0 ? null : (
           <button
             type="button"
-            className={styles.secondaryButton}
+            className={styles.primaryButton}
             onClick={() => onVerifyAllPending(item, { inspectorPersonId: sessionInspectorId })}
             disabled={saving}
           >
             <CheckCircle size={15} />
-            Marcar as {summary.pending} pendentes como conformes
+            Marcar as {summary.bulk} pendentes como conformes
           </button>
         )}
       </header>
 
+      {inspections.some((line) => line.requiresPhoto) && (
+        <p className={styles.fieldHint}>Esta ficha sinaliza evidência fotográfica. A captura de fotos ainda não está disponível neste fluxo; a marcação Conforme não comprova anexação de foto.</p>
+      )}
+      {summary.pending > summary.bulk && <p className={styles.fieldHint}>Linhas que exigem comentário são verificadas individualmente e ficam fora da marcação em lote.</p>}
       <p className={styles.checklistSummary}>
         {summary.total} linha(s) · {summary.blocking} aguardando reinspeção · {summary.pending} pendente(s)
       </p>

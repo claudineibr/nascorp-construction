@@ -1,9 +1,10 @@
+import json
 from datetime import date
 from decimal import Decimal
 from math import ceil
 from uuid import UUID
 
-from fastapi import Header, APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import Header, APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.context import ConstructionContext
@@ -30,6 +31,11 @@ from app.schemas.construction.project import (
     ConstructionZeroValueSupplier,
 )
 from app.schemas.construction import (
+    ConstructionUnitInstallmentCreditOffsetRequest,
+    ConstructionUnitSaleListResponse,
+    ConstructionUnitSaleResponse,
+    ConstructionUnitTerminationReactivateRequest,
+    ConstructionUnitTerminationRequest,
     ConstructionBlockCreate,
     ConstructionBlockListResponse,
     ConstructionBlockResponse,
@@ -468,6 +474,122 @@ async def confirm_unit_sale(
             actor_user_id=ctx.user_id,
         )
         return ConstructionUnitResponse.model_validate(unit)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/units/{unit_id}/sales", response_model=ConstructionUnitSaleListResponse)
+async def list_unit_sales(
+    unit_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionUnitSaleListResponse:
+    try:
+        sales = await service.list_unit_sales(company_id=ctx.company_id, unit_id=unit_id)
+        return ConstructionUnitSaleListResponse(
+            items=[ConstructionUnitSaleResponse.model_validate(sale) for sale in sales],
+            total=len(sales),
+            page=1,
+            page_size=len(sales),
+            total_pages=1 if sales else 0,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/termination/preview")
+async def preview_unit_termination(
+    unit_id: UUID,
+    request_data: ConstructionUnitTerminationRequest,
+    ctx: ConstructionContext = Depends(
+        require_permission(ConstructionFeature.UNIT_TERMINATION, PermissionAction.READ)
+    ),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        return await service.preview_unit_termination(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            request=request_data,
+            actor_user_id=ctx.user_id,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/termination")
+async def terminate_unit(
+    unit_id: UUID,
+    request_data: ConstructionUnitTerminationRequest,
+    ctx: ConstructionContext = Depends(
+        require_permission(ConstructionFeature.UNIT_TERMINATION, PermissionAction.CREATE)
+    ),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        return await service.terminate_unit(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            request=request_data,
+            actor_user_id=ctx.user_id,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/termination/reactivate")
+async def reactivate_unit_termination(
+    unit_id: UUID,
+    request_data: ConstructionUnitTerminationReactivateRequest,
+    ctx: ConstructionContext = Depends(
+        require_permission(ConstructionFeature.UNIT_TERMINATION, PermissionAction.DELETE)
+    ),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        return await service.reactivate_unit_termination(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            request=request_data,
+            actor_user_id=ctx.user_id,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/units/{unit_id}/customer-credits")
+async def list_unit_buyer_credits(
+    unit_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        return await service.list_unit_buyer_credits(
+            company_id=ctx.company_id, unit_id=unit_id, actor_user_id=ctx.user_id
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/installments/{installment_number}/credit-offset")
+async def offset_unit_installment_with_credit(
+    unit_id: UUID,
+    installment_number: int,
+    payload: ConstructionUnitInstallmentCreditOffsetRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> dict:
+    try:
+        return await service.offset_unit_installment_with_credit(
+            company_id=ctx.company_id,
+            unit_id=unit_id,
+            installment_number=installment_number,
+            amount=payload.amount,
+            paid_at=payload.paid_at,
+            receivable_id=payload.receivable_id,
+            observation=payload.observation,
+            actor_user_id=ctx.user_id,
+        )
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 
@@ -1314,14 +1436,26 @@ async def list_service_template_audits(
 @router.post("/service-templates/import", response_model=ConstructionServiceTemplateImportResponse)
 async def import_service_templates(
     files: list[UploadFile] = File(...),
+    mode: str = Query("create", pattern="^(create|preview|replace)$"),
+    expected_revisions: str = Form("{}"),
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.CREATE)),
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionServiceTemplateImportResponse:
+    if mode == "replace" and not ctx.can(feature=ConstructionFeature.MEASUREMENTS, action=PermissionAction.UPDATE):
+        raise HTTPException(status_code=403, detail="Revisar a FVS exige permissão de alterar Medições de Obra.")
+    try:
+        revisions = json.loads(expected_revisions)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="Prévia inválida. Gere outra prévia da planilha.")
+    if not isinstance(revisions, dict):
+        raise HTTPException(status_code=422, detail="Prévia inválida. Gere outra prévia da planilha.")
     uploaded_files = await _read_service_template_files(files)
     try:
         results = await service.import_service_templates(
             company_id=ctx.company_id,
             files=uploaded_files,
+            mode=mode,
+            expected_revisions=revisions,
             actor_user_id=ctx.user_id,
             actor_person_id=ctx.person_id,
         )
@@ -1384,23 +1518,24 @@ async def list_measurement_items(
 
 @router.post(
     "/measurements/{measurement_id}/items",
-    response_model=ConstructionMeasurementItemResponse,
+    response_model=ConstructionMeasurementItemResponse | ConstructionMeasurementItemListResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def create_measurement_item(
     measurement_id: UUID,
-    request_data: ConstructionMeasurementItemCreate,
+    request_data: ConstructionMeasurementItemCreate | list[ConstructionMeasurementItemCreate],
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.CREATE)),
     service: ConstructionProjectService = Depends(get_project_service),
-) -> ConstructionMeasurementItemResponse:
+):
     try:
-        item = await service.create_measurement_item(
-            company_id=ctx.company_id,
-            measurement_id=measurement_id,
-            request=request_data,
-            actor_user_id=ctx.user_id,
+        requests = request_data if isinstance(request_data, list) else [request_data]
+        items = await service.create_measurement_items(ctx.company_id, measurement_id, requests, ctx.user_id)
+        if not isinstance(request_data, list):
+            return ConstructionMeasurementItemResponse.model_validate(items[0])
+        return ConstructionMeasurementItemListResponse(
+            items=[ConstructionMeasurementItemResponse.model_validate(item) for item in items],
+            total=len(items), total_amount=sum((item.amount for item in items), Decimal("0")),
         )
-        return ConstructionMeasurementItemResponse.model_validate(item)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 

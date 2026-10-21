@@ -1,7 +1,7 @@
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal, ROUND_HALF_UP
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.domain.exceptions import ConstructionDomainError, ConstructionNotFoundError
 from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction
@@ -178,7 +178,7 @@ class SubcontractService:
         await self.session.commit()
         return await self.detail(company_id, contract_id)
 
-    async def bind_item(self, measurement, item, contract_item_id, quantity):
+    async def contract_item(self, measurement, contract_item_id, quantity):
         if not measurement.subcontract_id or quantity is None or quantity <= 0:
             self.fail("Informe contrato, item contratado e quantidade positiva para a medição.")
         contract = await self.get(measurement.company_id, measurement.subcontract_id)
@@ -190,8 +190,17 @@ class SubcontractService:
             self.fail("O item não pertence à planilha liberada deste contrato.")
         if measurement.subcontract_version_id and measurement.subcontract_version_id != version.id:
             self.fail("A medição já usa outra versão da planilha; preserve os termos ou inicie uma nova medição.")
+        return version, snapshot
+
+    async def bind_item(self, measurement, item, contract_item_id, quantity, terms=None):
+        version, snapshot = terms if terms is not None else await self.contract_item(measurement, contract_item_id, quantity)
         measurement.subcontract_version_id = version.id
         item.subcontract_item_id, item.quantity, item.contract_snapshot = contract_item_id, quantity, snapshot
+        service_id = snapshot.get("service_template_id")
+        expected_service_id = UUID(service_id) if service_id else None
+        if item.id and item.service_template_id != expected_service_id:
+            self.fail("A ficha do item diverge da linha contratada. Remova o item e inclua a linha correta antes de medir.")
+        item.service_template_id = expected_service_id
         item.amount = money(quantity * (Decimal(snapshot["material_unit_price"]) + Decimal(snapshot["labor_unit_price"])))
 
     async def bind_parent(self, measurement, updates):
@@ -233,13 +242,6 @@ class SubcontractService:
             self.fail("O contrato precisa estar liberado para aprovar a medição.")
         if measurement.project_id != contract.project_id or measurement.supplier_person_id != contract.supplier_person_id:
             self.fail("Obra e fornecedor da medição precisam corresponder ao contrato.")
-        details = measurement.retention_details or []
-        if sum((Decimal(str(tax["tax_amount"])) for tax in details), Decimal("0")) != measurement.retentions_amount:
-            self.fail("Identifique os tributos retidos e feche o valor de retenção da medição.")
-        if len({tax["tax_type"] for tax in details}) != len(details):
-            self.fail("Os tributos da retenção não podem se repetir.")
-        if not measurement.document_type or not measurement.document_number:
-            self.fail("Informe o tipo e o número do documento fiscal da medição contratual.")
         version = await self.repository.version_by_id(measurement.company_id, contract.id, measurement.subcontract_version_id)
         if version is None:
             self.fail("A versão da planilha não pertence a este contrato.")
@@ -255,6 +257,9 @@ class SubcontractService:
         for line in lines:
             if line.subcontract_item_id not in by_id or not line.quantity or not line.contract_snapshot:
                 self.fail("Todos os itens da medição precisam de vínculo e quantidade contratada.")
+            service_id = line.contract_snapshot.get("service_template_id")
+            if str(line.service_template_id or "") != str(service_id or ""):
+                self.fail("A ficha do serviço diverge da linha contratada. Corrija os itens antes de aprovar.")
             requested[line.subcontract_item_id] = requested.get(line.subcontract_item_id, Decimal("0")) + line.quantity
         if not requested:
             self.fail("Adicione itens contratados antes de aprovar a medição.")

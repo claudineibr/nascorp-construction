@@ -7,6 +7,7 @@ class ConstructionFeature:
     REPORTS = "construction_reports"
     INSPECTION_VERDICT = "construction_inspection_verdict"
     MEASUREMENT_SELF_APPROVAL = "construction_measurement_self_approval"
+    UNIT_TERMINATION = "construction_unit_termination"
 
 
 class PermissionAction:

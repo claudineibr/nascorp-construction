@@ -19,6 +19,7 @@ import {
   buildInstallmentRows,
   buildInstallmentActions,
   hasObservation,
+  installmentOutstanding,
   observationEditHint,
   INSTALLMENT_COLUMNS,
   bankSlipSelectionMode,
@@ -34,7 +35,7 @@ import {
   measurementPayableBadge,
 } from "./features/measurementActions.js"
 import { MeasurementPayableLinkModal } from "./features/measurementPayable/MeasurementPayableLinkModal.jsx"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import {
   BarChart3,
   Building2,
@@ -45,6 +46,9 @@ import {
   Clock,
   FileText,
   HandCoins,
+  History,
+  Info,
+  CircleX,
   MessageSquareText,
   Home,
   Layers3,
@@ -68,6 +72,8 @@ import styles from "./App.module.css"
 import installmentStyles from "./features/UnitInstallmentsPanel.module.css"
 import CreatableCombobox from "./components/CreatableCombobox.jsx"
 import { PersonPicker } from "./components/PersonPicker.jsx"
+import { InfoTip } from "./components/InfoTip.jsx"
+import { measurementPurpose, measurementEditable, inspectionEligibleForBulk, measurementInspectionBlockers } from "./features/measurementWorkflow.js"
 import { ProductPicker } from "./components/ProductPicker.jsx"
 import { currencyCents, procurementLineCents, procurementSubtotalCents, quantityUnits } from "./utils/procurementAmounts.js"
 import { BridgeProvider, useBridge } from "./components/bridgeContext.js"
@@ -78,6 +84,10 @@ import {
   itemStatusLabel,
 } from "./features/measurementInspections/inspectionVocabulary"
 import { AssistancePanel } from "./features/assistance/AssistancePanel.jsx"
+import { UnitTerminationModal } from "./features/unitTermination/UnitTerminationModal.jsx"
+import { UnitSalesHistory } from "./features/unitTermination/UnitSalesHistory.jsx"
+import { TerminationTermsEditor, emptyTerminationTerms } from "./features/unitTermination/TerminationTermsEditor.jsx"
+import { CreditOffsetModal } from "./features/unitTermination/CreditOffsetModal.jsx"
 import { ServiceTemplatesPanel } from "./features/serviceTemplates/ServiceTemplatesPanel.jsx"
 import { ProjectServicesPanel } from "./features/projectServices/ProjectServicesPanel.jsx"
 import { SubcontractsCardTitle, SubcontractsPanel } from "./features/subcontracts/SubcontractsPanel.jsx"
@@ -92,10 +102,13 @@ import { resolveConstructionBridge } from "./bridge/constructionBridge.js"
 import {
   approveConstructionMeasurement,
   confirmConstructionUnitSale,
+  listConstructionUnitSales,
+  terminationTermsError,
   createConstructionBlock,
   createConstructionMeasurement,
   createConstructionMeasurementInspection,
   createConstructionMeasurementItem,
+  createConstructionMeasurementItems,
   createConstructionMeasurementOccurrence,
   createConstructionProcurementRequest,
   createConstructionProject,
@@ -268,6 +281,7 @@ const unitDetailTabs = [
   { id: "assistance", label: "Assistência técnica", icon: ClipboardList },
   { id: "installments", label: "Parcelas", icon: ShoppingCart },
   { id: "commissions", label: "Sinal", icon: HandCoins },
+  { id: "sales", label: "Histórico de vendas", icon: History },
   { id: "measurements", label: "Medições", icon: HandCoins },
   { id: "contract", label: "Contrato", icon: FileText },
   { id: "delivery_term", label: "Termo Entrega", icon: FileText },
@@ -310,19 +324,6 @@ const formatCurrencyInput = (value = "") => {
 const parseCurrencyToNumber = (value) => {
   const digits = stripNonDigits(value)
   return digits ? Number.parseInt(digits, 10) / 100 : 0
-}
-
-// O saldo da parcela: com N recebimentos por parcela, `amount` deixou de ser o
-// que se baixa -- o que se baixa e o que ainda falta. Quem decide e o ERP, que
-// devolve o saldo pronto; a subtracao aqui so cobre a resposta antiga.
-const installmentOutstanding = (installment) => {
-  if (installment?.outstandingAmount != null) {
-    return Number(installment.outstandingAmount)
-  }
-
-  const amount = Number(installment?.amount) || 0
-  const received = Number(installment?.paidAmount) || 0
-  return Math.max(0, amount - received)
 }
 
 const formatCurrencyFromNumber = (value) => {
@@ -371,6 +372,8 @@ const defaultProjectForm = {
   lot: "",
   registration: "",
   landArea: "",
+  hasSegregatedAssets: false,
+  terminationDefaults: emptyTerminationTerms(),
 }
 
 const defaultBlockForm = {
@@ -501,6 +504,7 @@ const defaultSaleUnitForm = {
   financingDueDate: "",
   financingInstallments: "1",
   documentations: [],
+  terminationTerms: null,
 }
 
 // Das fontes informadas, so a entrada vira parcela. O saldo tambem parcela,
@@ -711,6 +715,7 @@ const defaultOccurrenceForm = {
 }
 
 const defaultMeasurementForm = {
+  purpose: "SERVICE",
   subcontractId: "",
   retentionDetails: [],
   code: "",
@@ -725,7 +730,7 @@ const defaultMeasurementForm = {
   measuredAmount: "",
   dueDate: "",
   supplierPersonId: "",
-  documentType: "",
+  documentType: "NFS-e",
   documentNumber: "",
 }
 
@@ -773,6 +778,8 @@ function toFormProject(project) {
     lot: project.lot ?? "",
     registration: project.registration ?? "",
     landArea: project.landArea ?? "",
+    hasSegregatedAssets: Boolean(project.hasSegregatedAssets),
+    terminationDefaults: project.terminationDefaults ?? emptyTerminationTerms(),
   }
 }
 
@@ -880,6 +887,8 @@ function toApiProject(formProject) {
     lot: formProject.lot,
     registration: formProject.registration,
     landArea: formProject.landArea,
+    hasSegregatedAssets: formProject.hasSegregatedAssets,
+    terminationDefaults: formProject.terminationDefaults,
   }
 }
 
@@ -1338,6 +1347,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [unitPaymentPlanError, setUnitPaymentPlanError] = useState(null)
   const [saleUnitForm, setSaleUnitForm] = useState(defaultSaleUnitForm)
   const [saleTargetUnit, setSaleTargetUnit] = useState(null)
+  const saleTargetUnitIdRef = useRef(null)
+  const [terminationUnit, setTerminationUnit] = useState(null)
+  const canTerminateUnits = Boolean(bridge?.canCreate?.("construction_unit_termination"))
   const [documentationTypes, setDocumentationTypes] = useState([])
   const [loadingDocumentationTypes, setLoadingDocumentationTypes] = useState(false)
   const [submittingSale, setSubmittingSale] = useState(false)
@@ -1988,7 +2000,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const handleProjectSubmit = async (event) => {
     event.preventDefault()
 
-    const validationError = requiredProjectFieldError(projectForm)
+    const validationError = requiredProjectFieldError(projectForm) ?? terminationTermsError(projectForm.terminationDefaults)
     if (validationError) {
       bridge?.feedback?.warning?.(validationError)
       return
@@ -2438,6 +2450,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     }
 
     void loadDocumentationTypes()
+    saleTargetUnitIdRef.current = unit.id
     setSaleTargetUnit(unit)
     setSaleUnitForm({
       ...defaultSaleUnitForm,
@@ -2448,8 +2461,21 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       discountAmount: formatCurrencyFromNumber(unit.discountAmount),
       contractSignatureDate: unit.contractSignatureDate ?? "",
       saleNotes: unit.saleNotes ?? "",
+      terminationTerms: unit.currentSaleId ? null : selectedProject?.terminationDefaults ?? emptyTerminationTerms(),
     })
     setIsSaleModalOpen(true)
+    if (unit.currentSaleId) {
+      listConstructionUnitSales({ bridge, unitId: unit.id })
+        .then((sales) => {
+          if (saleTargetUnitIdRef.current !== unit.id) return
+          const current = sales.find((sale) => sale.id === unit.currentSaleId)
+          if (current) setSaleUnitForm((form) => ({ ...form, terminationTerms: current.terminationTerms }))
+        })
+        .catch((requestError) => {
+          if (saleTargetUnitIdRef.current !== unit.id) return
+          bridge?.feedback?.warning?.(requestError?.message ?? "Não foi possível carregar as regras de rescisão da venda.")
+        })
+    }
 
     if (unit.status !== "sold") {
       setSaleComposition({ status: "ready", receivableTotal: null, commissionOffset: 0 })
@@ -2463,6 +2489,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     setSaleComposition({ status: "loading", receivableTotal: null, commissionOffset: 0 })
     try {
       const plan = await getConstructionUnitPaymentPlan({ bridge, unitId: unit.id })
+      if (saleTargetUnitIdRef.current !== unit.id) return
       setSaleUnitForm((current) => ({
         ...current,
         ...saleFormFieldsFromPlan(plan),
@@ -2479,6 +2506,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         commissionOffset: Number(plan.commissionOffset ?? 0),
       })
     } catch (requestError) {
+      if (saleTargetUnitIdRef.current !== unit.id) return
       setSaleComposition({ status: "failed", receivableTotal: null, commissionOffset: 0 })
       bridge?.feedback?.warning?.(
         requestError?.message ?? "Não foi possível carregar a composição atual da venda.",
@@ -2939,7 +2967,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       const url = URL.createObjectURL(blob)
       const link = document.createElement("a")
       link.href = url
-      link.download = `recibo-sinal-${commission.sequenceNumber}-${commission.id}.pdf`
+      link.download = selectedUnit?.code
+        ? `recibo-sinal-${selectedUnit.code}-${commission.sequenceNumber}.pdf`
+        : `recibo-sinal-${commission.sequenceNumber}.pdf`
       document.body.appendChild(link)
       link.click()
       link.remove()
@@ -3173,6 +3203,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       return
     }
 
+    saleTargetUnitIdRef.current = null
     setSaleTargetUnit(null)
     setSaleUnitForm(defaultSaleUnitForm)
     setSaleComposition({ status: "ready", receivableTotal: null, commissionOffset: 0 })
@@ -3202,7 +3233,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       return
     }
 
-    const validationError = requiredSaleFieldError(saleUnitForm)
+    const validationError = requiredSaleFieldError(saleUnitForm) ?? terminationTermsError(saleUnitForm.terminationTerms)
     if (validationError) {
       bridge?.feedback?.warning?.(validationError)
       return
@@ -3268,6 +3299,13 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     },
     [bridge]
   )
+
+  const reloadUnitAfterTermination = async () => {
+    await loadUnits()
+    if (selectedUnit) {
+      await loadUnitPaymentPlan(selectedUnit.id)
+    }
+  }
 
   const loadUnitPaymentPlan = useCallback(
     async (unitId) => {
@@ -3419,7 +3457,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       return false
     }
 
-    if (!itemForm.subcontractItemId && parseCurrencyFormValue(itemForm.amount) <= 0) {
+    if (measurementPurpose(itemsTargetMeasurement) === "SERVICE" && parseCurrencyFormValue(itemForm.amount) <= 0) {
       bridge?.feedback?.warning?.("Informe o valor do serviço medido.")
       return false
     }
@@ -3449,16 +3487,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     }
 
     setSavingMeasurementItem(true)
-    let created = 0
     try {
-      for (const itemData of rows) {
-        await createConstructionMeasurementItem({
-          bridge,
-          measurementId: itemsTargetMeasurement.id,
-          itemData,
-        })
-        created += 1
-      }
+      await createConstructionMeasurementItems({ bridge, measurementId: itemsTargetMeasurement.id, items: rows })
+      const created = rows.length
       bridge?.feedback?.success?.(
         created > 1 ? `${created} itens do contrato adicionados à medição.` : "Item do contrato adicionado à medição."
       )
@@ -3466,7 +3497,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     } catch (requestError) {
       const message = requestError?.message ?? "Não foi possível adicionar o item do contrato."
       bridge?.feedback?.error?.(
-        created ? `${created} de ${rows.length} itens foram adicionados. O seguinte foi recusado: ${message}` : message
+        `${message} Confira a lista antes de reenviar; as linhas são gravadas em conjunto.`
       )
       return false
     } finally {
@@ -3539,7 +3570,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   // Um unico recarregamento no fim. Recarregar a lista a cada linha faria a
   // ficha inteira piscar por varios segundos no 3G da obra.
   const handleVerifyAllPendingInspections = async (item, { inspectorPersonId }) => {
-    const pending = (item.inspections ?? []).filter((inspection) => !inspection.roundsCount)
+    const pending = (item.inspections ?? []).filter(inspectionEligibleForBulk)
     if (pending.length === 0) {
       return
     }
@@ -3634,6 +3665,12 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
   const handleSubmitMeasurement = async (measurement) => {
     try {
+      const result = await listConstructionMeasurementItems({ bridge, measurementId: measurement.id })
+      const blockers = measurementInspectionBlockers(measurement, result.items, units.find((unit) => unit.id === measurement.unitId))
+      if (blockers.length) {
+        bridge?.feedback?.warning?.(blockers.join(" "))
+        return
+      }
       await submitConstructionMeasurement({ bridge, measurementId: measurement.id })
       bridge?.feedback?.success?.("Medição enviada para aprovação.")
       await loadMeasurements()
@@ -3670,6 +3707,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     setMeasurementModalMode("edit")
     setEditingMeasurementId(measurement.id)
     setMeasurementForm({
+      purpose: measurementPurpose(measurement),
       code: measurement.code ?? "",
       unitId: measurement.unitId ?? "",
       schedulePhaseId: measurement.schedulePhaseId ?? "",
@@ -4255,6 +4293,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                     onReserve={openReserveUnitModal}
                     onRelease={handleReleaseUnit}
                     onSale={openSaleUnitModal}
+                    onTerminate={canTerminateUnits ? setTerminationUnit : null}
+                    onRequestConfirm={setConfirmRequest}
+                    onUnitChanged={reloadUnitAfterTermination}
                     onCreateMeasurement={openCreateMeasurement}
                     onRetryMeasurements={loadMeasurements}
                     onEditMeasurement={openEditMeasurement}
@@ -4277,6 +4318,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                     onCreateInstallment={handleOpenCreateInstallment}
                     onRebuildPlan={openRebuildPlanModal}
                     people={personSummaries}
+                    onEnsurePeople={ensurePeopleLoaded}
                     onCreateCommission={openCommissionModal}
                     onSettleCommission={handleSettleCommission}
                     onDeleteCommission={handleDeleteCommission}
@@ -4314,6 +4356,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                       onReserve={openReserveUnitModal}
                       onRelease={handleReleaseUnit}
                       onSale={openSaleUnitModal}
+                      onTerminate={canTerminateUnits ? setTerminationUnit : null}
                     />
                   </>
                 )
@@ -4326,10 +4369,13 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
               title="Cronograma"
               subtitle={`Fases da obra em ordem, com progresso médio de ${scheduleProgress}%`}
               action={
-                <button type="button" className={styles.primaryButton} onClick={openCreateSchedulePhase}>
-                  <Plus size={16} />
-                  Nova fase
-                </button>
+                <>
+                  <SchedulePhaseSuggestions />
+                  <button type="button" className={styles.primaryButton} onClick={openCreateSchedulePhase}>
+                    <Plus size={16} />
+                    Nova fase
+                  </button>
+                </>
               }
               content={
                 <ScheduleList
@@ -4504,6 +4550,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           loadingDocumentationTypes={loadingDocumentationTypes}
           loading={submittingSale}
           composition={saleComposition}
+          hasSegregatedAssets={Boolean(
+            saleUnitForm.terminationTerms?.hasSegregatedAssets ?? selectedProject?.hasSegregatedAssets
+          )}
         />
       ) : null}
 
@@ -4545,6 +4594,19 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           onSaveData={handleSaveInstallmentData}
           onSubmit={handleSubmitPayInstallment}
           loading={submittingInstallmentPayment}
+        />
+      ) : null}
+
+      {terminationUnit ? (
+        <UnitTerminationModal
+          bridge={bridge}
+          unit={terminationUnit}
+          onClose={() => setTerminationUnit(null)}
+          requestConfirm={setConfirmRequest}
+          onDone={async () => {
+            setTerminationUnit(null)
+            await reloadUnitAfterTermination()
+          }}
         />
       ) : null}
 
@@ -4600,6 +4662,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         <MeasurementItemsModal
           bridge={bridge}
           measurement={itemsTargetMeasurement}
+          unit={units.find((unit) => unit.id === itemsTargetMeasurement.unitId)}
           items={measurementItems}
           people={personSummaries}
           serviceTemplates={serviceTemplates}
@@ -4611,6 +4674,11 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           error={measurementItemsError}
           saving={savingMeasurementItem}
           onClose={closeMeasurementItems}
+          onEditContract={() => {
+            const measurement = itemsTargetMeasurement
+            closeMeasurementItems()
+            openEditMeasurement(measurement)
+          }}
           onRetry={() => Promise.all([
             loadMeasurementItems(itemsTargetMeasurement.id),
             loadMeasurements(),
@@ -5366,6 +5434,9 @@ function UnitDetailPanel({
   onReserve,
   onRelease,
   onSale,
+  onTerminate,
+  onRequestConfirm,
+  onUnitChanged,
   onCreateMeasurement,
   onRetryMeasurements,
   onEditMeasurement,
@@ -5388,6 +5459,7 @@ function UnitDetailPanel({
   onRebuildPlan,
   onCommissionReceipt,
   people,
+  onEnsurePeople,
   onCreateCommission,
   onSettleCommission,
   onDeleteCommission,
@@ -5450,6 +5522,16 @@ function UnitDetailPanel({
               Vender
             </button>
           ) : null}
+          {onTerminate && ["sold", "delivered", "terminated"].includes(unit.status) ? (
+            <button
+              type="button"
+              className={`${styles.secondaryButton} ${styles.dangerButton}`}
+              onClick={() => onTerminate(unit)}
+            >
+              <CircleX size={16} />
+              Distratar
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -5488,6 +5570,17 @@ function UnitDetailPanel({
       </section>
 
       {activeTab === "assistance" ? <AssistancePanel key={unit.id} bridge={bridge} projectId={unit.projectId} unitId={unit.id} /> : null}
+      {activeTab === "sales" ? (
+        <UnitSalesHistory
+          key={`${unit.id}-${unit.status}`}
+          bridge={bridge}
+          unit={unit}
+          people={people}
+          onEnsurePeople={onEnsurePeople}
+          requestConfirm={onRequestConfirm}
+          onChanged={onUnitChanged}
+        />
+      ) : null}
       {activeTab === "summary" ? (
         <div className={styles.integrationGrid}>
           <article className={styles.integrationCard}>
@@ -5759,6 +5852,8 @@ function UnitInstallmentsPanel({
     setBatchAction(value)
   }
   const canUpdate = Boolean(bridge?.canUpdate?.("construction_units"))
+  const canOffsetCredit = Boolean(bridge?.canUpdate?.("customer_credit") && bridge?.canUpdate?.("receivable"))
+  const [offsetRow, setOffsetRow] = useState(null)
   const [observationRow, setObservationRow] = useState(null)
   const [editingObservation, setEditingObservation] = useState(false)
   const [observation, setObservation] = useState("")
@@ -6059,6 +6154,7 @@ function UnitInstallmentsPanel({
                           onViewBankSlips: bankSlips.allowed && row.bankSlips?.length
                             ? () => bankSlips.setHistory(row) : null,
                           onEditObservation: (item) => openObservation(item, true),
+                          onOffsetCredit: canUpdate && canOffsetCredit && unit.buyerPersonId ? setOffsetRow : null,
                           canUpdate,
                           icons: { FileText, CheckCircle, Trash2, RotateCcw, Pencil },
                           adjustment: row.adjustment,
@@ -6103,6 +6199,18 @@ function UnitInstallmentsPanel({
         onClose={() => { setAllBankSlipsOpen(false); bankSlips.setWarning(false); bankSlips.setFailed([]) }} />}
       <UnitBankSlipOperationDialogs state={bankSlipOperations} />
       {!allBankSlipsOpen && <UnitBankSlipDialogs state={bankSlips} />}
+      {offsetRow ? (
+        <CreditOffsetModal
+          bridge={bridge}
+          unit={unit}
+          installment={offsetRow}
+          onClose={() => setOffsetRow(null)}
+          onDone={async () => {
+            setOffsetRow(null)
+            await onRetry?.()
+          }}
+        />
+      ) : null}
       {observationRow ? (
         <InstallmentObservationModal row={observationRow} editing={editingObservation}
           observation={observation} onChange={setObservation} saving={savingObservation}
@@ -6435,7 +6543,7 @@ function PayInstallmentModal({
                       required
                     >
                       <option value="">Selecione</option>
-                      {paymentMethods.map((option) => (
+                      {paymentMethods.filter((option) => option.credit_only !== "true").map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
                         </option>
@@ -7178,6 +7286,7 @@ function UnitsList({
   onReserve,
   onRelease,
   onSale,
+  onTerminate,
 }) {
   const blockNameById = useMemo(() => {
     return Object.fromEntries(blocks.map((block) => [block.id, `${block.code} - ${block.name}`]))
@@ -7286,6 +7395,15 @@ function UnitsList({
                         visible: canSale || canEditSale,
                         dividerBefore: !canReserve && !canRelease,
                         onSelect: () => onSale(unit),
+                      },
+                      {
+                        key: "terminate",
+                        label: "Distratar",
+                        icon: CircleX,
+                        danger: true,
+                        visible: Boolean(onTerminate) && ["sold", "delivered", "terminated"].includes(unit.status),
+                        dividerBefore: true,
+                        onSelect: () => onTerminate(unit),
                       },
                       {
                         key: "delete",
@@ -7532,8 +7650,8 @@ function MeasurementsList({
             const canSubmit = ["draft", "rejected"].includes(measurement.status)
             const { canApprove } = getMeasurementApprovalActions(measurement)
             const canReject = ["draft", "submitted", "in_approval"].includes(measurement.status)
-            const canEdit = measurement.status !== "approved" && measurement.status !== "paid"
-            const canDelete = measurement.status !== "approved" && measurement.status !== "paid"
+            const canEdit = measurementEditable(measurement)
+            const canDelete = measurementEditable(measurement)
             const payableBadge = measurementPayableBadge(measurement)
 
             return (
@@ -8016,7 +8134,7 @@ function MeasurementModal({
         </header>
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <ContractMeasurementFields bridge={bridge} projectId={projectId} form={measurementForm} onChange={onChange} />
-          <div className={styles.formGrid}>
+          <div className={`${styles.formGrid} ${styles.measurementFormGrid}`}>
             {mode === "edit" && (
               <div className={styles.detailMetaItem}>
                 <span>Código</span>
@@ -8061,15 +8179,17 @@ function MeasurementModal({
               </select>
             </label>
             <label className={styles.filterControl}>
-              <span>Competência</span>
+              <span>Competência{measurementForm.subcontractId ? "*" : ""}</span>
               <input
                 type="date"
+                required={Boolean(measurementForm.subcontractId)}
                 value={measurementForm.competenceDate}
                 onChange={(event) => onChange("competenceDate", event.target.value)}
               />
             </label>
             <PersonPicker
-              label="Fornecedor"
+              label={measurementForm.subcontractId ? "Fornecedor do contrato" : "Fornecedor"}
+              disabled={Boolean(measurementForm.subcontractId)}
               value={measurementForm.supplierPersonId}
               onChange={(value) => onChange("supplierPersonId", value)}
               knownPeople={people}
@@ -8078,7 +8198,7 @@ function MeasurementModal({
               qualificationWarnings={QUALIFICATION_WARNINGS}
             />
             <label className={styles.filterControl}>
-              <span>Vencimento*</span>
+              <span>Vencimento previsto*</span>
               <input
                 type="date"
                 value={measurementForm.dueDate}
@@ -8086,54 +8206,70 @@ function MeasurementModal({
                 required
               />
             </label>
+            {measurementForm.purpose === "SERVICE" && (
+              <>
+                <label className={styles.filterControl}>
+                  <span>Valor bruto</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="0,00"
+                    value={measurementForm.grossAmount}
+                    onChange={(event) => onChange("grossAmount", formatCurrencyInput(event.target.value))}
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Retenções</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="0,00"
+                    value={measurementForm.retentionsAmount}
+                    onChange={(event) => onChange("retentionsAmount", formatCurrencyInput(event.target.value))}
+                  />
+                </label>
+                <label className={styles.filterControl}>
+                  <span>Valor líquido</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    placeholder="0,00"
+                    value={measurementForm.netAmount}
+                    onChange={(event) => onChange("netAmount", formatCurrencyInput(event.target.value))}
+                  />
+                </label>
+              </>
+            )}
             <label className={styles.filterControl}>
-              <span>Valor bruto</span>
+              <span>
+                Tipo documento (opcional)
+                <InfoTip floating label="Para que serve o tipo de documento">
+                  NFS-e é a sugestão para nota fiscal de serviço; ajuste conforme
+                  o documento recebido. A nota pode ser emitida depois da medição.
+                  Estes dados não bloqueiam a aprovação nem geram título a pagar.
+                  O documento efetivo é lançado ou vinculado no Financeiro ERP.
+                </InfoTip>
+              </span>
               <input
                 type="text"
-                inputMode="decimal"
-                placeholder="0,00"
-                value={measurementForm.grossAmount}
-                onChange={(event) => onChange("grossAmount", formatCurrencyInput(event.target.value))}
-                disabled={Boolean(measurementForm.subcontractId)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Retenções</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                placeholder="0,00"
-                value={measurementForm.retentionsAmount}
-                disabled={Boolean(measurementForm.subcontractId)}
-                onChange={(event) => onChange("retentionsAmount", formatCurrencyInput(event.target.value))}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Valor líquido</span>
-              <input
-                type="text"
-                inputMode="decimal"
-                placeholder="0,00"
-                value={measurementForm.netAmount}
-                disabled={Boolean(measurementForm.subcontractId)}
-                onChange={(event) => onChange("netAmount", formatCurrencyInput(event.target.value))}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Tipo documento</span>
-              <input
-                type="text"
+                placeholder="Ex.: NFS-e"
                 value={measurementForm.documentType}
-                required={Boolean(measurementForm.subcontractId)}
                 onChange={(event) => onChange("documentType", event.target.value)}
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Número documento</span>
+              <span>
+                Número documento (opcional)
+                <InfoTip floating label="Qual número de documento informar">
+                  Preencha somente se a nota já foi emitida. Caso contrário,
+                  deixe em branco e informe o número no lançamento do título
+                  financeiro. Não é o número do contrato nem da OS.
+                </InfoTip>
+              </span>
               <input
                 type="text"
+                placeholder="Preencher quando a nota for emitida"
                 value={measurementForm.documentNumber}
-                required={Boolean(measurementForm.subcontractId)}
                 onChange={(event) => onChange("documentNumber", event.target.value)}
               />
             </label>
@@ -8345,6 +8481,26 @@ function ProjectModal({
             <label className={styles.filterControl}><span>Matrícula</span><input value={projectForm.registration} maxLength={120} onChange={(event) => onChange("registration", event.target.value)} /></label>
             <label className={styles.filterControl}><span>Metragem do empreendimento (m²)</span><input type="number" min="0.01" step="0.01" value={projectForm.landArea} onChange={(event) => onChange("landArea", event.target.value)} /></label>
           </div>
+          <h4 className={styles.sectionTitle}>Configurações de distrato</h4>
+          <p className={styles.metricHint}>
+            Regras padrão de rescisão copiadas para cada nova venda das unidades desta obra. Cada venda pode ter as
+            suas, ajustadas na confirmação da venda.
+          </p>
+          <label className={styles.checkboxControl}>
+            <input
+              type="checkbox"
+              checked={Boolean(projectForm.hasSegregatedAssets)}
+              disabled={loading}
+              onChange={(event) => onChange("hasSegregatedAssets", event.target.checked)}
+            />
+            <span>Obra com patrimônio de afetação (multa sobre o pago até 50%)</span>
+          </label>
+          <TerminationTermsEditor
+            terms={projectForm.terminationDefaults}
+            hasSegregatedAssets={Boolean(projectForm.hasSegregatedAssets)}
+            disabled={loading}
+            onChange={(terms) => onChange("terminationDefaults", terms)}
+          />
           <h4 className={styles.sectionTitle}>Modelos de recibo</h4>
           <p className={styles.metricHint}>
             Escolhidos na obra e herdados pelas unidades. O modelo da venda vale para as parcelas e para
@@ -8694,11 +8850,13 @@ function UnitModal({ mode, unitForm, blocks, units, editingUnitId, onClose, onCh
             <label className={styles.filterControl}>
               <span>Status*</span>
               <select value={unitForm.status} onChange={(event) => onChange("status", event.target.value)} required>
-                {unitStatusOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
+                {unitStatusOptions
+                  .filter((option) => option.value !== "terminated" || unitForm.status === "terminated")
+                  .map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
               </select>
             </label>
           </div>
@@ -8776,6 +8934,7 @@ function SaleUnitModal({
   loadingDocumentationTypes,
   loading,
   composition = { status: "ready", receivableTotal: null },
+  hasSegregatedAssets = false,
 }) {
   const isEditing = unit?.status === "sold"
   const grossSalePrice = parseCurrencyFormValue(saleForm.salePrice)
@@ -8953,6 +9112,23 @@ function SaleUnitModal({
                 onChange={(event) => onChange("contractSignatureDate", event.target.value)}
               />
             </label>
+          </div>
+
+          <div className={styles.card}>
+            <div className={styles.scopeMeta}>
+              <strong>Rescisão contratual</strong>
+              <span className={styles.metricHint}>
+                {saleForm.terminationTerms == null
+                  ? "Regras de rescisão da venda não carregadas: as gravadas na venda serão mantidas."
+                  : "Deduções aplicadas automaticamente se esta venda for distratada."}
+              </span>
+            </div>
+            <TerminationTermsEditor
+              terms={saleForm.terminationTerms}
+              hasSegregatedAssets={hasSegregatedAssets}
+              disabled={loading || saleForm.terminationTerms == null}
+              onChange={(terms) => onChange("terminationTerms", terms)}
+            />
           </div>
 
           <div className={styles.card}>
@@ -9290,6 +9466,7 @@ function SaleUnitModal({
 function MeasurementItemsModal({
   bridge,
   measurement,
+  unit,
   items,
   people,
   serviceTemplates,
@@ -9301,6 +9478,7 @@ function MeasurementItemsModal({
   error,
   saving,
   onClose,
+  onEditContract,
   onRetry,
   onCreateItem,
   onCreateContractItems,
@@ -9319,7 +9497,9 @@ function MeasurementItemsModal({
   const selectedTemplate = serviceTemplates.find((template) => template.id === itemForm.serviceTemplateId)
   const selectedTemplateName = selectedTemplate?.name ?? ""
 
-  const isLocked = measurement.status === "approved" || measurement.status === "paid"
+  const isLocked = !measurementEditable(measurement)
+  const controlOnly = measurementPurpose(measurement) === "CONTROL"
+  const blockers = measurementInspectionBlockers(measurement, items, unit)
   const itemsTotal = items.reduce((total, item) => total + Number(item.amount ?? 0), 0)
   // O que importa agora e o que BLOQUEIA o envio: linha reprovada sem
   // reinspecao aprovada. O pendente vira o numero secundario.
@@ -9378,6 +9558,12 @@ function MeasurementItemsModal({
             </article>
           </div>
 
+          {!isLocked && !loading && blockers.length > 0 && (
+            <div className={styles.card} role="status">
+              <strong>Antes de enviar para aprovação</strong>
+              {blockers.map((blocker) => <p className={styles.metricHint} key={blocker}>{blocker}</p>)}
+            </div>
+          )}
           {isLocked ? (
             <p className={styles.metricHint}>
               Medição {measurementStatusLabel[measurement.status] ?? measurement.status} - itens em somente leitura.
@@ -9396,7 +9582,18 @@ function MeasurementItemsModal({
             <form className={styles.card} onSubmit={handleItemSubmit}>
               <div className={styles.scopeHeader}>
                 <div className={styles.scopeMeta}>
-                  <strong>Novo serviço medido</strong>
+                  <strong>{controlOnly ? "Novo serviço · OS de controle" : "Novo serviço medido · Serviço avulso"}</strong>
+                  <span className={styles.metricHint}>
+                    Sem contrato vinculado. Para usar os preços contratados,
+                    selecione o contrato em Editar finalidade e contrato.
+                    {items.length > 0 && " Remova os itens avulsos antes de vincular; depois, inclua as quantidades da planilha contratada."}
+                  </span>
+                  {["draft", "rejected"].includes(measurement.status) && bridge?.canUpdate?.("construction_measurements") && (
+                    <button type="button" className={styles.secondaryButton}
+                      onClick={onEditContract} disabled={saving || loading}>
+                      Editar finalidade e contrato
+                    </button>
+                  )}
                   <span className={styles.metricHint}>
                     {loadingServiceTemplates
                       ? "Carregando catálogo de serviços..."
@@ -9466,7 +9663,7 @@ function MeasurementItemsModal({
                     required={!itemForm.serviceTemplateId && !serviceTemplatesRestricted}
                   />
                 </label>
-                <label className={styles.filterControl}>
+                {!controlOnly && <label className={styles.filterControl}>
                   <span>Valor*</span>
                   <input
                     type="text"
@@ -9475,9 +9672,9 @@ function MeasurementItemsModal({
                     disabled={Boolean(measurement.subcontractId)}
                     onChange={(event) => handleItemChange("amount", formatCurrencyInput(event.target.value))}
                     placeholder="0,00"
-                    required={!measurement.subcontractId}
+                    required
                   />
-                </label>
+                </label>}
                 <label className={styles.filterControl}>
                   <span>Produto / referência</span>
                   <input
@@ -9821,6 +10018,24 @@ function MeasurementItemRow({
   )
 }
 
+function SchedulePhaseSuggestions({ alignStart = false }) {
+  const tooltipId = useId()
+  return <span className={styles.phaseSuggestions}>
+    <button type="button" className={styles.phaseSuggestionsButton}
+      title="Sugestões de fases" aria-label="Sugestões de fases" aria-describedby={tooltipId}
+      onKeyDown={(event) => { if (event.key === "Escape") event.currentTarget.blur() }}>
+      <Info size={16} aria-hidden="true" />
+    </button>
+    <span id={tooltipId} role="tooltip"
+      className={`${styles.phaseSuggestionsTooltip} ${alignStart ? styles.phaseSuggestionsStart : ""}`}>
+      <strong>Sugestões de fases</strong>
+      <span>Serviços preliminares; terraplenagem; fundações; estrutura; alvenaria; instalações elétricas;
+        instalações hidrossanitárias; cobertura; revestimentos; acabamentos; limpeza e entrega.</span>
+      <span>Adapte os nomes e a ordem ao planejamento da obra.</span>
+    </span>
+  </span>
+}
+
 function SchedulePhaseModal({ mode, schedulePhaseForm, onClose, onChange, onSubmit, loading }) {
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
@@ -9840,7 +10055,7 @@ function SchedulePhaseModal({ mode, schedulePhaseForm, onClose, onChange, onSubm
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <div className={styles.formGrid}>
             <label className={styles.filterControl}>
-              <span>Nome*</span>
+              <span className={styles.phaseNameLabel}>Nome* <SchedulePhaseSuggestions alignStart /></span>
               <input
                 type="text"
                 value={schedulePhaseForm.name}

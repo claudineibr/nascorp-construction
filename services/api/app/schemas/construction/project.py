@@ -16,6 +16,18 @@ from app.domain.constants import (
 from app.domain.unit_commission_status import unit_commission_status
 
 
+class ConstructionTerminationDeduction(BaseModel):
+    type: Literal["FIXED", "PERCENT_OF_PAID", "PERCENT_OF_CONTRACT", "FRUITION", "BROKERAGE"]
+    value: Decimal = Field(..., ge=0, max_digits=14, decimal_places=4)
+    label: str | None = Field(default=None, max_length=120)
+
+
+class ConstructionTerminationTerms(BaseModel):
+    deductions: list[ConstructionTerminationDeduction] = Field(default_factory=list, max_length=20)
+    minimum_refund_percent: Decimal = Field(default=Decimal("0"), ge=0, le=100)
+    refund_deadline_days: int = Field(default=0, ge=0, le=3650)
+
+
 class ConstructionProjectCreate(BaseModel):
     code: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=1, max_length=255)
@@ -35,6 +47,8 @@ class ConstructionProjectCreate(BaseModel):
     lot: str | None = Field(default=None, max_length=120)
     registration: str | None = Field(default=None, max_length=120)
     land_area: Decimal | None = Field(default=None, gt=0)
+    termination_defaults: ConstructionTerminationTerms | None = None
+    has_segregated_assets: bool = False
 
 
 class ConstructionProjectUpdate(BaseModel):
@@ -56,6 +70,8 @@ class ConstructionProjectUpdate(BaseModel):
     lot: str | None = Field(default=None, max_length=120)
     registration: str | None = Field(default=None, max_length=120)
     land_area: Decimal | None = Field(default=None, gt=0)
+    termination_defaults: ConstructionTerminationTerms | None = None
+    has_segregated_assets: bool | None = None
 
 
 class ConstructionProjectBuyerUnit(BaseModel):
@@ -93,6 +109,8 @@ class ConstructionProjectResponse(BaseModel):
     lot: str | None = Field(default=None, max_length=120)
     registration: str | None = Field(default=None, max_length=120)
     land_area: Decimal | None = Field(default=None, gt=0)
+    termination_defaults: dict[str, Any] | None = None
+    has_segregated_assets: bool = False
     created_at: datetime
     updated_at: datetime
     buyer_units: list[ConstructionProjectBuyerUnit] = Field(default_factory=list)
@@ -224,6 +242,7 @@ class ConstructionUnitResponse(BaseModel):
     external_receivable_id: UUID | None = None
     external_receivable_status: str | None = None
     analytic_cost_center_id: UUID | None = None
+    current_sale_id: UUID | None = None
     status: str
     created_at: datetime
     updated_at: datetime
@@ -318,6 +337,67 @@ class ConstructionUnitSaleConfirmRequest(BaseModel):
     #: ``None`` e ``[]`` significam a mesma coisa -- sem documentacao -- porque
     #: a gravacao e replace-all: o que nao vier no request e apagado.
     documentations: list[ConstructionUnitSaleDocumentation] | None = None
+    termination_terms: ConstructionTerminationTerms | None = None
+
+
+class ConstructionUnitTerminationRefund(BaseModel):
+    first_due_date: date
+    installments: int = Field(default=1, ge=1, le=120)
+
+
+class ConstructionUnitTerminationRequest(BaseModel):
+    termination_date: date
+    reason: str = Field(..., min_length=1, max_length=500)
+    notes: str | None = Field(default=None, max_length=2000)
+    additional_refund: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
+    preview_version: str | None = Field(default=None, max_length=64)
+    refund: ConstructionUnitTerminationRefund | None = None
+
+
+class ConstructionUnitInstallmentCreditOffsetRequest(BaseModel):
+    receivable_id: UUID | None = None
+    amount: Decimal = Field(..., gt=0, max_digits=14, decimal_places=2)
+    paid_at: date
+    observation: str | None = Field(default=None, max_length=500)
+
+
+class ConstructionUnitTerminationReactivateRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=500)
+
+
+class ConstructionUnitSaleResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    unit_id: UUID
+    sequence: int
+    status: str
+    source: str
+    buyer_person_id: UUID | None = None
+    secondary_buyer_person_id: UUID | None = None
+    broker_person_id: UUID | None = None
+    sale_price: Decimal | None = None
+    discount_amount: Decimal | None = None
+    sold_at: datetime | None = None
+    contract_signature_date: date | None = None
+    external_contract_id: UUID | None = None
+    termination_terms: dict[str, Any] = Field(default_factory=dict)
+    terminated_at: datetime | None = None
+    termination_date: date | None = None
+    termination_reason: str | None = None
+    termination_notes: str | None = None
+    external_termination_id: UUID | None = None
+    refund_amount: Decimal | None = None
+    paid_amount: Decimal | None = None
+    created_at: datetime
+
+
+class ConstructionUnitSaleListResponse(BaseModel):
+    items: list[ConstructionUnitSaleResponse]
+    total: int
+    page: int = 1
+    page_size: int
+    total_pages: int
 
 
 class ConstructionUnitInstallmentUpdateRequest(BaseModel):
@@ -521,6 +601,7 @@ class ConstructionMeasurementRetention(BaseModel):
 
 
 class ConstructionMeasurementCreate(BaseModel):
+    purpose: Literal["CONTRACT", "SERVICE", "CONTROL"] | None = None
     subcontract_id: UUID | None = None
     retention_details: list[ConstructionMeasurementRetention] = Field(default_factory=list, max_length=20)
     unit_id: UUID
@@ -538,6 +619,7 @@ class ConstructionMeasurementCreate(BaseModel):
 
 
 class ConstructionMeasurementUpdate(BaseModel):
+    purpose: Literal["CONTRACT", "SERVICE", "CONTROL"] | None = None
     subcontract_id: UUID | None = None
     retention_details: list[ConstructionMeasurementRetention] | None = Field(default=None, max_length=20)
     unit_id: UUID | None = None
@@ -559,6 +641,7 @@ class ConstructionMeasurementReject(BaseModel):
 
 
 class ConstructionMeasurementResponse(BaseModel):
+    purpose: Literal["CONTRACT", "SERVICE", "CONTROL"] | None = None
     reversal_pending: bool = False
     retention_details: list[ConstructionMeasurementRetention] = Field(default_factory=list)
     subcontract_id: UUID | None = None
@@ -812,8 +895,11 @@ class ConstructionServiceTemplateUpdate(BaseModel):
 
 
 class ConstructionServiceTemplateImportResult(BaseModel):
+    revision_token: str | None = None
+    changes: list[str] = Field(default_factory=list)
+    existing_items_count: int = 0
     file_name: str
-    status: Literal["created", "updated", "skipped", "failed"]
+    status: Literal["created", "updated", "skipped", "failed", "preview"]
     service_template_id: UUID | None = None
     service_name: str | None = None
     items_count: int = 0
@@ -834,7 +920,7 @@ class ConstructionMeasurementItemCreate(BaseModel):
     subcontract_item_id: UUID | None = None
     quantity: Decimal | None = Field(default=None, gt=0, max_digits=20, decimal_places=8)
     description: str | None = Field(default=None, min_length=1, max_length=2000)
-    amount: Decimal | None = Field(default=None, gt=0)
+    amount: Decimal | None = Field(default=None, ge=0)
     sequence_number: int | None = Field(default=None, ge=1)
     service_template_id: UUID | None = None
     product_id: UUID | None = None
@@ -847,8 +933,6 @@ class ConstructionMeasurementItemCreate(BaseModel):
     def validate_contract_quantity(self):
         if self.subcontract_item_id and self.quantity is None:
             raise ValueError("Informe a quantidade do item contratado.")
-        if self.subcontract_item_id is None and self.amount is None:
-            raise ValueError("Informe o valor do item avulso.")
         return self
 
 
@@ -856,7 +940,7 @@ class ConstructionMeasurementItemUpdate(BaseModel):
     subcontract_item_id: UUID | None = None
     quantity: Decimal | None = Field(default=None, gt=0, max_digits=20, decimal_places=8)
     description: str | None = Field(default=None, min_length=1, max_length=2000)
-    amount: Decimal | None = Field(default=None, gt=0)
+    amount: Decimal | None = Field(default=None, ge=0)
     product_id: UUID | None = None
     product_description: str | None = Field(default=None, max_length=255)
     start_date: date | None = None

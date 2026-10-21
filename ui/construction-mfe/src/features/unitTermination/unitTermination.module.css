@@ -1,0 +1,98 @@
+.termsEditor {
+  box-sizing: border-box;
+  display: grid;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.deductionRow {
+  align-items: end;
+  box-sizing: border-box;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(220px, 2fr) minmax(120px, 1fr) minmax(160px, 2fr) auto;
+  min-width: 0;
+}
+
+.deductionRow > * {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.removeDeduction {
+  margin-bottom: 2px;
+}
+
+.termsFooter {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 0.35rem;
+}
+
+.statement {
+  border-collapse: collapse;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.statement th,
+.statement td {
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+  font-size: 0.9rem;
+  padding: 0.55rem 0.75rem;
+  text-align: left;
+}
+
+.statement td:last-child,
+.statement th:last-child {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.statementTotal td {
+  font-weight: 700;
+}
+
+.statementMuted td {
+  color: var(--color-text-muted);
+}
+
+.blockers {
+  background: color-mix(in srgb, var(--color-danger-text) 8%, var(--color-surface));
+  border: 1px solid color-mix(in srgb, var(--color-danger-text) 35%, var(--color-border));
+  border-radius: 12px;
+  box-sizing: border-box;
+  color: var(--color-text);
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.85rem 1rem;
+}
+
+.blockers ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.destination {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+}
+
+.destination label {
+  align-items: center;
+  color: var(--color-text);
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.historyTable {
+  composes: table from "../../App.module.css";
+}
+
+@media (max-width: 768px) {
+  .deductionRow {
+    grid-template-columns: 1fr;
+  }
+}

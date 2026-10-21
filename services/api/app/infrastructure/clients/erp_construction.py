@@ -521,6 +521,74 @@ class ErpConstructionClient:
             )
             response.raise_for_status()
 
+    async def _post_internal(self, *, path: str, company_id: UUID, user_id: UUID | None, payload: dict) -> dict:
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for Construction termination integration.")
+
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=30) as client:
+            response = await client.post(
+                path,
+                headers=self._service_headers(company_id=company_id, user_id=user_id),
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def preview_unit_termination(self, *, company_id: UUID, user_id: UUID | None, payload: dict) -> dict:
+        return await self._post_internal(
+            path="/v1/internal/construction/unit-termination/preview",
+            company_id=company_id,
+            user_id=user_id,
+            payload=payload,
+        )
+
+    async def apply_unit_termination(self, *, company_id: UUID, user_id: UUID | None, payload: dict) -> dict:
+        return await self._post_internal(
+            path="/v1/internal/construction/unit-termination",
+            company_id=company_id,
+            user_id=user_id,
+            payload=payload,
+        )
+
+    async def reactivate_unit_termination(self, *, company_id: UUID, user_id: UUID | None, payload: dict) -> dict:
+        return await self._post_internal(
+            path="/v1/internal/construction/unit-termination/reactivate",
+            company_id=company_id,
+            user_id=user_id,
+            payload=payload,
+        )
+
+    async def offset_unit_installment_with_credit(
+        self, *, company_id: UUID, user_id: UUID | None, payload: dict
+    ) -> dict:
+        return await self._post_internal(
+            path="/v1/internal/construction/unit-installment/credit-offset",
+            company_id=company_id,
+            user_id=user_id,
+            payload=payload,
+        )
+
+    async def _get_internal(self, *, path: str, company_id: UUID, user_id: UUID | None, params: dict) -> dict:
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for Construction termination integration.")
+
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.get(
+                path,
+                headers=self._service_headers(company_id=company_id, user_id=user_id),
+                params=params,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def list_person_customer_credits(self, *, company_id: UUID, user_id: UUID | None, person_id: UUID) -> dict:
+        return await self._get_internal(
+            path="/v1/internal/construction/customer-credits",
+            company_id=company_id,
+            user_id=user_id,
+            params={"person_id": str(person_id)},
+        )
+
     def _service_headers(self, *, company_id: UUID, user_id: UUID | None) -> dict[str, str]:
         headers = {
             "X-Service-Key": settings.erp_service_key or "",
