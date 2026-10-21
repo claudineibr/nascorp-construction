@@ -381,7 +381,7 @@ class AssistanceRepository:
             if not self.scope.unrestricted:
                 query = query.where(ConstructionProject.id.in_(self.scope.project_ids))
         else:
-            name = func.concat(ConstructionUnit.code, " — ", func.coalesce(persons.c.name, "Sem comprador vinculado"))
+            name = func.concat(ConstructionUnit.code, " - ", func.coalesce(persons.c.name, "Sem comprador vinculado"))
             query = (
                 select(ConstructionUnit.id, name.label("name"), persons.c.id.label("buyer_person_id"))
                 .outerjoin(persons, (persons.c.id == ConstructionUnit.buyer_person_id) & persons.c.deleted_at.is_(None))

@@ -177,7 +177,7 @@ export function ContractMeasureItems({
                     </div>
                   </td>
                   <td className={styles.numeric}>
-                    {quantity > 0 ? money(quantity * unitPrice) : "—"}
+                    {quantity > 0 ? money(quantity * unitPrice) : "-"}
                   </td>
                 </tr>
               ))}

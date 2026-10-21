@@ -225,7 +225,7 @@ export function ServiceTemplateImportModal({
             <ul className={styles.fileList}>
               {results.map((result) => (
                 <li key={result.fileName} className={`${styles.resultRow} ${resultStyle[result.status] ?? ""}`}>
-                  <strong>{resultLabel[result.status] ?? result.status}</strong> — {result.fileName}
+                  <strong>{resultLabel[result.status] ?? result.status}</strong> - {result.fileName}
                   {result.serviceName ? ` · ${result.serviceName}` : ""}
                   {result.status === "created" || result.status === "updated"
                     ? ` · ${result.itemsCount} ${result.itemsCount === 1 ? "item" : "itens"}`

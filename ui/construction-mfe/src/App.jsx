@@ -1541,7 +1541,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       },
       {
         label: "Página",
-        value: projectTotalPages ? `${projectPage} / ${projectTotalPages}` : "—",
+        value: projectTotalPages ? `${projectPage} / ${projectTotalPages}` : "-",
         hint: `${projects.length} obras exibidas`,
         icon: Layers3,
         tone: "muted",
@@ -6027,8 +6027,8 @@ function UnitInstallmentsPanel({
                 Formato de impressão
                 <select value={bankSlips.printLayout} disabled={bankSlips.busy}
                   onChange={(event) => bankSlips.setPrintLayout(event.target.value)}>
-                  <option value="FULL_PAGE">Boleto completo — um por página</option>
-                  <option value="CARNET">Carnê — três por folha A4</option>
+                  <option value="FULL_PAGE">Boleto completo - um por página</option>
+                  <option value="CARNET">Carnê - três por folha A4</option>
                 </select>
               </label>}
               {!generationMode && hasBankSlips && <button type="button" className={styles.secondaryButton}
@@ -6126,7 +6126,7 @@ function UnitInstallmentsPanel({
                         <strong>{row.bankSlips[0].our_number}</strong>
                         <div className={styles.rowSecondaryText}>{bankSlipStatusLabel[row.bankSlips[0].status]}
                           {row.bankSlips.length > 1 ? ` · +${row.bankSlips.length - 1} anteriores` : ""}</div>
-                      </> : "—"}
+                      </> : "-"}
                     </td> : null}
                     <td>
                       {row.paymentDate ? formatDate(row.paymentDate) : "-"}
@@ -6189,7 +6189,7 @@ function UnitInstallmentsPanel({
               <td>{item.installment_number}/{item.total_installments}</td>
               <td>{item.payer_name}</td>
               <td>{BANK_SLIP_BATCH_STATUS_LABELS[item.status]}</td>
-              <td>{item.last_error || "—"}</td></tr>)}</tbody></table>
+              <td>{item.last_error || "-"}</td></tr>)}</tbody></table>
         {bankSlipOperations.canCreate
           && bankSlipOperations.batch.items.some((item) => ["FAILED", "UNCERTAIN"].includes(item.status))
           && <button type="button" className={styles.secondaryButton} onClick={bankSlipOperations.retryBatch}>
@@ -6527,7 +6527,7 @@ function PayInstallmentModal({
 
           {locked ? (
             <p className={styles.metricHint}>
-              A parcela já tem recibo definitivo emitido — o número saiu do talão e o documento
+              A parcela já tem recibo definitivo emitido - o número saiu do talão e o documento
               existe. A baixa é definitiva: não aceita alteração, estorno nem exclusão. Qualquer
               acerto tem que virar um lançamento novo.
             </p>
@@ -8065,12 +8065,12 @@ function ProcurementModal({ bridge, mode, procurementForm, people, schedulePhase
                     const lineTotal = Number(procurementLineCents(item)) / 100
                     return (
                       <div className={styles.procurementItem} key={item.key}>
-                        <strong>{item.productCode} — {item.productDescription}</strong>
+                        <strong>{item.productCode} - {item.productDescription}</strong>
                         <label><span>Quantidade</span><input type="number" min="0.0001" step="0.0001" value={item.quantity} onChange={(event) => updateItem(item.key, "quantity", event.target.value)} /></label>
                         <label><span>Unidade</span><input type="text" maxLength="10" size="3" value={item.unitOfMeasure} onChange={(event) => updateItem(item.key, "unitOfMeasure", event.target.value)} /></label>
                         <label><span>Valor estimado (opcional)</span><input type="text" inputMode="decimal" value={item.unitPrice} onChange={(event) => updateItem(item.key, "unitPrice", formatCurrencyInput(event.target.value))} /></label>
                         <label><span>Etapa (opcional)</span><select value={item.schedulePhaseId} onChange={(event) => updateItem(item.key, "schedulePhaseId", event.target.value)}><option value="">Sem etapa</option>{schedulePhases.map((phase) => <option key={phase.id} value={phase.id}>{phase.name}</option>)}</select></label>
-                        <label><span>Unidade construtiva (opcional)</span><select value={item.constructionUnitId} onChange={(event) => updateItem(item.key, "constructionUnitId", event.target.value)}><option value="">Sem unidade</option>{units.map((unit) => <option key={unit.id} value={unit.id}>{unit.code} — {unit.description}</option>)}</select></label>
+                        <label><span>Unidade construtiva (opcional)</span><select value={item.constructionUnitId} onChange={(event) => updateItem(item.key, "constructionUnitId", event.target.value)}><option value="">Sem unidade</option>{units.map((unit) => <option key={unit.id} value={unit.id}>{unit.code} - {unit.description}</option>)}</select></label>
                         <span className={styles.procurementLineTotal}>Total: {moneyFormatter.format(lineTotal)}</span>
                         <button type="button" className={styles.iconButton} title="Remover produto" aria-label="Remover produto" onClick={() => onItemsChange(procurementForm.items.filter((entry) => entry.key !== item.key))} disabled={loading}><Trash2 size={16} aria-hidden="true" /></button>
                       </div>

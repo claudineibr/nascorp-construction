@@ -86,7 +86,7 @@ export function ProductPicker({ bridge, onSelect, disabled = false }) {
           {!loading && !error ? products.map((product) => (
             <li key={product.id}>
               <button type="button" role="option" aria-selected="false" className={styles.option} onClick={() => choose(product)}>
-                <span className={styles.optionName}>{product.code} — {product.description}</span>
+                <span className={styles.optionName}>{product.code} - {product.description}</span>
                 <span className={styles.optionUnit}>Unidade: {product.unitOfMeasure}</span>
               </button>
             </li>

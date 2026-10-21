@@ -16,7 +16,7 @@ const SEARCH_DEBOUNCE_MS = 400
 
 export const money = (value) =>
   value === null || value === undefined
-    ? "—"
+    ? "-"
     : Number(value).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
 
 export function SharedPayableLinkModal({ bridge, projectId, initialPayable = null, onClose, onLinked }) {
@@ -238,7 +238,7 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
                             {row.documentNumber ? `Nº ${row.documentNumber}` : "Sem número"}
                             {row.description ? <small>{row.description}</small> : null}
                           </td>
-                          <td>{row.documentTypeLabel || "—"}</td>
+                          <td>{row.documentTypeLabel || "-"}</td>
                           <td>{day(row.issueDate)}</td>
                           <td>{money(row.totalAmount)}</td>
                           <td>{payableStatusLabel(row.status)}</td>

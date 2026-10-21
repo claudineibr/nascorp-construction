@@ -59,7 +59,7 @@ export function InspectionRoundForm({
   return (
     <form className={styles.roundForm} onSubmit={handleSubmit}>
       <strong className={styles.roundFormTitle}>
-        {title[status] ?? roundStatusLabel[status]} — linha {inspection.sequenceNumber} “{inspection.description}”
+        {title[status] ?? roundStatusLabel[status]} - linha {inspection.sequenceNumber} “{inspection.description}”
       </strong>
 
       {previousRound?.comment && previousRound.status === "non_compliant" ? (

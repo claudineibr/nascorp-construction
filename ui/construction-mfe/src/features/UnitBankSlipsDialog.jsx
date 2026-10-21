@@ -46,8 +46,8 @@ export function UnitBankSlipsDialog({ state, unitId, onClose }) {
       <label className={dialogStyles.field}>Formato de impressão
         <select value={state.printLayout} disabled={state.busy}
           onChange={(event) => state.setPrintLayout(event.target.value)}>
-          <option value="FULL_PAGE">Boleto completo — um por página</option>
-          <option value="CARNET">Carnê — três por folha A4</option>
+          <option value="FULL_PAGE">Boleto completo - um por página</option>
+          <option value="CARNET">Carnê - três por folha A4</option>
         </select>
       </label>
       <button type="button" className={styles.primaryButton} disabled={state.busy || state.warning || !selected.size}

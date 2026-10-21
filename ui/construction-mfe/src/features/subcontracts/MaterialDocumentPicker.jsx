@@ -94,7 +94,7 @@ export function MaterialDocumentPicker({
                     />
                   </td>
                   <td>{row.document_number ?? "Sem número"}</td>
-                  <td>{row.supplier_name ?? "—"}</td>
+                  <td>{row.supplier_name ?? "-"}</td>
                   <td className={styles.numeric}>{money(row.amount)}</td>
                 </tr>
               ))}

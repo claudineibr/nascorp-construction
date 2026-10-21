@@ -87,6 +87,23 @@
   gap: 0.35rem;
 }
 
+.dialogForm {
+  box-sizing: border-box;
+  display: grid;
+  gap: calc(1.25rem * var(--density, 1));
+  min-width: 0;
+}
+
+.dialogActions {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
 .historyTable {
   composes: table from "../../App.module.css";
 }

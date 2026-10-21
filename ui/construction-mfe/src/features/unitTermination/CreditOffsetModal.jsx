@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react"
 
 import appStyles from "../../App.module.css"
+import styles from "./unitTermination.module.css"
+import { UnitBankSlipDialogFrame as DialogFrame } from "../UnitBankSlipsDialog.jsx"
 import { brazilTodayISO } from "../../utils/brazilDate.js"
 import { currencyFromNumber, formatBRL as money } from "../../utils/currencyInput.js"
 import {
@@ -63,15 +65,18 @@ export function CreditOffsetModal({ bridge, unit, installment, onClose, onDone }
   }
 
   const title = `Abater saldo credor na parcela ${installment.installmentNumber}`
+  const footer = (
+    <div className={styles.dialogActions}>
+      <button type="button" className={appStyles.secondaryButton} onClick={onClose} disabled={loading}>Cancelar</button>
+      <button type="submit" form="credit-offset-form" className={appStyles.primaryButton}
+        disabled={loading || credits == null || available <= 0 || insufficient || outstanding <= 0}>
+        {loading ? "Abatendo..." : "Abater saldo credor"}
+      </button>
+    </div>
+  )
   return (
-    <div className={appStyles.modalOverlay} role="presentation" onClick={loading ? undefined : onClose}>
-      <section className={appStyles.modalCard} role="dialog" aria-modal="true" aria-label={title}
-        onClick={(event) => event.stopPropagation()}>
-        <header className={appStyles.modalHeader}>
-          <h3>{title}</h3>
-          <button type="button" className={appStyles.closeButton} onClick={onClose} disabled={loading}>Fechar</button>
-        </header>
-        <form className={appStyles.modalBody} onSubmit={submit}>
+    <DialogFrame bridge={bridge} title={title} onClose={loading ? undefined : onClose} footer={footer}>
+        <form id="credit-offset-form" className={styles.dialogForm} onSubmit={submit}>
           <p className={appStyles.metricHint}>
             {credits == null
               ? "Consultando o saldo credor do comprador..."
@@ -99,15 +104,7 @@ export function CreditOffsetModal({ bridge, unit, installment, onClose, onDone }
                 onChange={(event) => setObservation(event.target.value)} />
             </label>
           </div>
-          <footer className={appStyles.modalFooter}>
-            <button type="button" className={appStyles.secondaryButton} onClick={onClose} disabled={loading}>Cancelar</button>
-            <button type="submit" className={appStyles.primaryButton}
-              disabled={loading || credits == null || available <= 0 || insufficient || outstanding <= 0}>
-              {loading ? "Abatendo..." : "Abater saldo credor"}
-            </button>
-          </footer>
         </form>
-      </section>
-    </div>
+    </DialogFrame>
   )
 }

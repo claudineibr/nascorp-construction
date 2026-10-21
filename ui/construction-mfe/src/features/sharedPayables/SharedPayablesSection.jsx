@@ -214,7 +214,7 @@ export function SharedPayablesSection({ bridge, projectId }) {
                     {row.documentNumber ? `Nº ${row.documentNumber}` : "Sem número"}
                     <small>{row.documentTypeLabel || row.description || ""}</small>
                   </td>
-                  <td>{row.personName || "—"}</td>
+                  <td>{row.personName || "-"}</td>
                   <td>{day(row.issueDate)}</td>
                   <td>{money(row.totalAmount)}</td>
                   <td>{payableStatusLabel(row.status)}</td>

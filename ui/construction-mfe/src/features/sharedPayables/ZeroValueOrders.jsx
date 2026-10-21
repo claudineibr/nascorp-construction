@@ -13,7 +13,7 @@ const PAGE_SIZE_OPTIONS = [25, 50, 100]
 export const SHARED_PAYABLE_BATCH_LIMIT = 1000
 
 export const day = (value) =>
-  value ? new Date(`${String(value).slice(0, 10)}T12:00:00`).toLocaleDateString("pt-BR") : "—"
+  value ? new Date(`${String(value).slice(0, 10)}T12:00:00`).toLocaleDateString("pt-BR") : "-"
 
 function useDebounced(value) {
   const [debounced, setDebounced] = useState(value)
@@ -248,12 +248,12 @@ export function ZeroValueOrders({
                     <small>{row.code}</small>
                   </td>
                   <td>
-                    {row.unitCode || "—"}
+                    {row.unitCode || "-"}
                     {row.unitDescription ? <small>{row.unitDescription}</small> : null}
                   </td>
-                  <td>{row.blockName || "—"}</td>
+                  <td>{row.blockName || "-"}</td>
                   <td>{day(row.dueDate)}</td>
-                  <td>{row.description || "—"}</td>
+                  <td>{row.description || "-"}</td>
                 </tr>
               ))}
             </tbody>

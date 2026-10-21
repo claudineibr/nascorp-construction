@@ -186,7 +186,7 @@ export function InspectionChecklist({
                       ) : null}
                     </>
                   ) : (
-                    <span className={styles.lineMoment}>—</span>
+                    <span className={styles.lineMoment}>-</span>
                   )}
                 </span>
 

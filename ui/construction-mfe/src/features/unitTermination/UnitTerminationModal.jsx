@@ -5,6 +5,7 @@ import styles from "./unitTermination.module.css"
 import { formatBRL as money, formatCurrencyInput } from "../../utils/currencyInput.js"
 import { brazilTodayISO, formatBusinessDate as formatDate } from "../../utils/brazilDate.js"
 import { previewConstructionUnitTermination, terminateConstructionUnit } from "../../services/constructionApi.js"
+import { UnitBankSlipDialogFrame as DialogFrame } from "../UnitBankSlipsDialog.jsx"
 
 export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestConfirm }) {
   const [form, setForm] = useState({
@@ -86,22 +87,36 @@ export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestCon
   const canceled = installments.filter((row) => row.action === "CANCEL").length
   const reduced = installments.filter((row) => row.action === "REDUCE").length
 
+  const footer = (
+    <div className={styles.dialogActions}>
+      <button type="button" className={appStyles.secondaryButton} onClick={onClose} disabled={loading}>
+        Cancelar
+      </button>
+      {preview && !blockers.length ? (
+        <button
+          type="button"
+          className={`${appStyles.secondaryButton} ${appStyles.dangerButton}`}
+          onClick={askConfirmation}
+          disabled={loading}
+        >
+          Distratar
+        </button>
+      ) : (
+        <button type="submit" form="unit-termination-form" className={appStyles.primaryButton} disabled={loading}>
+          {loading ? "Calculando..." : "Calcular demonstrativo"}
+        </button>
+      )}
+    </div>
+  )
+
   return (
-    <div className={appStyles.modalOverlay} role="presentation" onClick={loading ? undefined : onClose}>
-      <section
-        className={`${appStyles.modalCard} ${appStyles.modalCardWide}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Distratar a unidade ${unit.code}`}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header className={appStyles.modalHeader}>
-          <h3>Distratar a unidade {unit.code}</h3>
-          <button type="button" className={appStyles.closeButton} onClick={onClose} disabled={loading}>
-            Fechar
-          </button>
-        </header>
-        <form id="unit-termination-form" className={appStyles.modalBody} onSubmit={calculate}>
+    <DialogFrame
+      bridge={bridge}
+      title={`Distratar a unidade ${unit.code}`}
+      onClose={loading ? undefined : onClose}
+      footer={footer}
+    >
+        <form id="unit-termination-form" className={styles.dialogForm} onSubmit={calculate}>
           <div className={appStyles.formGrid}>
             <label className={appStyles.filterControl}>
               <span>Data do distrato*</span>
@@ -126,6 +141,7 @@ export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestCon
             </label>
             <label className={`${appStyles.filterControl} ${appStyles.spanTwoColumns}`}>
               <span>Observação</span>
+              <small className={appStyles.metricHint}>O motivo e a observação acompanham o título de restituição.</small>
               <textarea
                 className={appStyles.textarea}
                 maxLength={2000}
@@ -170,7 +186,7 @@ export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestCon
                       <tr key={`${line.type}-${index}`}>
                         <td>
                           (-) {line.label}
-                          {line.months != null ? ` — ${line.months} mês(es)` : ""}
+                          {line.months != null ? ` - ${line.months} mês(es)` : ""}
                         </td>
                         <td>{money(-Number(line.amount))}</td>
                       </tr>
@@ -285,26 +301,6 @@ export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestCon
             </>
           ) : null}
         </form>
-        <footer className={appStyles.modalFooter}>
-          <button type="button" className={appStyles.secondaryButton} onClick={onClose} disabled={loading}>
-            Cancelar
-          </button>
-          {preview && !blockers.length ? (
-            <button
-              type="button"
-              className={`${appStyles.secondaryButton} ${appStyles.dangerButton}`}
-              onClick={askConfirmation}
-              disabled={loading}
-            >
-              Distratar
-            </button>
-          ) : (
-            <button type="submit" form="unit-termination-form" className={appStyles.primaryButton} disabled={loading}>
-              {loading ? "Calculando..." : "Calcular demonstrativo"}
-            </button>
-          )}
-        </footer>
-      </section>
-    </div>
+    </DialogFrame>
   )
 }

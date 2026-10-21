@@ -15,10 +15,10 @@ const SEARCH_DEBOUNCE_MS = 400
 
 const money = (value) =>
   value === null || value === undefined
-    ? "—"
+    ? "-"
     : Number(value).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
 
-const day = (value) => (value ? new Date(`${String(value).slice(0, 10)}T12:00:00`).toLocaleDateString("pt-BR") : "—")
+const day = (value) => (value ? new Date(`${String(value).slice(0, 10)}T12:00:00`).toLocaleDateString("pt-BR") : "-")
 
 const sameAmount = (left, right) => Math.round(Number(left ?? 0) * 100) === Math.round(Number(right ?? 0) * 100)
 
@@ -188,7 +188,7 @@ export function MeasurementPayableLinkModal({ measurement, onClose, onLinked }) 
                           {row.documentNumber ? `Nº ${row.documentNumber}` : "Sem número"}
                           {row.description ? <small>{row.description}</small> : null}
                         </td>
-                        <td>{row.documentTypeLabel || "—"}</td>
+                        <td>{row.documentTypeLabel || "-"}</td>
                         <td>{day(row.issueDate)}</td>
                         <td>
                           {money(row.totalAmount)}

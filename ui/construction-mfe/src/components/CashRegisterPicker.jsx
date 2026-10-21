@@ -4,7 +4,7 @@ import styles from "./CashRegisterPicker.module.css"
 
 const SEARCH_DEBOUNCE_MS = 400
 
-const registerLabel = (item) => `${item.name} — ${item.location}`
+const registerLabel = (item) => `${item.name} - ${item.location}`
 
 export function CashRegisterPicker({ bridge, value, onChange, disabled = false }) {
   const [term, setTerm] = useState("")

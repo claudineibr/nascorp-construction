@@ -21,7 +21,7 @@ const PAYABLE_STATUS_LABELS = {
   DELETED: "Excluído",
 }
 
-export const payableStatusLabel = (status) => PAYABLE_STATUS_LABELS[status] ?? status ?? "—"
+export const payableStatusLabel = (status) => PAYABLE_STATUS_LABELS[status] ?? status ?? "-"
 
 export const measurementPayableBadge = (measurement) => {
   if (measurement.externalAccountsPayableId) {

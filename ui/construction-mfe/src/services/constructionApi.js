@@ -513,7 +513,7 @@ const describeValidationErrors = (detail) => {
     })
     .filter(Boolean)
 
-  return described.length ? `Dados recusados pelo servidor — ${described.join("; ")}.` : null
+  return described.length ? `Dados recusados pelo servidor - ${described.join("; ")}.` : null
 }
 
 const toNullableNumber = (value) => {

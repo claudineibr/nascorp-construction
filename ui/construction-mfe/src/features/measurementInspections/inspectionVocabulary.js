@@ -11,7 +11,7 @@ export const lineStateLabel = {
   pending: "Pendente",
   compliant: "Conforme",
   approved_after_reinspection: "Aprovado com reinspeção",
-  non_compliant: "Não conforme — aguardando reinspeção",
+  non_compliant: "Não conforme - aguardando reinspeção",
   waived: "Dispensado de reinspeção",
 }
 

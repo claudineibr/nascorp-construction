@@ -619,7 +619,7 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
                       onResolve={resolveUnit}
                       displayName={
                         draft.id && draft.unit_code
-                          ? `${draft.unit_code} — ${draft.customer_name || "Comprador não informado"}`
+                          ? `${draft.unit_code} - ${draft.customer_name || "Comprador não informado"}`
                           : undefined
                       }
                       disabled={Boolean(draft.id || unitId)}

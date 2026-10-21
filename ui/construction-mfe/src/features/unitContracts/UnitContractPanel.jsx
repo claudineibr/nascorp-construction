@@ -197,7 +197,7 @@ export function UnitContractPanel({ bridge, unit }) {
           <td><button type="button" className={styles.secondaryButton} onClick={() => setSelected(row)}>{row.version_number}</button></td>
           <td>{origin[row.type] ?? row.type}</td><td>{row.template_name || "Não informado"}</td><td>{row.created_by_name || "Não informado"}</td>
           <td>{row.type === "legacy" ? "Data legada não informada; importado em " : ""}{new Date(`${row.applied_at}Z`).toLocaleString("pt-BR")}</td>
-          <td>{status[row.status] ?? row.status}</td><td>{row.reason || "—"}</td>
+          <td>{status[row.status] ?? row.status}</td><td>{row.reason || "-"}</td>
           <td><button type="button" className={styles.secondaryButton} onClick={() => printVersion(row)} disabled={busy || !row.content_html}>
             <Printer size={16} aria-hidden="true" />Imprimir contrato
           </button></td>

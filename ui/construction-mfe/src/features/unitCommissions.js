@@ -4,4 +4,4 @@ const COMMISSION_STATUS_LABELS = {
   paid: "Paga",
 }
 
-export const commissionStatusLabel = (status) => COMMISSION_STATUS_LABELS[status] ?? status ?? "—"
+export const commissionStatusLabel = (status) => COMMISSION_STATUS_LABELS[status] ?? status ?? "-"

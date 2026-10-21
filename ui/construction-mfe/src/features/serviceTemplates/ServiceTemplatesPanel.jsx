@@ -342,7 +342,7 @@ export function ServiceTemplatesPanel({ bridge }) {
               <p>
                 Excluir <strong>{pendingDeletion.name}</strong> do catálogo? O serviço sai das telas mas
                 continua registrado: o histórico guarda quem o excluiu e como a ficha estava. Serviços já
-                usados em medição não podem ser excluídos — nesse caso, desative.
+                usados em medição não podem ser excluídos - nesse caso, desative.
               </p>
               <div className={appStyles.modalFooter}>
                 <button

@@ -93,12 +93,12 @@ export function UnitTermPanel({ bridge, unit, kind }) {
           <td><button type="button" className={styles.secondaryButton} onClick={() => setSelected(row)}>{row.version_number}</button></td>
           <td>{origins[row.type] ?? row.type}</td><td>{row.created_by_name}</td>
           <td>{row.type === "legacy" ? "Importado em " : ""}{new Date(`${row.applied_at}Z`).toLocaleString("pt-BR")}</td>
-          <td>{row.reason || "—"}</td>
+          <td>{row.reason || "-"}</td>
         </tr>)}</tbody>
       </table></div>}
     </div>
     {selected && <div className={styles.card}>
-      <h3>{title} — versão {selected.version_number}</h3>
+      <h3>{title} - versão {selected.version_number}</h3>
       <div className={styles.actions}>
         {canUpdate && <button type="button" className={styles.secondaryButton} onClick={() => open("edit")} disabled={busy}>
           <PenLine size={16} aria-hidden="true" />Editar texto
