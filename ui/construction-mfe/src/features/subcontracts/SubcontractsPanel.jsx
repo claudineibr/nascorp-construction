@@ -9,8 +9,10 @@ import {
 import { money } from "../sharedPayables/SharedPayableLinkModal";
 import { day } from "../sharedPayables/ZeroValueOrders";
 import { Dialog, DirectBillsSection } from "./DirectBillsSection";
+import { ContractPayablesSection } from "./ContractPayablesSection";
+import { GlobalOrdersSection } from "./GlobalOrdersSection";
 import { SubcontractItemsTable, itemTotal } from "./SubcontractItemsTable";
-import { currencyDecimal, currencyFromNumber } from "../../utils/currencyInput";
+import { currencyDecimal, currencyFromNumber, currencyNumber, formatCurrencyInput } from "../../utils/currencyInput";
 import appStyles from "../../App.module.css";
 import styles from "./SubcontractsPanel.module.css";
 
@@ -46,6 +48,8 @@ const emptyContract = () => ({
   escrow_rate: "0",
   escrow_due_date: "",
   notes: "",
+  pricing_mode: "ITEMIZED",
+  global_amount: "",
   items: [emptyItem()],
 });
 const plain = (value) => String(Number(value ?? 0));
@@ -53,6 +57,8 @@ const toDraft = (contract) => ({
   ...contract,
   retention_rate: plain(contract.retention_rate),
   escrow_rate: plain(contract.escrow_rate),
+  pricing_mode: contract.pricing_mode ?? "ITEMIZED",
+  global_amount: contract.global_amount ? currencyFromNumber(contract.global_amount) : "",
   items: contract.items.map((item) => ({
     ...item,
     quantity: plain(item.quantity),
@@ -78,7 +84,9 @@ const sheetPayload = (draft) => {
     ]),
   );
   body.escrow_due_date = draft.escrow_due_date || null;
-  body.items = draft.items
+  body.pricing_mode = draft.pricing_mode ?? "ITEMIZED";
+  body.global_amount = body.pricing_mode === "GLOBAL" ? currencyDecimal(draft.global_amount) : null;
+  body.items = body.pricing_mode === "GLOBAL" ? [] : draft.items
     .filter((item) => item.active !== false)
     .map((item) => Object.fromEntries(
       [
@@ -329,13 +337,18 @@ function SubcontractsWorkspace({ bridge, projectId }) {
   const measuredAny = (draft?.items ?? []).some(
     (item) => Number(item.consumed_quantity ?? 0) > 0,
   );
-  const contractTotal = (draft?.items ?? [])
-    .filter((item) => item.active !== false)
-    .reduce((sum, item) => sum + itemTotal(item), 0);
+  const globalMode = draft?.pricing_mode === "GLOBAL";
+  const contractTotal = globalMode
+    ? currencyNumber(draft?.global_amount ?? "")
+    : (draft?.items ?? [])
+      .filter((item) => item.active !== false)
+      .reduce((sum, item) => sum + itemTotal(item), 0);
   const releaseBlocker = dirty
     ? "Salve a planilha antes de liberar."
     : contractTotal <= 0
-      ? "O total do contrato está em R$ 0,00. Informe o preço de material ou de mão de obra dos itens e salve antes de liberar."
+      ? globalMode
+        ? "Informe o valor total do contrato global e salve antes de liberar."
+        : "O total do contrato está em R$ 0,00. Informe o preço de material ou de mão de obra dos itens e salve antes de liberar."
       : "";
   return (
     <section className={styles.panel}>
@@ -475,6 +488,32 @@ function SubcontractsWorkspace({ bridge, projectId }) {
                     onChange={(e) => patch({ title: e.target.value })}
                   />
                 </label>
+                <label>
+                  Modalidade*
+                  <select
+                    required
+                    value={draft.pricing_mode ?? "ITEMIZED"}
+                    disabled={readOnly || measuredAny || Boolean(draft.released_version)}
+                    title={draft.released_version ? "A modalidade não muda depois de liberar o contrato." : undefined}
+                    onChange={(e) => patch({ pricing_mode: e.target.value })}
+                  >
+                    <option value="ITEMIZED">Por planilha de serviços</option>
+                    <option value="GLOBAL">Valor global (OS sem valor)</option>
+                  </select>
+                </label>
+                {globalMode && (
+                  <label>
+                    Valor total do contrato*
+                    <input
+                      required
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="0,00"
+                      value={draft.global_amount ?? ""}
+                      onChange={(e) => patch({ global_amount: formatCurrencyInput(e.target.value) })}
+                    />
+                  </label>
+                )}
                 <PersonPicker
                   bridge={bridge}
                   label="Empreiteiro"
@@ -547,7 +586,25 @@ function SubcontractsWorkspace({ bridge, projectId }) {
                 </label>
               </div>
             </fieldset>
-            <section className={styles.block}>
+            {globalMode ? (
+              <section className={styles.block}>
+                <div className={styles.blockHeader}>
+                  <h4>Contrato por valor global</h4>
+                  <p className={styles.hint}>
+                    Não há planilha de serviços. Depois de liberar, vincule as
+                    OS sem valor do empreiteiro em OS do contrato e lance a DNF
+                    em DNF das medições do contrato. A soma das DNFs não passa
+                    do valor total.
+                  </p>
+                </div>
+                {draft.id && (
+                  <p className={styles.hint}>
+                    Valor total {money(draft.total_amount)} · pago em DNFs {money(draft.paid_amount)} ·
+                    saldo {money(draft.remaining_amount)}
+                  </p>
+                )}
+              </section>
+            ) : <section className={styles.block}>
               <div className={styles.blockHeader}>
                 <h4>Itens da planilha</h4>
                 <p className={styles.hint}>
@@ -573,7 +630,7 @@ function SubcontractsWorkspace({ bridge, projectId }) {
                 }}
                 onRemove={removeItem}
               />
-            </section>
+            </section>}
             {!readOnly && (
               <div className={styles.saveBar}>
                 {draft.status === "RELEASED" && (
@@ -656,7 +713,16 @@ function SubcontractsWorkspace({ bridge, projectId }) {
               </div>
             </section>
           )}
-          {draft.id && (
+          {draft.id && globalMode && (
+            <GlobalOrdersSection
+              bridge={bridge}
+              projectId={projectId}
+              contract={draft}
+              canUpdate={canUpdate && !dirty}
+              onChanged={() => open(draft.id)}
+            />
+          )}
+          {draft.id && !globalMode && (
             <DirectBillsSection
               bridge={bridge}
               projectId={projectId}
@@ -684,6 +750,16 @@ function SubcontractsWorkspace({ bridge, projectId }) {
                 if (result && alive.current) await open(draft.id);
                 return Boolean(result);
               }}
+            />
+          )}
+          {draft.id && (
+            <ContractPayablesSection
+              bridge={bridge}
+              projectId={projectId}
+              contract={draft}
+              canUpdate={canUpdate}
+              dirty={dirty}
+              onChanged={() => open(draft.id)}
             />
           )}
         </section>

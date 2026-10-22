@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { RefreshCw } from "lucide-react"
 
 import appStyles from "../../App.module.css"
@@ -19,10 +19,11 @@ export const money = (value) =>
     ? "-"
     : Number(value).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
 
-export function SharedPayableLinkModal({ bridge, projectId, initialPayable = null, onClose, onLinked }) {
+export function SharedPayableLinkModal({ bridge, projectId, initialPayable = null, contract = null, onClose, onLinked }) {
   const [suppliers, setSuppliers] = useState([])
-  const [loadingSuppliers, setLoadingSuppliers] = useState(true)
-  const [supplierId, setSupplierId] = useState(initialPayable?.personId ?? "")
+  const [loadingSuppliers, setLoadingSuppliers] = useState(!contract)
+  const [supplierId, setSupplierId] = useState(contract?.supplierPersonId ?? initialPayable?.personId ?? "")
+  const [netById, setNetById] = useState(() => new Map())
   const [search, setSearch] = useState("")
   const [candidates, setCandidates] = useState([])
   const [loadingCandidates, setLoadingCandidates] = useState(false)
@@ -32,7 +33,24 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
   const [error, setError] = useState("")
   const [saving, setSaving] = useState(false)
 
+  const [contractSupplierName, setContractSupplierName] = useState("")
   useEffect(() => {
+    if (!contract?.supplierPersonId) return undefined
+    let active = true
+    listConstructionPersonSummaries({ bridge, personId: contract.supplierPersonId, pageSize: 1 })
+      .then((response) => {
+        if (active) setContractSupplierName(response.items?.[0]?.name ?? "Fornecedor sem cadastro")
+      })
+      .catch(() => {
+        if (active) setContractSupplierName("Fornecedor sem cadastro")
+      })
+    return () => {
+      active = false
+    }
+  }, [bridge, contract?.supplierPersonId])
+
+  useEffect(() => {
+    if (contract) return undefined
     let active = true
     const load = async () => {
       setLoadingSuppliers(true)
@@ -62,7 +80,7 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
     return () => {
       active = false
     }
-  }, [bridge, projectId, initialPayable])
+  }, [bridge, projectId, initialPayable, contract])
 
   useEffect(() => {
     if (!supplierId) {
@@ -99,9 +117,35 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
   }
 
   const tooMany = selected.size > SHARED_PAYABLE_BATCH_LIMIT
+  const rememberNets = useCallback((rows) => {
+    setNetById((current) => {
+      const next = new Map(current)
+      for (const row of rows) next.set(row.id, Number(row.netAmount ?? 0))
+      return next
+    })
+  }, [])
+  const globalContract = contract?.pricingMode === "GLOBAL"
+  const selectedTotal = [...selected].reduce((sum, id) => sum + (netById.get(id) ?? 0), 0)
+  const coveredBefore = Number(chosen?.coveredAmount ?? 0)
+  const chosenNet = Number(chosen?.netAmount ?? chosen?.totalAmount ?? 0)
+  const totalMismatch = Boolean(contract && !globalContract && chosen) &&
+    Math.round((selectedTotal + coveredBefore) * 100) !== Math.round(chosenNet * 100)
+  const overBalance = Boolean(globalContract && chosen && !chosen.coveredCount) &&
+    Math.round(Number(chosen.totalAmount ?? 0) * 100) > Math.round(Number(contract.remainingAmount ?? 0) * 100)
+  const blockReason = !chosen
+    ? "Escolha a DNF"
+    : !selected.size
+      ? "Marque pelo menos uma OS"
+      : tooMany
+        ? `Marque no máximo ${SHARED_PAYABLE_BATCH_LIMIT} OS por vez`
+        : totalMismatch
+          ? "A soma dos líquidos das OS precisa ser igual ao líquido da DNF"
+          : overBalance
+            ? "A DNF passa do saldo do contrato global"
+            : ""
 
   const confirm = async () => {
-    if (!chosen || !selected.size || tooMany) return
+    if (blockReason) return
     setSaving(true)
     try {
       const result = await linkSharedPayable({
@@ -109,6 +153,7 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
         projectId,
         payableDocumentId: chosen.id,
         measurementIds: [...selected],
+        subcontractId: contract?.id ?? null,
       })
       bridge?.feedback?.success?.(
         `${result.affected} OS vinculada(s) à DNF ${chosen.documentNumber ?? "sem número"}.`,
@@ -127,19 +172,22 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
         className={`${appStyles.modalCard} ${styles.wideModal}`}
         role="dialog"
         aria-modal="true"
-        aria-label="Vincular OS sem valor à DNF da empreitada"
+        aria-label={contract ? `Vincular DNF às medições do contrato ${contract.code}` : "Vincular OS sem valor à DNF da empreitada"}
         onClick={(event) => event.stopPropagation()}
       >
         <header className={appStyles.modalHeader}>
-          <h3>Vincular OS sem valor à DNF da empreitada</h3>
+          <h3>{contract ? `Vincular DNF às medições do contrato ${contract.code}` : "Vincular OS sem valor à DNF da empreitada"}</h3>
           <button type="button" className={appStyles.closeButton} onClick={onClose} disabled={saving}>
             Fechar
           </button>
         </header>
         <div className={appStyles.modalBody}>
           <p className={styles.notice}>
-            Escolha o fornecedor, a DNF que pagou a empreitada e marque as OS sem valor que ela cobre. Aparecem só DNFs do
-            fornecedor lançadas nos centros de custo desta obra e que não pagam uma OS com valor.
+            {contract
+              ? globalContract
+                ? "Escolha a DNF do empreiteiro e marque as OS do contrato global que ela paga. O valor da DNF entra no pago do contrato e não pode passar do saldo dele."
+                : "Escolha a DNF do empreiteiro e marque as medições aprovadas do contrato que ela paga. A soma dos líquidos das medições precisa ser igual ao líquido da DNF (valor menos os tributos retidos)."
+              : "Escolha o fornecedor, a DNF que pagou a empreitada e marque as OS sem valor que ela cobre. Aparecem só DNFs do fornecedor lançadas nos centros de custo desta obra e que não pagam uma OS com valor."}
           </p>
           {error ? (
             <p role="alert" className={styles.error}>
@@ -147,7 +195,12 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
             </p>
           ) : null}
 
-          <div className={styles.step}>
+          {contract ? (
+            <div className={styles.step}>
+              <h4>1. Empreiteiro do contrato</h4>
+              <p>{contractSupplierName || "Carregando empreiteiro..."}</p>
+            </div>
+          ) : <div className={styles.step}>
             <h4>1. Fornecedor</h4>
             <label className={styles.field}>
               <span>Fornecedor com OS sem valor</span>
@@ -164,7 +217,7 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
                 ))}
               </select>
             </label>
-          </div>
+          </div>}
 
           {supplierId ? (
             <div className={styles.step}>
@@ -242,7 +295,10 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
                           <td>{day(row.issueDate)}</td>
                           <td>{money(row.totalAmount)}</td>
                           <td>{payableStatusLabel(row.status)}</td>
-                          <td>{row.coveredCount}</td>
+                          <td>
+                            {row.coveredCount}
+                            {contract && row.coveredCount ? <small>cobre {money(row.coveredAmount)}</small> : null}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -254,15 +310,28 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
 
           {supplierId && chosen ? (
             <div className={styles.step}>
-              <h4>3. OS sem valor que a DNF cobre</h4>
+              <h4>{contract ? "3. Medições do contrato que a DNF paga" : "3. OS sem valor que a DNF cobre"}</h4>
               <ZeroValueOrders
                 bridge={bridge}
                 projectId={projectId}
                 supplierPersonId={supplierId}
+                subcontractId={contract?.id ?? ""}
                 selected={selected}
                 onSelectedChange={setSelected}
+                onRowsLoaded={contract ? rememberNets : null}
                 disabled={saving}
               />
+              {contract && !globalContract ? (
+                <p className={totalMismatch ? styles.error : styles.notice} role="status">
+                  Soma dos líquidos marcados: {money(selectedTotal + coveredBefore)} · Líquido da DNF: {money(chosenNet)}
+                  {chosenNet !== Number(chosen.totalAmount ?? 0) ? ` (valor ${money(chosen.totalAmount)} menos tributos retidos)` : ""}
+                </p>
+              ) : null}
+              {globalContract ? (
+                <p className={overBalance ? styles.error : styles.notice} role="status">
+                  Valor da DNF: {money(chosen.totalAmount)} · Saldo do contrato global: {money(contract.remainingAmount)}
+                </p>
+              ) : null}
               {tooMany ? (
                 <p role="alert" className={styles.error}>
                   Marque no máximo {SHARED_PAYABLE_BATCH_LIMIT} OS por vez.
@@ -279,7 +348,8 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
               type="button"
               className={appStyles.primaryButton}
               onClick={confirm}
-              disabled={!chosen || !selected.size || tooMany || saving}
+              disabled={Boolean(blockReason) || saving}
+              title={blockReason || undefined}
             >
               {saving
                 ? "Vinculando..."

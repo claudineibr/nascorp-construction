@@ -652,6 +652,7 @@ class ConstructionMeasurementResponse(BaseModel):
     retention_details: list[ConstructionMeasurementRetention] = Field(default_factory=list)
     subcontract_id: UUID | None = None
     subcontract_version_id: UUID | None = None
+    global_contract_id: UUID | None = None
     escrow_amount: Decimal = Decimal("0")
     escrow_due_date: date | None = None
     direct_billing_amount: Decimal = Decimal("0")
@@ -792,6 +793,7 @@ class ConstructionMeasurementPayableLink(BaseModel):
 
 class ConstructionSharedPayableMeasurementsRequest(BaseModel):
     measurement_ids: list[UUID] = Field(min_length=1, max_length=1000)
+    subcontract_id: UUID | None = None
 
 
 class ConstructionZeroValueMeasurementItem(BaseModel):
@@ -808,6 +810,7 @@ class ConstructionZeroValueMeasurementItem(BaseModel):
     description: str | None = None
     supplier_person_id: UUID | None = None
     external_accounts_payable_id: UUID | None = None
+    net_amount: Decimal | None = None
 
 
 class ConstructionZeroValueMeasurementListResponse(BaseModel):
@@ -934,6 +937,7 @@ class ConstructionMeasurementItemCreate(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     inspector_person_id: UUID | None = None
+    confirm_unit_duplicate: bool = False
 
     @model_validator(mode="after")
     def validate_contract_quantity(self):
@@ -952,6 +956,7 @@ class ConstructionMeasurementItemUpdate(BaseModel):
     start_date: date | None = None
     end_date: date | None = None
     inspector_person_id: UUID | None = None
+    confirm_unit_duplicate: bool = False
     # `inspection_status` saiu de propósito: é derivado das linhas da FVS, e
     # deixar o cliente escrevê-lo anularia o bloqueio de fechamento inteiro.
 
@@ -1102,6 +1107,7 @@ class ConstructionMeasurementItemResponse(BaseModel):
     measurement_id: UUID
     sequence_number: int
     service_template_id: UUID | None = None
+    service_template_name: str | None = None
     product_id: UUID | None = None
     product_description: str | None = None
     description: str

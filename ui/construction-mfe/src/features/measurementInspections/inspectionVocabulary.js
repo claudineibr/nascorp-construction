@@ -46,3 +46,13 @@ export function countBlockingLines(inspections) {
 export function countPendingLines(inspections) {
   return (inspections ?? []).filter((inspection) => !inspection.roundsCount).length
 }
+
+export function inspectorVerdictBlock(currentPersonId, inspectorPersonId) {
+  if (!currentPersonId) {
+    return "Seu usuário não está vinculado a uma pessoa do cadastro; peça ao administrador para vinculá-lo antes de registrar o parecer da FVS."
+  }
+  if (inspectorPersonId && inspectorPersonId !== currentPersonId) {
+    return "Somente o inspetor desta rodada registra o parecer. Escolha você como inspetor da rodada ou entre com o usuário do inspetor."
+  }
+  return ""
+}

@@ -12,8 +12,9 @@ from app.domain.exceptions import ConstructionDomainError, ConstructionNotFoundE
 from app.domain.services.construction_project_service import ConstructionProjectService
 from app.domain.services.subcontract_service import SubcontractService
 from app.infrastructure.database.models import ConstructionProject, ConstructionMeasurement, ConstructionMeasurementItem, ConstructionProjectServiceTemplate, ConstructionServiceTemplate
-from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction
+from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction, ConstructionSubcontractPayable
 from app.infrastructure.repository.construction_repository import ConstructionRepository
+from app.schemas.construction.project import ConstructionMeasurementUpdate
 from app.schemas.construction.subcontract import SubcontractRequest, SubcontractDirectBillRequest, SubcontractDeductionRequest
 from tests.integration_database import create_reachable_engine_or_skip
 
@@ -50,7 +51,7 @@ async def measurement(session, service, company_id, project, supplier, contract,
 
 async def cleanup(factory, company_id):
     async with factory() as session:
-        for model in [ConstructionSubcontractDeduction, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill,
+        for model in [ConstructionSubcontractPayable, ConstructionSubcontractDeduction, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill,
             ConstructionMeasurementItem, ConstructionMeasurement, ConstructionSubcontractVersion, ConstructionSubcontractItem,
             ConstructionSubcontract, ConstructionProjectServiceTemplate, ConstructionServiceTemplate, ConstructionProject]:
             await session.execute(delete(model).where(model.company_id == company_id))
@@ -196,6 +197,163 @@ async def test_amendment_preserves_measurement_prices_and_rejects_foreign_compan
                 await service.get(uuid4(), contract["id"])
             with pytest.raises(ConstructionDomainError):
                 await service.bind_parent(parent, {"supplier_person_id": uuid4()})
+    finally:
+        await cleanup(factory, company_id)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_competence_outside_contract_validity_is_rejected_on_save():
+    engine = await create_reachable_engine_or_skip()
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    company_id = uuid4()
+    try:
+        async with factory() as session:
+            service, project, supplier, contract = await setup(session, company_id)
+            project_id = project.id
+            parent = await measurement(session, service, company_id, project, supplier, contract, "2", "M1")
+            parent.status = "draft"
+            await session.commit()
+            parent_id = parent.id
+            with pytest.raises(ConstructionDomainError) as error:
+                await service.projects.update_measurement(company_id=company_id, measurement_id=parent_id,
+                    request=ConstructionMeasurementUpdate(competence_date=date.today() + timedelta(days=90)))
+            assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_COMPETENCE_OUT_OF_CONTRACT"
+            await session.rollback()
+            updated = await service.projects.update_measurement(company_id=company_id, measurement_id=parent_id,
+                request=ConstructionMeasurementUpdate(competence_date=date.today()))
+            assert updated.competence_date == date.today()
+
+            later = await service.save(company_id, project_id, SubcontractRequest(code="CT-2", title="Reboco",
+                supplier_person_id=supplier, valid_from=date.today() + timedelta(days=30),
+                valid_to=date.today() + timedelta(days=120),
+                items=[{"description": "Reboco", "unit_of_measure": "M2", "quantity": "5", "material_unit_price": "1", "labor_unit_price": "1"}]), uuid4())
+            later = await service.release(company_id, later["id"], uuid4())
+            legacy = ConstructionMeasurement(id=uuid4(), company_id=company_id, project_id=project_id, code="M2",
+                subcontract_id=contract["id"], competence_date=None, measured_amount=Decimal("0"), gross_amount=Decimal("0"),
+                retentions_amount=Decimal("0"), due_date=date.today(), supplier_person_id=supplier, status="draft",
+                retention_details=[])
+            session.add(legacy)
+            await session.commit()
+            legacy_id = legacy.id
+            with pytest.raises(ConstructionDomainError) as missing:
+                await service.projects.update_measurement(company_id=company_id, measurement_id=legacy_id,
+                    request=ConstructionMeasurementUpdate(description="Ajuste"))
+            assert missing.value.error_code == "CONSTRUCTION_MEASUREMENT_COMPETENCE_OUT_OF_CONTRACT"
+            await session.rollback()
+            with pytest.raises(ConstructionDomainError) as switched:
+                await service.projects.update_measurement(company_id=company_id, measurement_id=legacy_id,
+                    request=ConstructionMeasurementUpdate(subcontract_id=later["id"], competence_date=date.today()))
+            assert switched.value.error_code == "CONSTRUCTION_MEASUREMENT_COMPETENCE_OUT_OF_CONTRACT"
+            await session.rollback()
+            moved = await service.projects.update_measurement(company_id=company_id, measurement_id=legacy_id,
+                request=ConstructionMeasurementUpdate(subcontract_id=later["id"], competence_date=date.today() + timedelta(days=40)))
+            assert moved.subcontract_id == later["id"]
+    finally:
+        await cleanup(factory, company_id)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_contract_dnf_covers_approved_contract_measurements_when_totals_match():
+    engine = await create_reachable_engine_or_skip()
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    company_id = uuid4()
+    try:
+        async with factory() as session:
+            service, project, supplier, contract = await setup(session, company_id)
+            project_id = project.id
+            first = await measurement(session, service, company_id, project, supplier, contract, "2", "M1")
+            second = await measurement(session, service, company_id, project, supplier, contract, "4", "M2")
+            for row, net in ((first, Decimal("10")), (second, Decimal("20"))):
+                row.status, row.net_amount = "approved", net
+            await session.commit()
+            document_id = uuid4()
+            client = service.projects.erp_client
+            client.check_shared_payable.return_value = {"accounts_payable_document_id": str(document_id),
+                "accounts_payable_status": "OPEN", "person_id": str(supplier), "total_amount": "30.00"}
+
+            with pytest.raises(ConstructionDomainError) as mismatch:
+                await service.projects.link_shared_payable(company_id=company_id, project_id=project_id,
+                    payable_document_id=document_id, measurement_ids=[first.id], subcontract_id=contract["id"])
+            assert mismatch.value.error_code == "CONSTRUCTION_MEASUREMENT_SHARED_TOTAL_MISMATCH"
+            with pytest.raises(ConstructionDomainError) as zero_mode:
+                await service.projects.link_shared_payable(company_id=company_id, project_id=project_id,
+                    payable_document_id=document_id, measurement_ids=[first.id, second.id])
+            assert zero_mode.value.error_code == "CONSTRUCTION_MEASUREMENT_SHARED_NOT_ZERO"
+
+            linked = await service.projects.link_shared_payable(company_id=company_id, project_id=project_id,
+                payable_document_id=document_id, measurement_ids=[first.id, second.id], subcontract_id=contract["id"])
+            assert linked == 2
+            assert first.external_accounts_payable_id == document_id and first.external_accounts_payable_shared
+    finally:
+        await cleanup(factory, company_id)
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_global_contract_groups_zero_value_orders_and_limits_dnfs_to_its_total():
+    engine = await create_reachable_engine_or_skip()
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    company_id = uuid4()
+    try:
+        async with factory() as session:
+            service, project, supplier, _ = await setup(session, company_id)
+            project_id = project.id
+            created = await service.save(company_id, project_id, SubcontractRequest(code="CT-G", title="Empreitada global",
+                supplier_person_id=supplier, valid_from=date.today(), valid_to=date.today() + timedelta(days=60),
+                pricing_mode="GLOBAL", global_amount="100.00", items=[]), uuid4())
+            contract = await service.release(company_id, created["id"], uuid4())
+            assert contract["pricing_mode"] == "GLOBAL" and contract["remaining_amount"] == "100.00"
+            orders = []
+            for code in ("OS-1", "OS-2"):
+                row = ConstructionMeasurement(id=uuid4(), company_id=company_id, project_id=project_id, code=code,
+                    measured_amount=Decimal("0"), gross_amount=Decimal("0"), net_amount=Decimal("0"),
+                    retentions_amount=Decimal("0"), due_date=date.today(), supplier_person_id=supplier,
+                    status="approved", retention_details=[])
+                session.add(row)
+                orders.append(row)
+            valued = ConstructionMeasurement(id=uuid4(), company_id=company_id, project_id=project_id, code="OS-3",
+                measured_amount=Decimal("10"), gross_amount=Decimal("10"), net_amount=Decimal("10"),
+                retentions_amount=Decimal("0"), due_date=date.today(), supplier_person_id=supplier,
+                status="approved", retention_details=[])
+            session.add(valued)
+            await session.commit()
+            order_ids, valued_id = [row.id for row in orders], valued.id
+
+            with pytest.raises(ConstructionDomainError, match="tem valor próprio"):
+                await service.link_orders(company_id, contract["id"], [valued_id], uuid4())
+            await session.rollback()
+            assert await service.link_orders(company_id, contract["id"], order_ids, uuid4()) == 2
+
+            first_dnf, second_dnf = uuid4(), uuid4()
+            client = service.projects.erp_client
+            client.check_shared_payable.return_value = {"accounts_payable_document_id": str(first_dnf),
+                "accounts_payable_status": "OPEN", "person_id": str(supplier), "total_amount": "60.00"}
+            await service.projects.link_shared_payable(company_id=company_id, project_id=project_id,
+                payable_document_id=first_dnf, measurement_ids=[order_ids[0]], subcontract_id=contract["id"])
+            listed = {row["id"]: row for row in await service.list(company_id, project_id)}
+            assert listed[contract["id"]]["paid_amount"] == "60.00" and listed[contract["id"]]["remaining_amount"] == "40.00"
+
+            client.check_shared_payable.return_value = {"accounts_payable_document_id": str(second_dnf),
+                "accounts_payable_status": "OPEN", "person_id": str(supplier), "total_amount": "50.00"}
+            with pytest.raises(ConstructionDomainError, match="passa do saldo"):
+                await service.projects.link_shared_payable(company_id=company_id, project_id=project_id,
+                    payable_document_id=second_dnf, measurement_ids=[order_ids[1]], subcontract_id=contract["id"])
+            await session.rollback()
+
+            with pytest.raises(ConstructionDomainError, match="Remova a OS"):
+                await service.unlink_orders(company_id, contract["id"], [order_ids[0]], uuid4())
+            await session.rollback()
+            client.check_shared_payable.return_value = {"accounts_payable_document_id": str(first_dnf),
+                "accounts_payable_status": "OPEN", "person_id": str(supplier), "total_amount": "60.00"}
+            await service.projects.unlink_shared_payable(company_id=company_id, project_id=project_id,
+                payable_document_id=first_dnf, measurement_ids=[order_ids[0]])
+            listed = {row["id"]: row for row in await service.list(company_id, project_id)}
+            assert listed[contract["id"]]["remaining_amount"] == "100.00"
+            payable = await session.scalar(select(ConstructionSubcontractPayable).where(
+                ConstructionSubcontractPayable.company_id == company_id))
+            assert payable.status == "REMOVED"
     finally:
         await cleanup(factory, company_id)
         await engine.dispose()

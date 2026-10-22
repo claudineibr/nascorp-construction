@@ -8,7 +8,7 @@ from app.domain.exceptions import ConstructionDomainError
 from app.domain.permissions import ConstructionFeature, PermissionAction
 from app.domain.services.subcontract_service import SubcontractService
 from app.presentation.routes.construction_projects import get_project_service
-from app.schemas.construction.subcontract import SubcontractRequest, SubcontractDirectBillRequest, SubcontractDeductionRequest, SubcontractReasonRequest
+from app.schemas.construction.subcontract import SubcontractRequest, SubcontractDirectBillRequest, SubcontractDeductionRequest, SubcontractOrdersRequest, SubcontractReasonRequest
 
 
 router = APIRouter(prefix="/construction", tags=["construction-subcontracts"])
@@ -70,6 +70,37 @@ async def release_contract(contract_id: UUID,
     service: SubcontractService = Depends(get_subcontracts)):
     try:
         return await service.release(ctx.company_id, contract_id, ctx.user_id)
+    except ConstructionDomainError as exc:
+        raise error(exc) from exc
+
+
+@router.get("/subcontracts/{contract_id}/orders")
+async def global_orders(contract_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
+    service: SubcontractService = Depends(get_subcontracts)):
+    try:
+        items = await service.list_orders(ctx.company_id, contract_id)
+        return {"items": items, "total": len(items)}
+    except ConstructionDomainError as exc:
+        raise error(exc) from exc
+
+
+@router.post("/subcontracts/{contract_id}/orders")
+async def link_global_orders(contract_id: UUID, request: SubcontractOrdersRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: SubcontractService = Depends(get_subcontracts)):
+    try:
+        return {"affected": await service.link_orders(ctx.company_id, contract_id, request.measurement_ids, ctx.user_id)}
+    except ConstructionDomainError as exc:
+        raise error(exc) from exc
+
+
+@router.post("/subcontracts/{contract_id}/orders/remove")
+async def unlink_global_orders(contract_id: UUID, request: SubcontractOrdersRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.UPDATE)),
+    service: SubcontractService = Depends(get_subcontracts)):
+    try:
+        return {"affected": await service.unlink_orders(ctx.company_id, contract_id, request.measurement_ids, ctx.user_id)}
     except ConstructionDomainError as exc:
         raise error(exc) from exc
 

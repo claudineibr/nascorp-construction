@@ -4,6 +4,13 @@ export const measurementPurpose = (measurement) => measurement.subcontractId
 
 export const measurementEditable = (measurement) => ["draft", "rejected"].includes(measurement.status)
 
+export const measurementCancelled = (measurement) => measurement.status === "rejected" && !measurement.rejectedAt
+
+export const measurementItemLabel = (item) =>
+  item.serviceTemplateName && item.serviceTemplateName.toLowerCase() !== item.description.toLowerCase()
+    ? `${item.serviceTemplateName} · ${item.description}`
+    : item.description
+
 export const inspectionEligibleForBulk = (inspection) => !inspection.roundsCount && !inspection.requiresComment
 
 export const measurementInspectionBlockers = (measurement, items, unit = null) => {
@@ -14,7 +21,7 @@ export const measurementInspectionBlockers = (measurement, items, unit = null) =
   if (!measurement.supplierPersonId) blockers.push("Informe o fornecedor antes de enviar.")
   if (!items.length) blockers.push("Inclua os serviços executados e suas inspeções.")
   const missing = items.filter((item) => !item.inspections?.length)
-  if (missing.length) blockers.push(`Serviços sem FVS: ${missing.map((item) => item.description).join(", ")}.`)
+  if (missing.length) blockers.push(`Serviços sem FVS: ${missing.map(measurementItemLabel).join(", ")}.`)
   if (items.some((item) => item.inspections?.some((line) => !line.roundsCount || line.status === "non_compliant"))) {
     blockers.push("Conclua as verificações pendentes e reinspeções.")
   }

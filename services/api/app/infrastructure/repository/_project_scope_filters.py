@@ -49,7 +49,7 @@ from app.infrastructure.database.models import (
     ConstructionUnitPaymentSource,
     ConstructionUnitSale,
 )
-from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction
+from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction, ConstructionSubcontractPayable
 
 # Tabelas que chegam na obra por um salto de chave estrangeira: (pai, coluna).
 # A recursão para nas cinco que têm `project_id` -- e em `ConstructionProject`,
@@ -67,6 +67,7 @@ _CAMINHO = {
     ConstructionSubcontractConsumption: (ConstructionMeasurement, "measurement_id"),
     ConstructionSubcontractDirectBill: (ConstructionSubcontract, "contract_id"),
     ConstructionSubcontractDeduction: (ConstructionMeasurement, "measurement_id"),
+    ConstructionSubcontractPayable: (ConstructionSubcontract, "contract_id"),
     ConstructionUnitPaymentSource: (ConstructionUnit, "unit_id"),
     ConstructionUnitDocumentation: (ConstructionUnit, "unit_id"),
     ConstructionUnitCommission: (ConstructionUnit, "unit_id"),

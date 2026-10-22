@@ -225,6 +225,7 @@ const toMeasurementItemView = (item) => ({
   measurementId: item.measurement_id,
   sequenceNumber: item.sequence_number,
   serviceTemplateId: item.service_template_id ?? null,
+  serviceTemplateName: item.service_template_name ?? null,
   productId: item.product_id ?? null,
   productDescription: item.product_description ?? "",
   description: item.description,
@@ -338,6 +339,7 @@ const toMeasurementView = (measurement) => ({
   purpose: measurement.purpose ?? (measurement.subcontract_id ? "CONTRACT" : Number(measurement.gross_amount ?? measurement.measured_amount ?? 0) === 0 ? "CONTROL" : "SERVICE"),
   subcontractId: measurement.subcontract_id ?? null,
   subcontractVersionId: measurement.subcontract_version_id ?? null,
+  globalContractId: measurement.global_contract_id ?? null,
   retentionDetails: measurement.retention_details ?? [],
   escrowAmount: measurement.escrow_amount ?? "0",
   escrowDueDate: measurement.escrow_due_date ?? null,
@@ -631,6 +633,7 @@ const toMeasurementItemPayload = (itemData = {}) => ({
   start_date: toNullableString(itemData.startDate),
   end_date: toNullableString(itemData.endDate),
   inspector_person_id: toNullableString(itemData.inspectorPersonId),
+  ...(itemData.confirmUnitDuplicate ? { confirm_unit_duplicate: true } : {}),
 })
 
 const toSalePaymentSourcePayload = (paymentSource = {}) => ({
@@ -682,8 +685,10 @@ async function requestJson({ bridge, path, method = "GET", body = null, baseUrl 
   if (!response.ok) {
     const fallback = "Não foi possível concluir a requisição do módulo de obras."
     let errorMessage = fallback
+    let errorCode = null
     try {
       const payload = await response.json()
+      errorCode = payload?.detail?.error_code ?? null
       const payloadDetails = payload?.details
       errorMessage =
         payload?.detail?.message ||
@@ -704,7 +709,9 @@ async function requestJson({ bridge, path, method = "GET", body = null, baseUrl 
     } catch {
       errorMessage = fallback
     }
-    throw new Error(errorMessage)
+    const requestError = new Error(errorMessage)
+    requestError.errorCode = errorCode
+    throw requestError
   }
 
   if (response.status === 204) {
@@ -2128,6 +2135,9 @@ const toPayableDocumentView = (item) => ({
   totalAmount: item.total_amount ?? null,
   status: item.status ?? "",
   coveredCount: Number(item.covered_count ?? 0),
+  coveredAmount: Number(item.covered_amount ?? 0),
+  contractCoveredCount: Number(item.contract_covered_count ?? 0),
+  netAmount: item.net_amount ?? item.total_amount ?? null,
   personId: item.person_id ?? null,
   personName: item.person_name ?? "",
 })
@@ -2142,6 +2152,7 @@ const zeroValueQuery = (filters = {}) => {
     dueFrom: "due_from",
     dueTo: "due_to",
     search: "search",
+    subcontractId: "subcontract_id",
   }
   for (const [key, param] of Object.entries(keys)) {
     if (filters[key]) {
@@ -2177,6 +2188,7 @@ export async function listZeroValueMeasurements({ bridge, projectId, filters, pa
       dueDate: item.due_date ?? null,
       competenceDate: item.competence_date ?? null,
       description: item.description ?? "",
+      netAmount: item.net_amount ?? null,
     })),
     total: payload.total ?? 0,
     page: payload.page ?? page,
@@ -2210,12 +2222,12 @@ export async function listSharedPayableCandidates({ bridge, projectId, supplierP
   return (payload.items ?? []).map(toPayableDocumentView)
 }
 
-export async function linkSharedPayable({ bridge, projectId, payableDocumentId, measurementIds }) {
+export async function linkSharedPayable({ bridge, projectId, payableDocumentId, measurementIds, subcontractId = null }) {
   return requestJson({
     bridge,
     path: `/v1/construction/projects/${projectId}/shared-payables/${payableDocumentId}/measurements`,
     method: "POST",
-    body: { measurement_ids: measurementIds },
+    body: { measurement_ids: measurementIds, ...(subcontractId ? { subcontract_id: subcontractId } : {}) },
   })
 }
 

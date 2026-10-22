@@ -48,7 +48,7 @@ from app.domain.events.contracts import EventEnvelope
 from app.domain.services.construction_integration_dispatcher import ConstructionIntegrationDispatchResult
 from app.domain.services.construction_service_template_parser import parse_service_template_spreadsheet
 from app.domain.services.subcontract_service import SubcontractService
-from app.domain.measurement_workflow import assert_measurement_editable, measurement_purpose, resolve_measurement_purpose
+from app.domain.measurement_workflow import assert_measurement_editable, measurement_item_label, measurement_purpose, resolve_measurement_purpose
 from app.domain.unit_commission_status import unit_commission_status
 from app.domain.unit_termination_terms import normalize_termination_terms
 from app.infrastructure.database.models import (
@@ -137,6 +137,11 @@ def _describe_erp_failure(error: Exception) -> str:
 _logger = logging.getLogger(__name__)
 
 SHARED_PAYABLE_BATCH_LIMIT = 1000
+
+
+def _brl(value: Decimal) -> str:
+    formatted = f"{value.quantize(Decimal('0.01')):,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    return f"R$ {formatted}"
 
 class ErpMeasurementClient(Protocol):
     async def list_person_summaries(
@@ -2052,6 +2057,23 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_SCHEDULE_PROJECT_MISMATCH",
             )
 
+        subcontract = None
+        if request.subcontract_id:
+            contracts = SubcontractService(self)
+            subcontract = await contracts.get(company_id, request.subcontract_id)
+            if subcontract.project_id != project_id or subcontract.status != "RELEASED":
+                raise ConstructionInvalidValueError(message="Selecione contrato liberado desta obra.")
+            contracts.assert_itemized(subcontract)
+            if request.supplier_person_id and request.supplier_person_id != subcontract.supplier_person_id:
+                raise ConstructionInvalidValueError(message="O fornecedor da medição precisa corresponder ao contrato.")
+            await self._assert_contract_competence(contracts, subcontract, None, request.competence_date)
+        else:
+            await self._require_company_people(
+                company_id=company_id,
+                actor_user_id=actor_user_id,
+                people={"O fornecedor": request.supplier_person_id},
+            )
+
         code_number = await self.repository.get_next_measurement_code_number(
             company_id=company_id,
             project_id=project_id,
@@ -2068,20 +2090,6 @@ class ConstructionProjectService:
             code,
             sequence_number,
         )
-
-        subcontract = None
-        if request.subcontract_id:
-            subcontract = await SubcontractService(self).get(company_id, request.subcontract_id)
-            if subcontract.project_id != project_id or subcontract.status != "RELEASED":
-                raise ConstructionInvalidValueError(message="Selecione contrato liberado desta obra.")
-            if request.supplier_person_id and request.supplier_person_id != subcontract.supplier_person_id:
-                raise ConstructionInvalidValueError(message="O fornecedor da medição precisa corresponder ao contrato.")
-        else:
-            await self._require_company_people(
-                company_id=company_id,
-                actor_user_id=actor_user_id,
-                people={"O fornecedor": request.supplier_person_id},
-            )
         gross_amount = request.gross_amount or request.measured_amount or Decimal("0")
         retentions_amount = request.retentions_amount or Decimal("0")
         net_amount = request.net_amount or request.measured_amount or (gross_amount - retentions_amount)
@@ -2159,6 +2167,14 @@ class ConstructionProjectService:
             raise ConstructionInvalidValueError(
                 message="Informe o fornecedor da medição antes de vincular um título.",
                 error_code="CONSTRUCTION_MEASUREMENT_SUPPLIER_REQUIRED",
+            )
+        if measurement.subcontract_id is not None:
+            _logger.info(
+                "construction.measurement.payable_link_refused reason=contract measurement_id=%s", measurement.id
+            )
+            raise ConstructionInvalidValueError(
+                message="Medição de contrato é paga pela DNF do contrato: vincule no próprio contrato, na aba Empreitada da obra, em DNF das medições do contrato.",
+                error_code="CONSTRUCTION_MEASUREMENT_CONTRACT_PAID_BY_SUBCONTRACT",
             )
         amount = measurement.net_amount if measurement.net_amount is not None else measurement.measured_amount
         if amount is None or amount <= Decimal("0"):
@@ -2302,16 +2318,20 @@ class ConstructionProjectService:
         return list(result.get("items", []))
 
     async def _shared_payable_measurements(
-        self, *, company_id: UUID, project_id: UUID, measurement_ids: list[UUID]
+        self, *, company_id: UUID, project_id: UUID, measurement_ids: list[UUID], lock: bool = False
     ) -> list[ConstructionMeasurement]:
         await self.get_project(company_id=company_id, project_id=project_id)
         unique_ids = list(dict.fromkeys(measurement_ids))
         measurements = await self.repository.list_measurements_by_ids(
-            company_id=company_id, project_id=project_id, measurement_ids=unique_ids
+            company_id=company_id, project_id=project_id, measurement_ids=unique_ids, lock=lock
         )
         if len(measurements) != len(unique_ids):
             raise ConstructionNotFoundError(resource_name="uma ou mais medições desta obra")
         return measurements
+
+    @staticmethod
+    def _measurement_contract_id(measurement) -> UUID | None:
+        return measurement.subcontract_id or getattr(measurement, "global_contract_id", None)
 
     async def link_shared_payable(
         self,
@@ -2321,25 +2341,55 @@ class ConstructionProjectService:
         payable_document_id: UUID,
         measurement_ids: list[UUID],
         user_id: UUID | None = None,
+        subcontract_id: UUID | None = None,
     ) -> int:
         _logger.info(
-            "construction.measurement.shared_payable_link project_id=%s payable_document_id=%s requested=%s",
+            "construction.measurement.shared_payable_link project_id=%s payable_document_id=%s requested=%s subcontract_id=%s",
             project_id,
             payable_document_id,
             len(measurement_ids),
+            subcontract_id,
         )
+        await self.repository.lock_shared_payable(company_id=company_id, payable_document_id=payable_document_id)
+        contracts = None
+        contract = None
+        if subcontract_id is not None:
+            contracts = SubcontractService(self)
+            contract = await contracts.get(company_id, subcontract_id, True)
+            if contract.project_id != project_id:
+                raise ConstructionNotFoundError(resource_name="o contrato de empreitada desta obra")
         measurements = await self._shared_payable_measurements(
-            company_id=company_id, project_id=project_id, measurement_ids=measurement_ids
+            company_id=company_id, project_id=project_id, measurement_ids=measurement_ids, lock=True
         )
+        global_contract = contract is not None and contract.pricing_mode == "GLOBAL"
         for measurement in measurements:
             amount = measurement.net_amount if measurement.net_amount is not None else measurement.measured_amount
-            if (
+            if contract is not None:
+                belongs = (
+                    getattr(measurement, "global_contract_id", None) == contract.id
+                    if global_contract
+                    else measurement.subcontract_id == contract.id
+                )
+                if (
+                    measurement.status != ConstructionMeasurementStatus.APPROVED
+                    or not belongs
+                    or getattr(measurement, "reversal_pending", False)
+                    or (global_contract and amount is not None and amount > Decimal("0"))
+                ):
+                    raise ConstructionInvalidValueError(
+                        message=f"A OS {measurement.code} não é uma medição aprovada do contrato {contract.code}.",
+                        error_code="CONSTRUCTION_MEASUREMENT_SHARED_NOT_IN_CONTRACT",
+                    )
+            elif (
                 measurement.status != ConstructionMeasurementStatus.APPROVED
-                or measurement.subcontract_id is not None
+                or self._measurement_contract_id(measurement) is not None
                 or (amount is not None and amount > Decimal("0"))
             ):
                 raise ConstructionInvalidValueError(
-                    message=f"A OS {measurement.code} não é uma medição aprovada sem valor: vincule pelo título próprio dela.",
+                    message=(
+                        f"A OS {measurement.code} não é uma OS aprovada sem valor e sem contrato: "
+                        "a OS de contrato é paga pela DNF vinculada no próprio contrato, na aba Empreitada."
+                    ),
                     error_code="CONSTRUCTION_MEASUREMENT_SHARED_NOT_ZERO",
                 )
             if measurement.external_accounts_payable_id is not None and not (
@@ -2361,6 +2411,12 @@ class ConstructionProjectService:
                 message="As OS marcadas são de fornecedores diferentes. Vincule as de um fornecedor por vez.",
                 error_code="CONSTRUCTION_MEASUREMENT_SHARED_OTHER_SUPPLIER",
             )
+        await self._assert_shared_payable_single_contract(
+            company_id=company_id,
+            payable_document_id=payable_document_id,
+            measurements=measurements,
+            contract_id=contract.id if contract is not None else None,
+        )
         supplier_person_id = suppliers.pop()
         payload = await self._erp_request(
             lambda: self.erp_client.check_shared_payable(
@@ -2377,6 +2433,12 @@ class ConstructionProjectService:
                 message="A DNF é de outro fornecedor. Escolha uma DNF do fornecedor das OS.",
                 error_code="CONSTRUCTION_MEASUREMENT_SHARED_OTHER_SUPPLIER",
             )
+        if global_contract:
+            await contracts.register_global_payable(company_id, contract.id, payable_document_id, payload, user_id)
+        elif contract is not None:
+            await self._assert_contract_payable_total(
+                company_id=company_id, payable_document_id=payable_document_id, payload=payload, measurements=measurements
+            )
         linked = 0
         for measurement in measurements:
             if measurement.external_accounts_payable_id is None:
@@ -2392,6 +2454,53 @@ class ConstructionProjectService:
         )
         return linked
 
+    async def _assert_shared_payable_single_contract(
+        self, *, company_id, payable_document_id, measurements, contract_id
+    ) -> None:
+        covered_contracts = await self.repository.shared_payable_contract_ids(
+            company_id=company_id,
+            payable_document_id=payable_document_id,
+            exclude_measurement_ids=[measurement.id for measurement in measurements],
+        )
+        if covered_contracts and covered_contracts != {contract_id}:
+            _logger.info(
+                f"[construction] shared_payable: mixed_contracts payable_document_id={payable_document_id} "
+                f"contract_id={contract_id}"
+            )
+            raise ConstructionInvalidValueError(
+                message=(
+                    "Esta DNF já paga OS de outro contrato ou OS sem contrato. "
+                    "Uma DNF paga OS de um contrato só, ou só OS sem contrato."
+                ),
+                error_code="CONSTRUCTION_MEASUREMENT_SHARED_MIXED_CONTRACTS",
+            )
+
+    async def _assert_contract_payable_total(self, *, company_id, payable_document_id, payload, measurements) -> None:
+        new_ids = {measurement.id for measurement in measurements}
+        already_linked = await self.repository.shared_payable_net_total(
+            company_id=company_id, payable_document_id=payable_document_id, exclude_measurement_ids=list(new_ids)
+        )
+        covered = already_linked + sum(
+            (
+                measurement.net_amount if measurement.net_amount is not None else (measurement.measured_amount or Decimal("0"))
+                for measurement in measurements
+            ),
+            Decimal("0"),
+        )
+        document_net = Decimal(str(payload.get("net_amount") or payload.get("total_amount") or "0"))
+        if abs(covered - document_net) > Decimal("0.01"):
+            _logger.info(
+                f"[construction] shared_payable: contract_total_mismatch payable_document_id={payable_document_id} "
+                f"covered={covered} document_net={document_net}"
+            )
+            raise ConstructionInvalidValueError(
+                message=(
+                    f"A soma dos líquidos das OS ({_brl(covered)}) precisa ser igual ao líquido da DNF "
+                    f"({_brl(document_net)}, valor menos os tributos retidos)."
+                ),
+                error_code="CONSTRUCTION_MEASUREMENT_SHARED_TOTAL_MISMATCH",
+            )
+
     async def unlink_shared_payable(
         self,
         *,
@@ -2399,9 +2508,11 @@ class ConstructionProjectService:
         project_id: UUID,
         payable_document_id: UUID,
         measurement_ids: list[UUID],
+        user_id: UUID | None = None,
     ) -> int:
+        await self.repository.lock_shared_payable(company_id=company_id, payable_document_id=payable_document_id)
         measurements = await self._shared_payable_measurements(
-            company_id=company_id, project_id=project_id, measurement_ids=measurement_ids
+            company_id=company_id, project_id=project_id, measurement_ids=measurement_ids, lock=True
         )
         for measurement in measurements:
             if measurement.external_accounts_payable_id != payable_document_id or not measurement.external_accounts_payable_shared:
@@ -2409,10 +2520,45 @@ class ConstructionProjectService:
                     message=f"A OS {measurement.code} não está vinculada a esta DNF da empreitada.",
                     error_code="CONSTRUCTION_MEASUREMENT_SHARED_NOT_IN_PAYABLE",
                 )
+        contract_measurements = [m for m in measurements if self._measurement_contract_id(m) is not None]
+        if contract_measurements:
+            try:
+                payload = await self._erp_request(
+                    lambda: self.erp_client.check_shared_payable(
+                        company_id=company_id,
+                        project_id=project_id,
+                        user_id=user_id,
+                        payable_document_id=payable_document_id,
+                        supplier_person_id=contract_measurements[0].supplier_person_id,
+                    ),
+                    fallback_message="Não foi possível conferir a DNF no ERP.",
+                )
+            except ConstructionDomainError as check_error:
+                if check_error.status_code >= 500:
+                    raise
+                _logger.info(
+                    f"[construction] shared_payable: unlink_without_active_payable payable_document_id={payable_document_id} "
+                    f"reason={check_error.message}"
+                )
+                payload = {}
+            if payload.get("accounts_payable_status") in {"PAID", "PARTIALLY_PAID"}:
+                _logger.info(
+                    f"[construction] shared_payable: unlink_refused_paid payable_document_id={payable_document_id}"
+                )
+                raise ConstructionInvalidValueError(
+                    message="A DNF já tem pagamento: estorne os pagamentos no Contas a Pagar antes de tirar OS de contrato dela.",
+                    error_code="CONSTRUCTION_MEASUREMENT_SHARED_PAYABLE_PAID",
+                )
         for measurement in measurements:
             measurement.external_accounts_payable_id = None
             measurement.external_accounts_payable_status = None
             measurement.external_accounts_payable_shared = False
+        global_contract_ids = {getattr(m, "global_contract_id", None) for m in measurements} - {None}
+        if global_contract_ids:
+            await self.repository.flush()
+            contracts = SubcontractService(self)
+            for global_contract_id in global_contract_ids:
+                await contracts.release_global_payable_if_empty(company_id, global_contract_id, payable_document_id)
         await self.repository.commit()
         _logger.info(
             "construction.measurement.shared_payable_unlinked project_id=%s payable_document_id=%s count=%s",
@@ -2435,7 +2581,15 @@ class ConstructionProjectService:
 
         updates = request.model_dump(exclude_unset=True)
         if "subcontract_id" in updates or getattr(measurement, "subcontract_id", None):
-            await SubcontractService(self).bind_parent(measurement, updates)
+            contracts = SubcontractService(self)
+            contract = await contracts.bind_parent(measurement, updates)
+            if contract is not None:
+                await self._assert_contract_competence(
+                    contracts,
+                    contract,
+                    measurement.subcontract_version_id,
+                    updates.get("competence_date", measurement.competence_date),
+                )
         if (
             updates.get("subcontract_id", getattr(measurement, "subcontract_id", None)) is None
             and "supplier_person_id" in updates
@@ -2496,6 +2650,11 @@ class ConstructionProjectService:
         purpose = resolve_measurement_purpose(updates.get("purpose") or ("CONTRACT" if contract_id else "SERVICE" if measurement.subcontract_id else measurement_purpose(measurement)), contract_id, gross_amount)
         if purpose == "CONTROL" and any((gross_amount, retentions_amount, net_amount)):
             raise ConstructionInvalidValueError(message="OS de controle não tem valor próprio nem retenções.")
+        if getattr(measurement, "global_contract_id", None) and purpose != "CONTROL":
+            raise ConstructionInvalidValueError(
+                message="A OS está num contrato por valor global e continua sem valor próprio. Tire-a do contrato antes de mudar a finalidade.",
+                error_code="CONSTRUCTION_MEASUREMENT_IN_GLOBAL_CONTRACT",
+            )
         if purpose != measurement_purpose(measurement):
             items = await self.repository.list_measurement_items(company_id=company_id, measurement_id=measurement_id)
             if items:
@@ -2538,11 +2697,14 @@ class ConstructionProjectService:
             contract = await contracts.get(measurement.company_id, measurement.subcontract_id)
             if contract.status != "RELEASED":
                 raise ConstructionInvalidValueError(message="Libere a planilha do contrato antes de enviar a medição.")
-            version = await contracts.repository.version_by_id(measurement.company_id, contract.id, measurement.subcontract_version_id) if measurement.subcontract_version_id else await contracts.repository.version(measurement.company_id, contract.id, contract.released_version)
-            if version is None or measurement.competence_date is None or not (
-                date.fromisoformat(version.sheet["valid_from"]) <= measurement.competence_date <= date.fromisoformat(version.sheet["valid_to"])
-            ):
-                raise ConstructionInvalidValueError(message="Informe competência dentro da vigência do contrato antes de enviar.")
+            await self._assert_contract_competence(
+                contracts, contract, measurement.subcontract_version_id, measurement.competence_date)
+
+    async def _assert_contract_competence(self, contracts, contract, version_id, competence_date):
+        version = await contracts.measurement_version(contract.company_id, contract, version_id)
+        if version is None:
+            raise ConstructionInvalidValueError(message="Libere a planilha do contrato antes de medir.")
+        contracts.assert_competence(version, competence_date)
 
     async def submit_measurement(
         self,
@@ -2579,6 +2741,13 @@ class ConstructionProjectService:
         reason: str | None = None,
         actor_user_id: UUID | None = None,
     ) -> ConstructionMeasurement:
+        normalized_reason = (reason or "").strip()
+        if not normalized_reason:
+            _logger.info(f"[construction] reject_measurement: missing_reason measurement_id={measurement_id}")
+            raise ConstructionInvalidValueError(
+                message="Informe o motivo da rejeição.",
+                error_code="CONSTRUCTION_MEASUREMENT_REJECTION_REASON_REQUIRED",
+            )
         measurement = await self.repository.lock_measurement(company_id, measurement_id)
         if measurement is None:
             raise ConstructionNotFoundError(resource_name="a medição")
@@ -2587,9 +2756,17 @@ class ConstructionProjectService:
                 message="Medição aprovada não pode ser rejeitada.",
                 error_code="CONSTRUCTION_MEASUREMENT_LOCKED",
             )
+        if measurement.status not in {ConstructionMeasurementStatus.SUBMITTED, ConstructionMeasurementStatus.IN_APPROVAL}:
+            _logger.info(
+                f"[construction] reject_measurement: not_submitted measurement_id={measurement_id} status={measurement.status}"
+            )
+            raise ConstructionInvalidValueError(
+                message="Só medição enviada ou em aprovação pode ser rejeitada.",
+                error_code="CONSTRUCTION_MEASUREMENT_REJECT_REQUIRES_SUBMISSION",
+            )
 
         measurement.status = ConstructionMeasurementStatus.REJECTED
-        measurement.rejection_reason = reason.strip() if reason else None
+        measurement.rejection_reason = normalized_reason
         measurement.rejected_by_user_id = actor_user_id
         measurement.rejected_at = datetime.now(tz=UTC)
         await self.repository.commit()
@@ -2766,22 +2943,20 @@ class ConstructionProjectService:
                 error_code="CONSTRUCTION_MEASUREMENT_ITEM_DESCRIPTION_REQUIRED",
             )
 
-        existing_items = await self.repository.list_measurement_items(
+        await self._assert_measurement_item_unique(
             company_id=company_id,
-            measurement_id=measurement_id,
+            measurement=measurement,
+            service_template=service_template,
+            description=description,
+            subcontract_item_id=request.subcontract_item_id if contract_item else None,
         )
-        for existing_item in existing_items:
-            same_template = (
-                service_template is not None and existing_item.service_template_id == service_template.id
+        if contract_item is None and not request.confirm_unit_duplicate:
+            await self._warn_unit_service_duplicate(
+                company_id=company_id,
+                measurement=measurement,
+                service_template=service_template,
+                description=description,
             )
-            duplicate = existing_item.subcontract_item_id == request.subcontract_item_id if contract_item else (
-                same_template or existing_item.description.casefold() == description.casefold()
-            )
-            if duplicate:
-                raise ConstructionInvalidValueError(
-                    message=f"O serviço {description} já faz parte desta medição.",
-                    error_code="CONSTRUCTION_MEASUREMENT_ITEM_DUPLICATE_SERVICE",
-                )
 
         await self._require_company_people(
             company_id=company_id,
@@ -2862,6 +3037,61 @@ class ConstructionProjectService:
             await self.repository.commit()
         return await self.get_measurement_item(company_id=company_id, item_id=item.id)
 
+    async def _assert_measurement_item_unique(
+        self, *, company_id, measurement, service_template, description, subcontract_item_id, exclude_item_id=None
+    ) -> None:
+        existing_items = await self.repository.list_measurement_items(
+            company_id=company_id,
+            measurement_id=measurement.id,
+        )
+        for existing_item in existing_items:
+            if existing_item.id == exclude_item_id:
+                continue
+            if subcontract_item_id is not None:
+                duplicate = existing_item.subcontract_item_id == subcontract_item_id
+            elif service_template is not None:
+                duplicate = existing_item.service_template_id == service_template.id
+            else:
+                duplicate = (
+                    existing_item.service_template_id is None
+                    and existing_item.description.casefold() == description.casefold()
+                )
+            if duplicate:
+                service_name = service_template.name if service_template is not None else description
+                _logger.info(
+                    f"[construction] measurement_item: duplicate_in_measurement measurement_id={measurement.id} "
+                    f"service={service_name}"
+                )
+                raise ConstructionInvalidValueError(
+                    message=f"O serviço {service_name} já faz parte desta medição.",
+                    error_code="CONSTRUCTION_MEASUREMENT_ITEM_DUPLICATE_SERVICE",
+                )
+
+    async def _warn_unit_service_duplicate(self, *, company_id, measurement, service_template, description) -> None:
+        if not measurement.unit_id:
+            return
+        order = await self.repository.find_unit_order_with_service(
+            company_id=company_id,
+            unit_id=measurement.unit_id,
+            exclude_measurement_id=measurement.id,
+            service_template_id=service_template.id if service_template is not None else None,
+            description=description,
+        )
+        if order is None:
+            return
+        service_name = service_template.name if service_template is not None else description
+        _logger.info(
+            f"[construction] measurement_item: duplicate_in_unit measurement_id={measurement.id} "
+            f"unit_id={measurement.unit_id} other_measurement_id={order.id}"
+        )
+        raise ConstructionInvalidValueError(
+            message=(
+                f"O serviço {service_name} já está lançado nesta unidade na OS nº "
+                f"{order.sequence_number or '-'} ({order.code}). Confirme para incluir mesmo assim."
+            ),
+            error_code="CONSTRUCTION_MEASUREMENT_ITEM_DUPLICATE_IN_UNIT",
+        )
+
     async def create_measurement_items(self, company_id, measurement_id, requests, actor_user_id):
         if not requests or len(requests) > 100:
             raise ConstructionInvalidValueError(message="Envie entre 1 e 100 itens por vez.")
@@ -2896,6 +3126,7 @@ class ConstructionProjectService:
         )
 
         updates = request.model_dump(exclude_unset=True)
+        confirm_unit_duplicate = updates.pop("confirm_unit_duplicate", False)
         if updates.get("inspector_person_id") != item.inspector_person_id:
             await self._require_company_people(
                 company_id=company_id,
@@ -2908,8 +3139,38 @@ class ConstructionProjectService:
                 actor_user_id=actor_user_id,
                 product_ids=[updates.get("product_id")],
             )
-        if "description" in updates and updates["description"]:
-            updates["description"] = updates["description"].strip()
+        if "description" in updates:
+            description = (updates["description"] or "").strip()
+            service_template = None
+            if item.service_template_id is not None:
+                service_template = await self.repository.get_service_template(
+                    company_id=company_id,
+                    service_template_id=item.service_template_id,
+                )
+            if not description and service_template is not None:
+                description = service_template.name
+            if not description:
+                raise ConstructionInvalidValueError(
+                    message="O item da medição precisa de uma descrição ou de um serviço do catálogo.",
+                    error_code="CONSTRUCTION_MEASUREMENT_ITEM_DESCRIPTION_REQUIRED",
+                )
+            if service_template is None and not item.subcontract_item_id and description.casefold() != item.description.casefold():
+                await self._assert_measurement_item_unique(
+                    company_id=company_id,
+                    measurement=measurement,
+                    service_template=None,
+                    description=description,
+                    subcontract_item_id=None,
+                    exclude_item_id=item.id,
+                )
+                if not confirm_unit_duplicate:
+                    await self._warn_unit_service_duplicate(
+                        company_id=company_id,
+                        measurement=measurement,
+                        service_template=None,
+                        description=description,
+                    )
+            updates["description"] = description
 
         if "product_description" in updates:
             updates["product_description"] = (updates["product_description"] or "").strip() or None
@@ -3077,6 +3338,23 @@ class ConstructionProjectService:
         inspector_person_id = (
             request.inspector_person_id or inspection.inspector_person_id or item.inspector_person_id
         )
+        if request.status != ConstructionInspectionStatus.WAIVED:
+            inspector_person_id = request.inspector_person_id or actor_person_id
+            if actor_person_id is None or inspector_person_id != actor_person_id:
+                _logger.info(
+                    f"[construction] verify_inspection: inspector_mismatch inspection_id={inspection_id} "
+                    f"inspector_person_id={inspector_person_id} actor_person_id={actor_person_id}"
+                )
+                raise ConstructionInvalidValueError(
+                    message=(
+                        "Somente o inspetor desta rodada registra o parecer. "
+                        "Escolha você como inspetor da rodada ou entre com o usuário do inspetor."
+                        if actor_person_id
+                        else "Seu usuário não está vinculado a uma pessoa do cadastro; "
+                        "peça ao administrador para vinculá-lo antes de registrar o parecer da FVS."
+                    ),
+                    error_code="CONSTRUCTION_INSPECTION_INSPECTOR_MISMATCH",
+                )
         if request.inspector_person_id not in {inspection.inspector_person_id, item.inspector_person_id}:
             await self._require_company_people(
                 company_id=company_id,
@@ -4407,7 +4685,11 @@ class ConstructionProjectService:
         measurement = await self.get_measurement(company_id=company_id, measurement_id=measurement_id)
         if measurement.subcontract_id and sum((item.amount for item in items), Decimal("0")) <= 0:
             raise ConstructionInvalidValueError(message="A medição contratual precisa de itens e valor positivo.")
-        missing = [item.description for item in items if not item.inspections]
+        missing = [
+            measurement_item_label(item.description, getattr(item, "service_template_name", None))
+            for item in items
+            if not item.inspections
+        ]
         if missing:
             raise ConstructionInvalidValueError(
                 message=f"Cadastre a FVS dos serviços sem inspeção: {', '.join(missing[:5])}.",

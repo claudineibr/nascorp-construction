@@ -23,9 +23,13 @@ class ConstructionSubcontract(SubcontractRecord, Base):
         CheckConstraint("status IN ('DRAFT','RELEASED','CLOSED','CANCELED')", name="ck_subcontract_status"),
         CheckConstraint("valid_to >= valid_from", name="ck_subcontract_dates"),
         CheckConstraint("retention_rate BETWEEN 0 AND 100 AND escrow_rate BETWEEN 0 AND 100", name="ck_subcontract_rates"),
+        CheckConstraint("pricing_mode IN ('ITEMIZED','GLOBAL')", name="ck_subcontract_pricing_mode"),
+        CheckConstraint("pricing_mode <> 'GLOBAL' OR global_amount > 0", name="ck_subcontract_global_amount"),
         {"schema": CONSTRUCTION_SCHEMA},
     )
     project_id: Mapped[UUID] = mapped_column(ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_projects.id"), index=True)
+    pricing_mode: Mapped[str] = mapped_column(String(20), default="ITEMIZED", server_default="ITEMIZED")
+    global_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
     supplier_person_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
     code: Mapped[str] = mapped_column(String(50))
     title: Mapped[str] = mapped_column(String(255))
@@ -108,6 +112,21 @@ class ConstructionSubcontractDirectBill(SubcontractRecord, Base):
     verified_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
     document_snapshot: Mapped[dict] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(String(20), default="ACTIVE", server_default="ACTIVE")
+
+
+class ConstructionSubcontractPayable(SubcontractRecord, Base):
+    __tablename__ = "construction_subcontract_payables"
+    __table_args__ = (
+        Index("uq_subcontract_payable_document", "company_id", "payable_document_id", unique=True, postgresql_where=text("status='ACTIVE'")),
+        CheckConstraint("amount > 0 AND status IN ('ACTIVE','REMOVED')", name="ck_subcontract_payable"),
+        {"schema": CONSTRUCTION_SCHEMA},
+    )
+    contract_id: Mapped[UUID] = mapped_column(ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_subcontracts.id"), index=True)
+    payable_document_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    document_snapshot: Mapped[dict] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE", server_default="ACTIVE")
+    linked_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True))
 
 
 class ConstructionSubcontractDeduction(SubcontractRecord, Base):

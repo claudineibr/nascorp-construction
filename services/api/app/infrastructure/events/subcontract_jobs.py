@@ -37,6 +37,7 @@ async def relay_subcontract_measurements():
                         measurement, envelope.payload.get("user_id"))
                     measurement.status, measurement.reversal_pending = "rejected", False
                     measurement.external_accounts_payable_id = None
+                    measurement.external_accounts_payable_shared = False
                     measurement.rejection_reason = envelope.payload["reason"]
                 await events.mark_published(row)
                 row.lease_owner, row.lease_until = None, None

@@ -1,13 +1,18 @@
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 from uuid import UUID, uuid4
 
 from app.domain.exceptions import ConstructionDomainError, ConstructionNotFoundError
-from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction
+from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction, ConstructionSubcontractPayable
 from app.infrastructure.repository.subcontract_repository import SubcontractRepository
 
 _logger = logging.getLogger(__name__)
+
+
+def brl(value):
+    formatted = f"{money(value):,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+    return f"R$ {formatted}"
 
 
 def money(value):
@@ -39,14 +44,23 @@ class SubcontractService:
             "supplier_person_id": row.supplier_person_id, "valid_from": row.valid_from, "valid_to": row.valid_to,
             "status": row.status, "retention_rate": str(row.retention_rate), "escrow_rate": str(row.escrow_rate),
             "escrow_due_date": row.escrow_due_date, "released_version": row.released_version, "notes": row.notes,
-            "closure_reason": row.closure_reason}
+            "closure_reason": row.closure_reason, "pricing_mode": row.pricing_mode,
+            "global_amount": str(row.global_amount) if row.global_amount is not None else None}
+
+    @staticmethod
+    def amounts(row, totals, paid):
+        if row.pricing_mode == "GLOBAL":
+            paid_amount = money(Decimal(paid.get(row.id, 0)))
+            return {"total_amount": str(money(row.global_amount)), "paid_amount": str(paid_amount),
+                "remaining_amount": str(money(row.global_amount - paid_amount))}
+        return {"total_amount": str(money(Decimal(totals.get(row.id, (0, 0))[0]))),
+            "remaining_amount": str(money(Decimal(totals.get(row.id, (0, 0))[1])))}
 
     async def list(self, company_id, project_id):
         rows = await self.repository.list(company_id, project_id)
         totals = await self.repository.item_totals(company_id, [row.id for row in rows])
-        return [{**self.header(row),
-            "total_amount": str(money(Decimal(totals.get(row.id, (0, 0))[0]))),
-            "remaining_amount": str(money(Decimal(totals.get(row.id, (0, 0))[1])))} for row in rows]
+        paid = await self.repository.global_paid_totals(company_id, [row.id for row in rows if row.pricing_mode == "GLOBAL"])
+        return [{**self.header(row), **self.amounts(row, totals, paid)} for row in rows]
 
     async def detail(self, company_id, contract_id, version_id=None):
         row = await self.get(company_id, contract_id)
@@ -62,6 +76,7 @@ class SubcontractService:
                 "consumed_quantity": str(consumed.get(item["id"], Decimal("0"))),
                 "remaining_quantity": str(max(Decimal("0"), Decimal(item["quantity"]) -
                     consumed.get(item["id"], Decimal("0"))))} for item in version.sheet["items"]]}
+        paid = await self.repository.global_paid_totals(company_id, [row.id]) if row.pricing_mode == "GLOBAL" else {}
         return {**self.header(row), "items": [{"id": item.id, "sequence_number": item.sequence_number,
             "product_id": item.product_id, "service_template_id": item.service_template_id,
             "service_template_name": names.get(item.service_template_id),
@@ -71,7 +86,8 @@ class SubcontractService:
             "remaining_quantity": str(item.quantity - item.consumed_quantity), "active": item.active}
             for item in sorted(items, key=lambda item: item.sequence_number)],
             "remaining_amount": str(money(sum(((item.quantity - item.consumed_quantity) *
-                (item.material_unit_price + item.labor_unit_price) for item in items if item.active), Decimal("0"))))}
+                (item.material_unit_price + item.labor_unit_price) for item in items if item.active), Decimal("0")))),
+            **(self.amounts(row, {}, paid) if row.pricing_mode == "GLOBAL" else {})}
 
     async def save(self, company_id, project_id, request, actor_user_id, contract_id=None):
         await self.projects.get_project(company_id=company_id, project_id=project_id)
@@ -97,6 +113,16 @@ class SubcontractService:
             row = await self.get(company_id, contract_id, True)
             if row.project_id != project_id or row.status in {"CLOSED", "CANCELED"}:
                 self.fail("O contrato não pode ser alterado nesta obra ou situação.")
+            if row.pricing_mode != request.pricing_mode and (
+                    row.released_version or await self.repository.has_contract_activity(company_id, row.id)):
+                self.fail("A modalidade não pode mudar depois de liberar o contrato.")
+            if request.pricing_mode == "GLOBAL" and request.global_amount is not None:
+                paid = money(Decimal((await self.repository.global_paid_totals(company_id, [row.id])).get(row.id, 0)))
+                if request.global_amount < paid:
+                    self.fail(f"O valor total não pode ficar abaixo do que já foi pago em DNFs ({brl(paid)}).")
+            if (row.pricing_mode == "GLOBAL" and row.supplier_person_id != request.supplier_person_id
+                    and await self.repository.has_contract_activity(company_id, row.id)):
+                self.fail("O fornecedor não pode mudar depois de vincular OS ou DNF ao contrato.")
         else:
             row = ConstructionSubcontract(id=uuid4(), company_id=company_id, project_id=project_id,
                 code=request.code.strip(), title=request.title.strip(), supplier_person_id=request.supplier_person_id,
@@ -130,8 +156,9 @@ class SubcontractService:
                 self.fail("Descrição e unidade do item são obrigatórias.")
             money(item.quantity * (item.material_unit_price + item.labor_unit_price))
             item.active = True
-        for field in ("code", "title", "supplier_person_id", "valid_from", "valid_to", "retention_rate", "escrow_rate", "escrow_due_date", "notes"):
+        for field in ("code", "title", "supplier_person_id", "valid_from", "valid_to", "retention_rate", "escrow_rate", "escrow_due_date", "notes", "pricing_mode"):
             setattr(row, field, getattr(request, field))
+        row.global_amount = request.global_amount if request.pricing_mode == "GLOBAL" else None
         row.code, row.title, row.status = row.code.strip(), row.title.strip(), "DRAFT"
         if not row.code or not row.title:
             self.fail("Código e título do contrato são obrigatórios.")
@@ -163,7 +190,11 @@ class SubcontractService:
             self.fail("Somente uma planilha em preparação pode ser liberada.")
         detail = await self.detail(company_id, contract_id)
         active = [item for item in detail["items"] if item["active"]]
-        if not active or sum((Decimal(item["quantity"]) * (Decimal(item["material_unit_price"]) +
+        if row.pricing_mode == "GLOBAL":
+            if not row.global_amount or row.global_amount <= 0:
+                self.fail("Informe o valor total do contrato global antes de liberar.")
+            active = []
+        elif not active or sum((Decimal(item["quantity"]) * (Decimal(item["material_unit_price"]) +
             Decimal(item["labor_unit_price"])) for item in active), Decimal("0")) <= 0:
             self.fail("A planilha precisa conter itens ativos com valor positivo.")
         row.released_version += 1
@@ -178,11 +209,120 @@ class SubcontractService:
         await self.session.commit()
         return await self.detail(company_id, contract_id)
 
+    @classmethod
+    def assert_itemized(cls, contract):
+        if contract.pricing_mode == "GLOBAL":
+            cls.fail("Contrato por valor global não recebe medição por quantidade: vincule a OS sem valor no próprio contrato, na aba Empreitada.")
+
+    async def global_contract(self, company_id, contract_id, lock=False):
+        row = await self.get(company_id, contract_id, lock)
+        if row.pricing_mode != "GLOBAL":
+            self.fail("Este contrato não é por valor global.")
+        return row
+
+    async def list_orders(self, company_id, contract_id):
+        contract = await self.global_contract(company_id, contract_id)
+        rows = await self.repository.global_orders(company_id, contract.id)
+        return [{"id": measurement.id, "code": measurement.code, "sequence_number": measurement.sequence_number,
+            "status": measurement.status, "due_date": measurement.due_date, "unit_code": unit_code,
+            "external_accounts_payable_id": measurement.external_accounts_payable_id} for measurement, unit_code in rows]
+
+    async def link_orders(self, company_id, contract_id, measurement_ids, actor_user_id):
+        contract = await self.global_contract(company_id, contract_id, True)
+        if contract.status != "RELEASED":
+            self.fail("Libere o contrato global antes de vincular OS.")
+        measurements = await self.projects._shared_payable_measurements(
+            company_id=company_id, project_id=contract.project_id, measurement_ids=measurement_ids, lock=True)
+        for measurement in measurements:
+            if measurement.global_contract_id == contract.id:
+                continue
+            if measurement.status != "approved" or measurement.reversal_pending:
+                self.fail(f"A OS {measurement.code} precisa estar aprovada para entrar no contrato global.")
+            amount = measurement.net_amount if measurement.net_amount is not None else (measurement.measured_amount or Decimal("0"))
+            if measurement.global_contract_id is not None or measurement.subcontract_id is not None:
+                self.fail(f"A OS {measurement.code} já pertence a outro contrato de empreitada.")
+            if amount > 0:
+                self.fail(f"A OS {measurement.code} tem valor próprio: o contrato global só aceita OS sem valor.")
+            if measurement.external_accounts_payable_id is not None:
+                self.fail(f"A OS {measurement.code} já tem título no ERP.")
+            if measurement.supplier_person_id != contract.supplier_person_id:
+                self.fail(f"A OS {measurement.code} é de outro fornecedor: o contrato global só aceita OS do empreiteiro dele.")
+            if measurement.status == "rejected" and measurement.rejected_at is None:
+                self.fail(f"A OS {measurement.code} está cancelada.")
+        linked = 0
+        for measurement in measurements:
+            if measurement.global_contract_id != contract.id:
+                measurement.global_contract_id = contract.id
+                linked += 1
+        await self.session.commit()
+        _logger.info("construction.subcontract.global_orders_linked contract_id=%s count=%s user_id=%s", contract.id, linked, actor_user_id)
+        return linked
+
+    async def unlink_orders(self, company_id, contract_id, measurement_ids, actor_user_id):
+        contract = await self.global_contract(company_id, contract_id, True)
+        measurements = await self.projects._shared_payable_measurements(
+            company_id=company_id, project_id=contract.project_id, measurement_ids=measurement_ids, lock=True)
+        for measurement in measurements:
+            if measurement.global_contract_id != contract.id:
+                self.fail(f"A OS {measurement.code} não está neste contrato.")
+            if measurement.external_accounts_payable_id is not None:
+                self.fail(f"Remova a OS {measurement.code} da DNF antes de tirá-la do contrato.")
+        for measurement in measurements:
+            measurement.global_contract_id = None
+        await self.session.commit()
+        _logger.info("construction.subcontract.global_orders_unlinked contract_id=%s count=%s user_id=%s", contract.id, len(measurements), actor_user_id)
+        return len(measurements)
+
+    async def register_global_payable(self, company_id, contract_id, payable_document_id, payload, actor_user_id):
+        contract = await self.global_contract(company_id, contract_id, True)
+        if contract.status == "CANCELED":
+            self.fail("O contrato global está cancelado e não recebe DNF.")
+        current = await self.repository.active_global_payable(company_id, payable_document_id)
+        if current is not None:
+            if current.contract_id != contract.id:
+                self.fail("Esta DNF já paga outro contrato global.")
+            return
+        total = money(Decimal(str(payload.get("total_amount") or "0")))
+        if total <= 0:
+            self.fail("A DNF precisa ter valor positivo.")
+        paid = money(Decimal((await self.repository.global_paid_totals(company_id, [contract.id])).get(contract.id, 0)))
+        if paid + total > contract.global_amount:
+            _logger.info("construction.subcontract.global_payable_over_balance contract_id=%s document_id=%s total=%s paid=%s",
+                contract.id, payable_document_id, total, paid)
+            self.fail(f"A DNF ({brl(total)}) passa do saldo do contrato global ({brl(contract.global_amount - paid)}).")
+        self.session.add(ConstructionSubcontractPayable(id=uuid4(), company_id=company_id, contract_id=contract.id,
+            payable_document_id=payable_document_id, amount=total, document_snapshot=payload,
+            linked_by_user_id=actor_user_id))
+
+    async def release_global_payable_if_empty(self, company_id, contract_id, payable_document_id):
+        if await self.repository.global_orders_on_document(company_id, contract_id, payable_document_id):
+            return
+        current = await self.repository.active_global_payable(company_id, payable_document_id)
+        if current is not None and current.contract_id == contract_id:
+            current.status = "REMOVED"
+
+    async def measurement_version(self, company_id, contract, version_id=None):
+        if version_id:
+            return await self.repository.version_by_id(company_id, contract.id, version_id)
+        return await self.repository.version(company_id, contract.id, contract.released_version)
+
+    @staticmethod
+    def assert_competence(version, competence_date):
+        valid_from = date.fromisoformat(version.sheet["valid_from"])
+        valid_to = date.fromisoformat(version.sheet["valid_to"])
+        if competence_date is None or not valid_from <= competence_date <= valid_to:
+            _logger.info("construction.subcontract.competence_rejected version_id=%s competence_date=%s", version.id, competence_date)
+            raise ConstructionDomainError(
+                message=f"Informe a competência dentro da vigência do contrato ({valid_from:%d/%m/%Y} a {valid_to:%d/%m/%Y}).",
+                error_code="CONSTRUCTION_MEASUREMENT_COMPETENCE_OUT_OF_CONTRACT",
+            )
+
     async def contract_item(self, measurement, contract_item_id, quantity):
         if not measurement.subcontract_id or quantity is None or quantity <= 0:
             self.fail("Informe contrato, item contratado e quantidade positiva para a medição.")
         contract = await self.get(measurement.company_id, measurement.subcontract_id)
-        version = await self.repository.version_by_id(measurement.company_id, contract.id, measurement.subcontract_version_id) if measurement.subcontract_version_id else await self.repository.version(measurement.company_id, contract.id, contract.released_version)
+        self.assert_itemized(contract)
+        version = await self.measurement_version(measurement.company_id, contract, measurement.subcontract_version_id)
         if contract.status != "RELEASED" or version is None:
             self.fail("Libere a planilha do contrato antes de medir.")
         snapshot = next((row for row in version.sheet["items"] if row["id"] == str(contract_item_id)), None)
@@ -210,14 +350,16 @@ class SubcontractService:
                 self.fail("Remova os itens ainda não medidos antes de trocar o contrato da medição.")
             measurement.subcontract_version_id = None
         if contract_id is None:
-            return
+            return None
         contract = await self.get(measurement.company_id, contract_id)
+        self.assert_itemized(contract)
         supplier_id = updates.get("supplier_person_id", measurement.supplier_person_id)
         if contract.project_id != measurement.project_id or contract.status != "RELEASED":
             self.fail("Selecione contrato liberado da obra da medição.")
         if supplier_id and supplier_id != contract.supplier_person_id:
             self.fail("O fornecedor da medição precisa corresponder ao contrato.")
         updates["supplier_person_id"] = contract.supplier_person_id
+        return contract
 
     async def financial_amounts(self, measurement, gross):
         version = await self.repository.version_by_id(measurement.company_id, measurement.subcontract_id, measurement.subcontract_version_id)
@@ -245,8 +387,7 @@ class SubcontractService:
         version = await self.repository.version_by_id(measurement.company_id, contract.id, measurement.subcontract_version_id)
         if version is None:
             self.fail("A versão da planilha não pertence a este contrato.")
-        if measurement.competence_date is None or not datetime.fromisoformat(version.sheet["valid_from"]).date() <= measurement.competence_date <= datetime.fromisoformat(version.sheet["valid_to"]).date():
-            self.fail("Informe competência dentro da vigência do contrato.")
+        self.assert_competence(version, measurement.competence_date)
         active = await self.repository.consumptions(measurement.company_id, measurement.id)
         if active:
             return
@@ -363,6 +504,9 @@ class SubcontractService:
                 event.status, event.retry_count, event.last_error, event.next_attempt_at = "pending", 0, None, None
                 await self.session.commit()
             return {"id": measurement.id, "reversal_pending": True}
+        if measurement.external_accounts_payable_shared:
+            _logger.info("construction.subcontract.reversal_refused reason=shared_payable measurement_id=%s", measurement.id)
+            self.fail("A medição está numa DNF do contrato: remova-a da DNF em DNFs da empreitada (Ver OS cobertas) antes de estornar.")
         if measurement.external_accounts_payable_id is None:
             await self.reverse_consumption(measurement, actor_user_id)
             measurement.status, measurement.rejection_reason = "rejected", reason.strip()
@@ -410,6 +554,8 @@ class SubcontractService:
         if row.status in {"CLOSED", "CANCELED"}:
             self.fail("Este contrato já está encerrado.")
         items = await self.repository.items(company_id, contract_id, True)
+        if cancel and row.pricing_mode == "GLOBAL" and await self.repository.has_contract_activity(company_id, contract_id):
+            self.fail("Tire as OS e as DNFs do contrato global antes de cancelá-lo; use encerramento para parar de vincular OS.")
         if cancel and any(item.consumed_quantity > 0 for item in items):
             self.fail("Estorne as medições antes de cancelar o contrato; use encerramento para eliminar apenas o saldo.")
         row.status, row.closure_reason, row.closed_by_user_id = "CANCELED" if cancel else "CLOSED", reason.strip(), actor_user_id

@@ -22,7 +22,7 @@ from app.infrastructure.database.models.construction import (
     ConstructionUnitPaymentSource,
     ConstructionUnit,
 )
-from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction
+from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction, ConstructionSubcontractPayable
 from app.infrastructure.database.models.event import DeadLetterEvent, OutboxEvent, ProcessedEvent
 
 
@@ -57,4 +57,5 @@ __all__ = [
     "ConstructionSubcontractConsumption",
     "ConstructionSubcontractDirectBill",
     "ConstructionSubcontractDeduction",
+    "ConstructionSubcontractPayable",
 ]

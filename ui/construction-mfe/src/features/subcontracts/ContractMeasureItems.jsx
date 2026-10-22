@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowDownToLine } from "lucide-react";
+import { ArrowDownToLine, Plus } from "lucide-react";
 import { PersonPicker } from "../../components/PersonPicker";
 import { subcontractRequest } from "../../services/constructionApi";
 import { money } from "../sharedPayables/SharedPayableLinkModal";
@@ -26,8 +26,11 @@ export function ContractMeasureItems({
   const [quantities, setQuantities] = useState({});
   const [inspectorPersonId, setInspectorPersonId] = useState("");
   const [search, setSearch] = useState("");
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let active = true;
+    setContract(null);
+    setError("");
     subcontractRequest({
       bridge,
       path: `/subcontracts/${measurement.subcontractId}${measurement.subcontractVersionId ? `?version_id=${measurement.subcontractVersionId}` : ""}`,
@@ -41,7 +44,7 @@ export function ContractMeasureItems({
     return () => {
       active = false;
     };
-  }, [bridge, measurement.subcontractId, measurement.subcontractVersionId]);
+  }, [bridge, measurement.subcontractId, measurement.subcontractVersionId, attempt]);
   const serviceNames = Object.fromEntries(
     (serviceTemplates ?? []).map((service) => [service.id, service.name]),
   );
@@ -91,17 +94,35 @@ export function ContractMeasureItems({
         <div>
           <h4>Itens do contrato {contract ? contract.code : ""}</h4>
           <p className={styles.hint}>
-            Informe a quantidade medida nas linhas dos serviços executados e
-            clique em Adicionar itens medidos. O valor sai do preço contratado,
-            e cada linha vira um item da medição com a FVS do serviço.
+            Se quiser, escolha o inspetor responsável. Informe a quantidade
+            medida nas linhas dos serviços executados e clique em Adicionar item
+            medido, no fim do quadro. O valor sai do preço contratado, e cada
+            linha vira um item da medição com a FVS do serviço.
           </p>
         </div>
       </div>
       {error && (
-        <p role="alert" className={styles.alertText}>
-          {error}
-        </p>
+        <div className={styles.loadError} role="alert">
+          <span>{error}</span>
+          <button
+            type="button"
+            className={appStyles.secondaryButton}
+            onClick={() => setAttempt((value) => value + 1)}
+          >
+            Tentar novamente
+          </button>
+        </div>
       )}
+      <div className={styles.inspectorRow}>
+        <PersonPicker
+          bridge={bridge}
+          label="Inspetor responsável"
+          value={inspectorPersonId}
+          onChange={setInspectorPersonId}
+          knownPeople={people}
+          emptyLabel="Buscar inspetor pelo nome"
+        />
+      </div>
       {rows.length > 8 && (
         <label className={styles.searchField}>
           <input
@@ -157,7 +178,8 @@ export function ContractMeasureItems({
                         step="any"
                         placeholder="0"
                         value={quantities[item.id] ?? ""}
-                        disabled={saving || available <= 0}
+                        disabled={saving || available <= 0 || already > 0}
+                        title={already > 0 ? "Já está nesta medição; remova o item para alterar a quantidade" : undefined}
                         onChange={(e) =>
                           setQuantities({ ...quantities, [item.id]: e.target.value })
                         }
@@ -165,7 +187,7 @@ export function ContractMeasureItems({
                       <button
                         type="button"
                         className={styles.iconButton}
-                        disabled={saving || available <= 0}
+                        disabled={saving || available <= 0 || already > 0}
                         title="Medir todo o disponível"
                         aria-label={`Medir todo o disponível de ${serviceName ?? item.description}`}
                         onClick={() =>
@@ -198,25 +220,23 @@ export function ContractMeasureItems({
           A quantidade medida passa do disponível em {over.length} serviço(s).
         </p>
       )}
-      <div className={styles.fields}>
-        <PersonPicker
-          bridge={bridge}
-          label="Inspetor responsável"
-          value={inspectorPersonId}
-          onChange={setInspectorPersonId}
-          knownPeople={people}
-          emptyLabel="Buscar inspetor pelo nome"
-        />
-        <div className={styles.fieldAction}>
-          <button
-            className={appStyles.primaryButton}
-            disabled={saving || !filled.length || over.length > 0}
-          >
-            {filled.length > 1
-              ? `Adicionar ${filled.length} itens medidos`
-              : "Adicionar item medido"}
-          </button>
-        </div>
+      <div className={`${appStyles.filtersFooter} ${styles.measureFooter}`}>
+        {!filled.length && (
+          <span id="contract-measure-hint" className={styles.hint}>
+            Informe a quantidade medida em pelo menos um serviço.
+          </span>
+        )}
+        <button
+          type="submit"
+          className={appStyles.primaryButton}
+          disabled={saving || !filled.length || over.length > 0}
+          aria-describedby={!filled.length ? "contract-measure-hint" : undefined}
+        >
+          <Plus size={16} aria-hidden="true" />
+          {filled.length > 1
+            ? `Adicionar ${filled.length} itens medidos`
+            : "Adicionar item medido"}
+        </button>
       </div>
     </form>
   );

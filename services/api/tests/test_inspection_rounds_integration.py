@@ -105,6 +105,7 @@ async def test_reading_the_line_back_holds_the_round_that_was_just_written() -> 
                     comment="camada 3 solta",
                 ),
                 actor_user_id=uuid4(),
+                actor_person_id=uuid4(),
             )
             assert first.rounds_count == 1
             assert [round_.sequence_number for round_ in first.rounds] == [1]
@@ -114,6 +115,7 @@ async def test_reading_the_line_back_holds_the_round_that_was_just_written() -> 
                 inspection_id=inspection.id,
                 request=ConstructionMeasurementInspectionVerifyRequest(status="compliant"),
                 actor_user_id=uuid4(),
+                actor_person_id=uuid4(),
             )
 
             assert second.rounds_count == 2
@@ -157,6 +159,7 @@ async def test_two_simultaneous_reinspections_do_not_collide_on_the_round_number
                 inspection_id=inspection_id,
                 request=ConstructionMeasurementInspectionVerifyRequest(status=status, comment=comment),
                 actor_user_id=uuid4(),
+                actor_person_id=uuid4(),
             )
 
     try:
@@ -237,6 +240,7 @@ async def test_deleting_the_item_takes_its_rounds_with_it() -> None:
                 inspection_id=inspection.id,
                 request=ConstructionMeasurementInspectionVerifyRequest(status="compliant"),
                 actor_user_id=uuid4(),
+                actor_person_id=uuid4(),
             )
 
             await session.execute(delete(ConstructionMeasurementItem).where(ConstructionMeasurementItem.id == item.id))

@@ -434,6 +434,8 @@ class FakeConstructionRepository:
             ),
             key=lambda occurrence: occurrence.sequence_number,
         )
+        template = self.service_templates.get((company_id, item.service_template_id))
+        item.service_template_name = template.name if template is not None else None
         return item
 
     async def get_measurement_item(self, *, company_id, item_id):
@@ -452,6 +454,27 @@ class FakeConstructionRepository:
             ),
             key=lambda item: item.sequence_number,
         )
+
+    async def find_unit_order_with_service(
+        self, *, company_id, unit_id, exclude_measurement_id, service_template_id, description
+    ):
+        match = None
+        for (item_company_id, _), item in self.measurement_items.items():
+            order = self.measurements.get((company_id, item.measurement_id))
+            if item_company_id != company_id or order is None or order.id == exclude_measurement_id:
+                continue
+            if order.unit_id != unit_id or order.subcontract_id is not None:
+                continue
+            if order.status == ConstructionMeasurementStatus.REJECTED and order.rejected_at is None:
+                continue
+            same_service = (
+                item.service_template_id == service_template_id
+                if service_template_id is not None
+                else item.service_template_id is None and item.description.strip().lower() == description.strip().lower()
+            )
+            if same_service and (match is None or (order.sequence_number or 0) > (match.sequence_number or 0)):
+                match = order
+        return match
 
     async def get_next_measurement_item_sequence(self, *, company_id, measurement_id):
         items = await self.list_measurement_items(company_id=company_id, measurement_id=measurement_id)
@@ -842,7 +865,33 @@ class FakeConstructionRepository:
             if stored_company_id == company_id and measurement.project_id == project_id
         ]
 
-    async def list_measurements_by_ids(self, *, company_id, project_id, measurement_ids):
+    async def shared_payable_net_total(self, *, company_id, payable_document_id, exclude_measurement_ids):
+        return sum(
+            (
+                measurement.net_amount if measurement.net_amount is not None else (measurement.measured_amount or Decimal("0"))
+                for (stored_company_id, _), measurement in self.measurements.items()
+                if stored_company_id == company_id
+                and measurement.external_accounts_payable_id == payable_document_id
+                and measurement.external_accounts_payable_shared
+                and measurement.id not in exclude_measurement_ids
+            ),
+            Decimal("0"),
+        )
+
+    async def lock_shared_payable(self, *, company_id, payable_document_id):
+        return None
+
+    async def shared_payable_contract_ids(self, *, company_id, payable_document_id, exclude_measurement_ids):
+        return {
+            measurement.subcontract_id or getattr(measurement, "global_contract_id", None)
+            for (stored_company_id, _), measurement in self.measurements.items()
+            if stored_company_id == company_id
+            and measurement.external_accounts_payable_id == payable_document_id
+            and measurement.external_accounts_payable_shared
+            and measurement.id not in exclude_measurement_ids
+        }
+
+    async def list_measurements_by_ids(self, *, company_id, project_id, measurement_ids, lock=False):
         return [
             measurement
             for (stored_company_id, measurement_id), measurement in self.measurements.items()
@@ -1548,11 +1597,24 @@ async def test_rejected_or_draft_measurement_does_not_create_accounts_payable() 
             due_date=date(2026, 5, 20),
         ),
     )
-    await service.reject_measurement(company_id=company_id, measurement_id=measurement.id)
+    with pytest.raises(ConstructionInvalidValueError) as draft_error:
+        await service.reject_measurement(company_id=company_id, measurement_id=measurement.id, reason="Rascunho")
+    assert draft_error.value.error_code == "CONSTRUCTION_MEASUREMENT_REJECT_REQUIRES_SUBMISSION"
+    assert measurement.status == ConstructionMeasurementStatus.DRAFT
+
+    measurement.status = ConstructionMeasurementStatus.SUBMITTED
+    for blank_reason in (None, "", "   "):
+        with pytest.raises(ConstructionInvalidValueError) as reject_error:
+            await service.reject_measurement(company_id=company_id, measurement_id=measurement.id, reason=blank_reason)
+        assert reject_error.value.error_code == "CONSTRUCTION_MEASUREMENT_REJECTION_REASON_REQUIRED"
+    assert measurement.status == ConstructionMeasurementStatus.SUBMITTED
+
+    await service.reject_measurement(company_id=company_id, measurement_id=measurement.id, reason="  Serviço incompleto  ")
 
     assert len(erp_client.events) == 0
     stored_measurement = await service.get_measurement(company_id=company_id, measurement_id=measurement.id)
     assert stored_measurement.status == ConstructionMeasurementStatus.REJECTED
+    assert stored_measurement.rejection_reason == "Serviço incompleto"
 
 
 @pytest.mark.asyncio
@@ -2247,11 +2309,14 @@ async def _build_item_with_one_line(
 
 
 async def _verify(service, company_id, inspection_id, status, **extra):
+    actor_user_id = extra.pop("actor_user_id", None) or uuid4()
+    actor_person_id = extra.pop("actor_person_id", None) or extra.get("inspector_person_id") or uuid4()
     return await service.verify_measurement_item_inspection(
         company_id=company_id,
         inspection_id=inspection_id,
         request=ConstructionMeasurementInspectionVerifyRequest(status=status, **extra),
-        actor_user_id=extra.pop("actor_user_id", None) or uuid4(),
+        actor_user_id=actor_user_id,
+        actor_person_id=actor_person_id,
     )
 
 
@@ -2388,10 +2453,25 @@ async def test_a_failing_check_without_a_comment_is_refused() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_round_records_who_went_to_the_site_and_who_typed_it() -> None:
+async def test_only_the_round_inspector_logged_in_records_the_verdict() -> None:
     company_id, measurement, service = await _build_measurement_scenario()
     _, inspection = await _build_item_with_one_line(service, company_id, measurement)
-    inspector_person_id, typist_user_id, typist_person_id = uuid4(), uuid4(), uuid4()
+    inspector_person_id, inspector_user_id, other_user_id, other_person_id = uuid4(), uuid4(), uuid4(), uuid4()
+
+    for actor_person_id in (other_person_id, None):
+        with pytest.raises(ConstructionInvalidValueError) as error:
+            await service.verify_measurement_item_inspection(
+                company_id=company_id,
+                inspection_id=inspection.id,
+                request=ConstructionMeasurementInspectionVerifyRequest(
+                    status="compliant",
+                    inspector_person_id=inspector_person_id,
+                ),
+                actor_user_id=other_user_id,
+                actor_person_id=actor_person_id,
+            )
+        assert error.value.error_code == "CONSTRUCTION_INSPECTION_INSPECTOR_MISMATCH"
+    assert await service.list_inspection_rounds(company_id=company_id, inspection_id=inspection.id) == []
 
     await service.verify_measurement_item_inspection(
         company_id=company_id,
@@ -2401,14 +2481,44 @@ async def test_the_round_records_who_went_to_the_site_and_who_typed_it() -> None
             inspector_person_id=inspector_person_id,
             inspected_on=date(2026, 7, 15),
         ),
-        actor_user_id=typist_user_id,
-        actor_person_id=typist_person_id,
+        actor_user_id=inspector_user_id,
+        actor_person_id=inspector_person_id,
     )
 
     recorded = (await service.list_inspection_rounds(company_id=company_id, inspection_id=inspection.id))[0]
     assert recorded.inspector_person_id == inspector_person_id
-    assert recorded.recorded_by_user_id == typist_user_id
+    assert recorded.recorded_by_user_id == inspector_user_id
     assert recorded.inspected_on == date(2026, 7, 15)
+
+
+@pytest.mark.asyncio
+async def test_round_without_chosen_inspector_records_the_logged_person() -> None:
+    company_id, measurement, service = await _build_measurement_scenario()
+    designated_person_id, actor_person_id = uuid4(), uuid4()
+    item, inspection = await _build_item_with_one_line(service, company_id, measurement)
+    item.inspector_person_id = inspection.inspector_person_id = designated_person_id
+
+    await service.verify_measurement_item_inspection(
+        company_id=company_id,
+        inspection_id=inspection.id,
+        request=ConstructionMeasurementInspectionVerifyRequest(status="non_compliant", comment="camada solta"),
+        actor_user_id=uuid4(),
+        actor_person_id=actor_person_id,
+    )
+    await service.verify_measurement_item_inspection(
+        company_id=company_id,
+        inspection_id=inspection.id,
+        request=ConstructionMeasurementInspectionVerifyRequest(
+            status="waived", comment="fora do contrato", inspector_person_id=designated_person_id
+        ),
+        actor_user_id=uuid4(),
+        actor_person_id=uuid4(),
+        actor_can_waive=True,
+    )
+
+    rounds = await service.list_inspection_rounds(company_id=company_id, inspection_id=inspection.id)
+    assert [round_.inspector_person_id for round_ in rounds] == [actor_person_id, designated_person_id]
+    assert [round_.status for round_ in rounds] == ["non_compliant", "waived"]
 
 
 @pytest.mark.asyncio
@@ -2694,6 +2804,7 @@ async def test_rejection_records_who_rejected_and_is_cleared_on_resubmit() -> No
     company_id, measurement, service = await _build_measurement_scenario()
     await _build_verified_item(service, company_id, measurement)
     rejecter_id = uuid4()
+    await service.submit_measurement(company_id=company_id, measurement_id=measurement.id, actor_user_id=uuid4())
 
     await service.reject_measurement(
         company_id=company_id,

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app.core import security as security_module
 from app.core.security import get_permission_client
 from app.domain.permissions import ConstructionFeature, PermissionAction
+from app.domain.services.construction_project_service import ConstructionProjectService
 from app.infrastructure.clients import EffectivePermissions
 from app.main import create_app
 from app.presentation.routes.construction_projects import get_project_service
@@ -34,6 +35,8 @@ class FakePermissionClient:
 
 
 class FakeProjectService:
+    to_commission_response = staticmethod(ConstructionProjectService.to_commission_response)
+
     async def create_project(self, *, company_id: UUID, request, actor_user_id: UUID | None = None):
         now = datetime.now(tz=UTC)
         return SimpleNamespace(

@@ -464,6 +464,17 @@
 .measureGrid {
   gap: 0.85rem;
 }
+.measureFooter {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  min-width: 0;
+}
+.inspectorRow {
+  display: grid;
+  grid-template-columns: minmax(0, 28rem);
+  min-width: 0;
+}
 .serviceName {
   display: block;
   font-weight: 600;

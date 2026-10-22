@@ -26,7 +26,7 @@ function SharedPayableOrdersModal({ bridge, projectId, payable, canUpdate, onClo
         measurementIds: [...selected],
       })
       bridge?.feedback?.success?.(
-        `${result.affected} OS removida(s) da DNF ${payable.documentNumber ?? "sem número"}. Elas voltam a aparecer como Sem valor.`,
+        `${result.affected} OS removida(s) da DNF ${payable.documentNumber ?? "sem número"}. Elas voltam a ficar sem título e podem ir para outra DNF.`,
       )
       setSelected(new Set())
       setConfirming(false)
@@ -105,7 +105,7 @@ function SharedPayableOrdersModal({ bridge, projectId, payable, canUpdate, onClo
             <div className={appStyles.modalBody}>
               <p>
                 Remover {selected.size} OS da DNF {payable.documentNumber ?? "sem número"}? O título no ERP não muda; as
-                OS voltam a aparecer como Sem valor e podem ser vinculadas a outra DNF.
+                OS voltam a ficar sem título e podem ser vinculadas a outra DNF.
               </p>
               <div className={appStyles.modalFooter}>
                 <button
@@ -163,7 +163,8 @@ export function SharedPayablesSection({ bridge, projectId }) {
       <div className={styles.toolbar}>
         <p className={styles.notice}>
           Ordens de serviço sem valor são medições de controle da Caixa. O pagamento da empreitada sai numa DNF que cobre
-          várias delas: ligue aqui a DNF às OS que ela pagou.
+          várias delas: ligue aqui a DNF às OS que ela pagou. A DNF das medições de um contrato é vinculada no próprio
+          contrato, em DNF das medições do contrato, e também aparece nesta lista.
         </p>
         <div className={styles.toolbarActions}>
           <button
@@ -218,7 +219,10 @@ export function SharedPayablesSection({ bridge, projectId }) {
                   <td>{day(row.issueDate)}</td>
                   <td>{money(row.totalAmount)}</td>
                   <td>{payableStatusLabel(row.status)}</td>
-                  <td>{row.coveredCount}</td>
+                  <td>
+                    {row.coveredCount}
+                    {row.contractCoveredCount ? <small>do contrato</small> : null}
+                  </td>
                   <td>
                     <div className={styles.rowActions}>
                       <button
@@ -230,7 +234,7 @@ export function SharedPayablesSection({ bridge, projectId }) {
                       >
                         <ListChecks size={16} aria-hidden="true" />
                       </button>
-                      {canUpdate ? (
+                      {canUpdate && !row.contractCoveredCount ? (
                         <button
                           type="button"
                           className={styles.iconButton}

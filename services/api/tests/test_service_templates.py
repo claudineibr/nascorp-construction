@@ -12,6 +12,7 @@ from app.domain.exceptions import (
     ConstructionInvalidValueError,
     ConstructionResourceInUseError,
 )
+from app.domain.measurement_workflow import measurement_item_label
 from app.domain.services import ConstructionProjectService
 from app.domain.services.construction_service_template_parser import (
     SAMPLE_ITEMS,
@@ -310,6 +311,71 @@ async def test_the_same_service_cannot_be_measured_twice_in_one_measurement() ->
         )
 
     assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_ITEM_DUPLICATE_SERVICE"
+
+
+@pytest.mark.asyncio
+async def test_different_services_may_share_the_same_observation() -> None:
+    service, company_id = build_service()
+    await service.import_service_templates(company_id=company_id, files=[
+        ("revestimento.xlsx", build_caixa_spreadsheet(service_name="Revestimento", items=[("Prumo", "Régua")])),
+        ("hidraulica.xlsx", build_caixa_spreadsheet(service_name="Hidráulica", items=[("Teste", "Visual")])),
+    ])
+    templates = await service.list_service_templates(company_id=company_id)
+    measurement = await build_measurement_scenario(service=service, company_id=company_id)
+
+    for template in templates:
+        await service.create_measurement_item(
+            company_id=company_id,
+            measurement_id=measurement.id,
+            request=ConstructionMeasurementItemCreate(
+                service_template_id=template.id, description="banheiro da suíte", amount=Decimal("100.00")
+            ),
+        )
+
+    items = await service.list_measurement_items(company_id=company_id, measurement_id=measurement.id)
+    assert {item.service_template_id for item in items} == {template.id for template in templates}
+    assert {item.service_template_name for item in items} == {template.name for template in templates}
+    assert measurement_item_label(items[0].description, items[0].service_template_name).endswith("· banheiro da suíte")
+
+
+@pytest.mark.asyncio
+async def test_service_already_in_another_order_of_the_unit_asks_for_confirmation() -> None:
+    service, company_id = build_service()
+    content = build_caixa_spreadsheet(service_name="Reboco", items=[("Prumo", "Régua")])
+    await service.import_service_templates(company_id=company_id, files=[("reboco.xlsx", content)])
+    template = (await service.list_service_templates(company_id=company_id))[0]
+    first = await build_measurement_scenario(service=service, company_id=company_id)
+    second = ConstructionMeasurement(
+        id=uuid4(), company_id=company_id, project_id=first.project_id, unit_id=first.unit_id,
+        schedule_phase_id=first.schedule_phase_id, code="MED-071", sequence_number=2,
+        gross_amount=Decimal("1000.00"), retentions_amount=Decimal("0"), net_amount=Decimal("1000.00"),
+        measured_amount=Decimal("1000.00"), due_date=date(2026, 10, 10), status=ConstructionMeasurementStatus.DRAFT,
+    )
+    service.repository.measurements[(company_id, second.id)] = second
+    request = ConstructionMeasurementItemCreate(service_template_id=template.id, amount=Decimal("100.00"))
+    await service.create_measurement_item(company_id=company_id, measurement_id=first.id, request=request)
+
+    with pytest.raises(ConstructionInvalidValueError) as warning:
+        await service.create_measurement_item(company_id=company_id, measurement_id=second.id, request=request)
+    assert warning.value.error_code == "CONSTRUCTION_MEASUREMENT_ITEM_DUPLICATE_IN_UNIT"
+    assert "OS nº 1 (MED-070)" in warning.value.message
+
+    first.status, first.rejected_at = ConstructionMeasurementStatus.REJECTED, None
+    await service.create_measurement_item(company_id=company_id, measurement_id=second.id, request=request)
+    first.status = ConstructionMeasurementStatus.DRAFT
+    third = ConstructionMeasurement(
+        id=uuid4(), company_id=company_id, project_id=first.project_id, unit_id=first.unit_id,
+        schedule_phase_id=first.schedule_phase_id, code="MED-072", sequence_number=3,
+        gross_amount=Decimal("1000.00"), retentions_amount=Decimal("0"), net_amount=Decimal("1000.00"),
+        measured_amount=Decimal("1000.00"), due_date=date(2026, 10, 10), status=ConstructionMeasurementStatus.DRAFT,
+    )
+    service.repository.measurements[(company_id, third.id)] = third
+    created = await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=third.id,
+        request=request.model_copy(update={"confirm_unit_duplicate": True}),
+    )
+    assert created.service_template_id == template.id
 
 
 @pytest.mark.asyncio

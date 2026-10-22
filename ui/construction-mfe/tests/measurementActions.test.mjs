@@ -5,6 +5,7 @@ import {
   getMeasurementApprovalActions,
   isZeroValueMeasurement,
   measurementPayableBadge,
+  newMeasurementPayablePath,
   payableStatusLabel,
 } from "../src/features/measurementActions.js"
 
@@ -49,10 +50,21 @@ test("financial badge tells own title, subcontract DNF, zero value and pending a
   )
   assert.equal(measurementPayableBadge({ ...base, netAmount: "0.00" }).label, "Sem valor")
   assert.equal(measurementPayableBadge({ ...base, netAmount: "0.00", subcontractId: "contract" }).label, "Pendente")
+  assert.equal(measurementPayableBadge({ ...base, netAmount: "810.00", subcontractId: "contract" }).detail, "DNF na aba Empreitada")
   assert.equal(measurementPayableBadge({ ...base, netAmount: "810.00" }).label, "Pendente")
+})
+test("contract measurement is paid by the contract DNF and cannot link its own title", () => {
+  assert.equal(canLinkPayable({ status: "approved", subcontractId: "contract", externalAccountsPayableId: null, supplierPersonId: "supplier", netAmount: "810.00" }), false)
+})
+test("new title path opens the ERP form for the measurement and returns to the project units", () => {
+  const path = newMeasurementPayablePath({ id: "m1", projectId: "p1" })
+  const params = new URLSearchParams(path.split("?").slice(1).join("?"))
+  assert.equal(path.startsWith("/accounts-payable/new?"), true)
+  assert.equal(params.get("measurement_id"), "m1")
+  assert.equal(params.get("return_to"), "/construction?project_id=p1&tab=units")
 })
 test("ERP title status is shown in Portuguese", () => {
   assert.equal(payableStatusLabel("PAID"), "Pago")
   assert.equal(payableStatusLabel("OPEN"), "Em aberto")
-  assert.equal(payableStatusLabel(null), "—")
+  assert.equal(payableStatusLabel(null), "-")
 })

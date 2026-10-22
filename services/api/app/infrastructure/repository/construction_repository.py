@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 from decimal import Decimal
 
-from sqlalchemy import Integer, cast, delete, func, or_, select, text, update
+from sqlalchemy import Integer, and_, cast, delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -564,16 +564,39 @@ class ConstructionRepository:
         company_id: UUID,
         project_id: UUID,
         measurement_ids: list[UUID],
+        lock: bool = False,
     ) -> list[ConstructionMeasurement]:
-        result = await self.session.execute(
-            select(ConstructionMeasurement).where(
-                ConstructionMeasurement.company_id == company_id,
-                ConstructionMeasurement.project_id == project_id,
-                ConstructionMeasurement.id.in_(measurement_ids),
-                *scope_conditions(ConstructionMeasurement, self.scope),
-            )
+        query = select(ConstructionMeasurement).where(
+            ConstructionMeasurement.company_id == company_id,
+            ConstructionMeasurement.project_id == project_id,
+            ConstructionMeasurement.id.in_(measurement_ids),
+            *scope_conditions(ConstructionMeasurement, self.scope),
         )
+        if lock:
+            query = query.order_by(ConstructionMeasurement.id).with_for_update().execution_options(populate_existing=True)
+        result = await self.session.execute(query)
         return list(result.scalars().all())
+
+    async def lock_shared_payable(self, *, company_id: UUID, payable_document_id: UUID) -> None:
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"shared-payable:{company_id}:{payable_document_id}"},
+        )
+
+    async def shared_payable_contract_ids(
+        self, *, company_id: UUID, payable_document_id: UUID, exclude_measurement_ids: list[UUID]
+    ) -> set[UUID | None]:
+        result = await self.session.execute(
+            select(func.coalesce(ConstructionMeasurement.subcontract_id, ConstructionMeasurement.global_contract_id))
+            .where(
+                ConstructionMeasurement.company_id == company_id,
+                ConstructionMeasurement.external_accounts_payable_id == payable_document_id,
+                ConstructionMeasurement.external_accounts_payable_shared.is_(True),
+                ConstructionMeasurement.id.not_in(exclude_measurement_ids),
+            )
+            .distinct()
+        )
+        return set(result.scalars().all())
 
     def _zero_value_measurement_conditions(
         self,
@@ -587,16 +610,29 @@ class ConstructionRepository:
         due_from: date | None = None,
         due_to: date | None = None,
         search: str | None = None,
+        subcontract_id: UUID | None = None,
     ) -> list:
         amount = func.coalesce(ConstructionMeasurement.net_amount, ConstructionMeasurement.measured_amount, 0)
         conditions = [
             ConstructionMeasurement.company_id == company_id,
             ConstructionMeasurement.project_id == project_id,
             ConstructionMeasurement.status == ConstructionMeasurementStatus.APPROVED,
-            ConstructionMeasurement.subcontract_id.is_(None),
-            amount == 0,
             *scope_conditions(ConstructionMeasurement, self.scope),
         ]
+        if subcontract_id is not None:
+            conditions.extend([
+                or_(
+                    ConstructionMeasurement.subcontract_id == subcontract_id,
+                    ConstructionMeasurement.global_contract_id == subcontract_id,
+                ),
+                ConstructionMeasurement.reversal_pending.is_(False),
+            ])
+        elif payable_document_id is None:
+            conditions.extend([
+                ConstructionMeasurement.subcontract_id.is_(None),
+                ConstructionMeasurement.global_contract_id.is_(None),
+                amount == 0,
+            ])
         if payable_document_id is None:
             conditions.append(ConstructionMeasurement.external_accounts_payable_id.is_(None))
         else:
@@ -671,6 +707,7 @@ class ConstructionRepository:
                 "description": measurement.description,
                 "supplier_person_id": measurement.supplier_person_id,
                 "external_accounts_payable_id": measurement.external_accounts_payable_id,
+                "net_amount": measurement.net_amount if measurement.net_amount is not None else measurement.measured_amount,
             }
             for measurement, unit_code, unit_description, block_id, block_name in result.all()
         ]
@@ -686,6 +723,24 @@ class ConstructionRepository:
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def shared_payable_net_total(
+        self, *, company_id: UUID, payable_document_id: UUID, exclude_measurement_ids: list[UUID]
+    ) -> Decimal:
+        total = await self.session.scalar(
+            select(
+                func.coalesce(
+                    func.sum(func.coalesce(ConstructionMeasurement.net_amount, ConstructionMeasurement.measured_amount, 0)),
+                    0,
+                )
+            ).where(
+                ConstructionMeasurement.company_id == company_id,
+                ConstructionMeasurement.external_accounts_payable_id == payable_document_id,
+                ConstructionMeasurement.external_accounts_payable_shared.is_(True),
+                ConstructionMeasurement.id.not_in(exclude_measurement_ids),
+            )
+        )
+        return Decimal(total or 0)
 
     async def zero_value_suppliers(self, *, company_id: UUID, project_id: UUID) -> list[tuple[UUID, int]]:
         conditions = self._zero_value_measurement_conditions(company_id=company_id, project_id=project_id)
@@ -1246,7 +1301,62 @@ class ConstructionRepository:
                 *scope_conditions(ConstructionMeasurementItem, self.scope),
             )
         )
-        return result.scalars().first()
+        item = result.scalars().first()
+        if item is not None:
+            await self._attach_service_template_names(company_id=company_id, items=[item])
+        return item
+
+    async def _attach_service_template_names(self, *, company_id: UUID, items: list[ConstructionMeasurementItem]) -> None:
+        template_ids = {item.service_template_id for item in items if item.service_template_id}
+        names = {}
+        if template_ids:
+            rows = await self.session.execute(
+                select(ConstructionServiceTemplate.id, ConstructionServiceTemplate.name).where(
+                    ConstructionServiceTemplate.company_id == company_id,
+                    ConstructionServiceTemplate.id.in_(template_ids),
+                )
+            )
+            names = dict(rows.all())
+        for item in items:
+            item.service_template_name = names.get(item.service_template_id)
+
+    async def find_unit_order_with_service(
+        self,
+        *,
+        company_id: UUID,
+        unit_id: UUID,
+        exclude_measurement_id: UUID,
+        service_template_id: UUID | None,
+        description: str,
+    ) -> ConstructionMeasurement | None:
+        same_service = (
+            ConstructionMeasurementItem.service_template_id == service_template_id
+            if service_template_id is not None
+            else and_(
+                ConstructionMeasurementItem.service_template_id.is_(None),
+                func.lower(func.trim(ConstructionMeasurementItem.description)) == description.strip().lower(),
+            )
+        )
+        return await self.session.scalar(
+            select(ConstructionMeasurement)
+            .join(ConstructionMeasurementItem, ConstructionMeasurementItem.measurement_id == ConstructionMeasurement.id)
+            .where(
+                ConstructionMeasurement.company_id == company_id,
+                ConstructionMeasurement.unit_id == unit_id,
+                ConstructionMeasurement.id != exclude_measurement_id,
+                ConstructionMeasurement.subcontract_id.is_(None),
+                or_(
+                    ConstructionMeasurement.status != ConstructionMeasurementStatus.REJECTED,
+                    ConstructionMeasurement.rejected_at.is_not(None),
+                ),
+                ConstructionMeasurementItem.company_id == company_id,
+                same_service,
+                *scope_conditions(ConstructionMeasurement, self.scope),
+                *scope_conditions(ConstructionMeasurementItem, self.scope),
+            )
+            .order_by(ConstructionMeasurement.sequence_number.desc().nulls_last())
+            .limit(1)
+        )
 
     async def list_measurement_items(
         self,
@@ -1269,7 +1379,9 @@ class ConstructionRepository:
             )
             .order_by(ConstructionMeasurementItem.sequence_number)
         )
-        return list(result.scalars().all())
+        items = list(result.scalars().all())
+        await self._attach_service_template_names(company_id=company_id, items=items)
+        return items
 
     async def get_next_measurement_item_sequence(self, *, company_id: UUID, measurement_id: UUID) -> int:
         return await self._next_scoped_sequence(

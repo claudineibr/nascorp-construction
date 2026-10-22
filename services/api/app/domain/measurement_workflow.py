@@ -19,6 +19,12 @@ def assert_measurement_editable(measurement):
         )
 
 
+def measurement_item_label(description, service_template_name):
+    if not service_template_name or description.casefold() == service_template_name.casefold():
+        return description
+    return f"{service_template_name} · {description}"
+
+
 def resolve_measurement_purpose(purpose, contract_id, amount):
     resolved = purpose or ("CONTRACT" if contract_id else "CONTROL" if not amount else "SERVICE")
     if (resolved == "CONTRACT") != bool(contract_id):

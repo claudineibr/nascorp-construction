@@ -6,6 +6,7 @@ import {
   listZeroValueMeasurementIds,
   listZeroValueMeasurements,
 } from "../../services/constructionApi"
+import { formatBRL as money } from "../../utils/currencyInput.js"
 import styles from "./SharedPayables.module.css"
 
 const DEBOUNCE_MS = 400
@@ -29,8 +30,10 @@ export function ZeroValueOrders({
   projectId,
   supplierPersonId = "",
   payableDocumentId = "",
+  subcontractId = "",
   selected,
   onSelectedChange,
+  onRowsLoaded = null,
   reloadKey = 0,
   disabled = false,
 }) {
@@ -54,14 +57,16 @@ export function ZeroValueOrders({
     () => ({
       supplierPersonId,
       payableDocumentId,
+      subcontractId,
       blockId,
       unitSearch: debouncedUnit.trim(),
       search: debouncedOrder.trim(),
       dueFrom,
       dueTo,
     }),
-    [supplierPersonId, payableDocumentId, blockId, debouncedUnit, debouncedOrder, dueFrom, dueTo],
+    [supplierPersonId, payableDocumentId, subcontractId, blockId, debouncedUnit, debouncedOrder, dueFrom, dueTo],
   )
+  const contractMode = Boolean(subcontractId)
 
   useEffect(() => {
     let active = true
@@ -88,10 +93,11 @@ export function ZeroValueOrders({
       .then((response) => {
         if (!active) return
         setResult(response)
+        onRowsLoaded?.(response.items)
         setError("")
       })
       .catch((failure) => {
-        if (active) setError(failure?.message ?? "Não foi possível buscar as OS sem valor.")
+        if (active) setError(failure?.message ?? "Não foi possível buscar as OS.")
       })
       .finally(() => {
         if (active) setLoading(false)
@@ -99,7 +105,7 @@ export function ZeroValueOrders({
     return () => {
       active = false
     }
-  }, [bridge, projectId, filters, page, pageSize, reloadKey])
+  }, [bridge, projectId, filters, page, pageSize, reloadKey, onRowsLoaded])
 
   const pageIds = result.items.map((row) => row.id)
   const pageFullySelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id))
@@ -183,14 +189,16 @@ export function ZeroValueOrders({
           <strong>{selected.size}</strong> OS marcada(s) · {result.total} no filtro
         </span>
         <span className={styles.rowActions}>
-          <button
-            type="button"
-            className={styles.linkButton}
-            onClick={selectAllFiltered}
-            disabled={disabled || selectingAll || !result.total}
-          >
-            {selectingAll ? "Marcando..." : `Marcar as ${result.total} do filtro`}
-          </button>
+          {contractMode ? null : (
+            <button
+              type="button"
+              className={styles.linkButton}
+              onClick={selectAllFiltered}
+              disabled={disabled || selectingAll || !result.total}
+            >
+              {selectingAll ? "Marcando..." : `Marcar as ${result.total} do filtro`}
+            </button>
+          )}
           <button
             type="button"
             className={styles.linkButton}
@@ -210,7 +218,9 @@ export function ZeroValueOrders({
         {loading ? (
           <p className={styles.empty}>Buscando OS...</p>
         ) : !result.items.length ? (
-          <p className={styles.empty}>Nenhuma OS sem valor neste filtro.</p>
+          <p className={styles.empty}>
+            {contractMode ? "Nenhuma medição aprovada do contrato sem título neste filtro." : "Nenhuma OS sem valor neste filtro."}
+          </p>
         ) : (
           <table className={styles.table}>
             <thead>
@@ -228,6 +238,7 @@ export function ZeroValueOrders({
                 <th>Unidade</th>
                 <th>Bloco</th>
                 <th>Vencimento</th>
+                {contractMode ? <th>Líquido</th> : null}
                 <th>Descrição</th>
               </tr>
             </thead>
@@ -253,6 +264,7 @@ export function ZeroValueOrders({
                   </td>
                   <td>{row.blockName || "-"}</td>
                   <td>{day(row.dueDate)}</td>
+                  {contractMode ? <td>{money(row.netAmount)}</td> : null}
                   <td>{row.description || "-"}</td>
                 </tr>
               ))}

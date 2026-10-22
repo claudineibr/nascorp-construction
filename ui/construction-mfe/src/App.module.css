@@ -810,6 +810,10 @@
   z-index: 40;
 }
 
+.confirmOverlay {
+  z-index: 50;
+}
+
 .modalCard {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -907,6 +911,16 @@
   display: flex;
   gap: 0.6rem;
   justify-content: flex-end;
+}
+
+.dialogActions {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .paginationSlot {

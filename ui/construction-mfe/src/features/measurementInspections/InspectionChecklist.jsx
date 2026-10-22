@@ -8,7 +8,7 @@ import { InspectionRoundForm } from "./InspectionRoundForm"
 import { InspectionRoundsModal } from "./InspectionRoundsModal"
 import { InspectorPicker } from "./InspectorPicker"
 import { describeActor, describeInspector } from "./actorLabel"
-import { countBlockingLines, countPendingLines, deriveLineState, lineStateLabel } from "./inspectionVocabulary"
+import { countBlockingLines, countPendingLines, deriveLineState, inspectorVerdictBlock, lineStateLabel } from "./inspectionVocabulary"
 
 const stateStyle = {
   pending: styles.statePending,
@@ -49,12 +49,16 @@ export function InspectionChecklist({
   onDeleteInspection,
   onCreateInspection,
 }) {
-  const [sessionInspectorId, setSessionInspectorId] = useState(item.inspectorPersonId ?? null)
+  const currentPersonId = bridge?.user?.personId ?? null
+  const [sessionInspectorId, setSessionInspectorId] = useState(item.inspectorPersonId ?? currentPersonId)
   // O inspetor do item ja vem como id; sem resolver o nome com a lista que a
   // tela ja carregou, o campo abriria mostrando "Pessoa 00000000".
-  const [sessionInspectorName, setSessionInspectorName] = useState(
-    () => (people ?? []).find((person) => person.id === item.inspectorPersonId)?.name ?? "",
+  const [sessionInspectorName, setSessionInspectorName] = useState(() =>
+    item.inspectorPersonId
+      ? (people ?? []).find((person) => person.id === item.inspectorPersonId)?.name ?? ""
+      : bridge?.user?.name ?? "",
   )
+  const inspectorBlock = inspectorVerdictBlock(currentPersonId, sessionInspectorId)
   const [openForm, setOpenForm] = useState(null)
   const [historyFor, setHistoryFor] = useState(null)
   const [newLine, setNewLine] = useState({ description: "", verificationMethod: "" })
@@ -120,7 +124,8 @@ export function InspectionChecklist({
             type="button"
             className={styles.primaryButton}
             onClick={() => onVerifyAllPending(item, { inspectorPersonId: sessionInspectorId })}
-            disabled={saving}
+            disabled={saving || Boolean(inspectorBlock)}
+            title={inspectorBlock || undefined}
           >
             <CheckCircle size={15} />
             Marcar as {summary.bulk} pendentes como conformes
@@ -140,6 +145,9 @@ export function InspectionChecklist({
           Só quem tem a permissão Verificação da FVS (perfil de engenheiro) registra Conforme ou Não conforme.
         </p>
       )}
+      {!isLocked && canVerify && inspectorBlock ? (
+        <p className={styles.fieldHint} role="status">{inspectorBlock}</p>
+      ) : null}
 
       {inspections.length === 0 ? (
         <p className={styles.emptyHint}>Nenhuma linha de verificação cadastrada.</p>
@@ -199,7 +207,8 @@ export function InspectionChecklist({
                             type="button"
                             className={styles.lineButton}
                             onClick={() => handleQuickVerify(inspection, "compliant")}
-                            disabled={saving}
+                            disabled={saving || Boolean(inspectorBlock)}
+                            title={inspectorBlock || undefined}
                           >
                             <CheckCircle size={14} />
                             Conforme
@@ -208,7 +217,8 @@ export function InspectionChecklist({
                             type="button"
                             className={`${styles.lineButton} ${styles.lineButtonWarn}`}
                             onClick={() => setOpenForm({ inspection, status: "non_compliant" })}
-                            disabled={saving}
+                            disabled={saving || Boolean(inspectorBlock)}
+                            title={inspectorBlock || undefined}
                           >
                             <TriangleAlert size={14} />
                             Não conforme
@@ -220,7 +230,8 @@ export function InspectionChecklist({
                             type="button"
                             className={styles.lineButton}
                             onClick={() => handleQuickVerify(inspection, "compliant")}
-                            disabled={saving}
+                            disabled={saving || Boolean(inspectorBlock)}
+                            title={inspectorBlock || undefined}
                           >
                             <CheckCircle size={14} />
                             Reinspeção aprovada
@@ -229,7 +240,8 @@ export function InspectionChecklist({
                             type="button"
                             className={`${styles.lineButton} ${styles.lineButtonWarn}`}
                             onClick={() => setOpenForm({ inspection, status: "non_compliant" })}
-                            disabled={saving}
+                            disabled={saving || Boolean(inspectorBlock)}
+                            title={inspectorBlock || undefined}
                           >
                             <TriangleAlert size={14} />
                             Reprovar de novo
@@ -283,6 +295,7 @@ export function InspectionChecklist({
                       status={openForm.status}
                       defaultInspectorPersonId={sessionInspectorId}
                       defaultInspectorName={sessionInspectorName}
+                      currentPersonId={currentPersonId}
                       saving={saving}
                       onCancel={() => setOpenForm(null)}
                       onSubmit={handleFormSubmit}

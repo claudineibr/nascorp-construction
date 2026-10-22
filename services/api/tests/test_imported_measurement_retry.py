@@ -143,3 +143,20 @@ async def test_zero_value_measurement_has_no_title_of_its_own() -> None:
 
     assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_ZERO_VALUE_NO_TITLE"
     assert erp.linked == []
+
+
+@pytest.mark.asyncio
+async def test_contract_measurement_has_no_title_of_its_own() -> None:
+    erp = FakeErpPayableLinkClient()
+    service, company_id, measurement = build_approved_measurement(
+        approved_at=None, erp_client=erp, supplier_person_id=uuid4()
+    )
+    measurement.subcontract_id = uuid4()
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.link_measurement_payable(
+            company_id=company_id, measurement_id=measurement.id, payable_document_id=uuid4()
+        )
+
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_CONTRACT_PAID_BY_SUBCONTRACT"
+    assert erp.linked == []

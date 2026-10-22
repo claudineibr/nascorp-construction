@@ -4,9 +4,9 @@ import { bankSlipStatusLabel, formatBankSlipMoney, SelectPageCheckbox, toggleSel
 import styles from "../App.module.css"
 import dialogStyles from "./UnitInstallmentsPanel.module.css"
 
-export function UnitBankSlipDialogFrame({ bridge, title, onClose, children, footer }) {
+export function UnitBankSlipDialogFrame({ bridge, title, onClose, children, footer, dialogMaxWidth = 1040 }) {
   const Modal = bridge?.components?.Modal
-  if (Modal) return <Modal isOpen title={title} onClose={onClose} dialogMaxWidth={1040} footer={footer}>
+  if (Modal) return <Modal isOpen title={title} onClose={onClose} dialogMaxWidth={dialogMaxWidth} footer={footer}>
     {children}
   </Modal>
   return <div className={styles.modalOverlay} role="presentation"><section className={dialogStyles.dialog}

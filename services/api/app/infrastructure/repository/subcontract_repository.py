@@ -1,7 +1,7 @@
 from sqlalchemy import func, select, text
 
-from app.infrastructure.database.models import ConstructionMeasurement, ConstructionMeasurementItem, ConstructionServiceTemplate
-from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction
+from app.infrastructure.database.models import ConstructionMeasurement, ConstructionMeasurementItem, ConstructionServiceTemplate, ConstructionUnit
+from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction, ConstructionSubcontractPayable
 from app.infrastructure.repository._project_scope_filters import scope_conditions
 
 
@@ -117,3 +117,52 @@ class SubcontractRepository:
             ConstructionSubcontractDeduction.measurement_id == measurement_id,
             *scope_conditions(ConstructionSubcontractDeduction, self.scope))
             .order_by(ConstructionSubcontractDeduction.direct_bill_id).with_for_update())).all()
+
+    async def global_paid_totals(self, company_id, contract_ids):
+        if not contract_ids:
+            return {}
+        rows = await self.session.execute(select(ConstructionSubcontractPayable.contract_id,
+            func.coalesce(func.sum(ConstructionSubcontractPayable.amount), 0)).where(
+            ConstructionSubcontractPayable.company_id == company_id,
+            ConstructionSubcontractPayable.contract_id.in_(contract_ids),
+            ConstructionSubcontractPayable.status == "ACTIVE",
+            *scope_conditions(ConstructionSubcontractPayable, self.scope))
+            .group_by(ConstructionSubcontractPayable.contract_id))
+        return dict(rows.all())
+
+    async def active_global_payable(self, company_id, payable_document_id):
+        return await self.session.scalar(select(ConstructionSubcontractPayable).where(
+            ConstructionSubcontractPayable.company_id == company_id,
+            ConstructionSubcontractPayable.payable_document_id == payable_document_id,
+            ConstructionSubcontractPayable.status == "ACTIVE").with_for_update())
+
+    async def global_orders(self, company_id, contract_id):
+        rows = await self.session.execute(select(ConstructionMeasurement, ConstructionUnit.code)
+            .outerjoin(ConstructionUnit, ConstructionUnit.id == ConstructionMeasurement.unit_id)
+            .where(ConstructionMeasurement.company_id == company_id,
+                ConstructionMeasurement.global_contract_id == contract_id,
+                *scope_conditions(ConstructionMeasurement, self.scope))
+            .order_by(ConstructionUnit.code, ConstructionMeasurement.sequence_number, ConstructionMeasurement.code))
+        return list(rows.all())
+
+    async def global_orders_on_document(self, company_id, contract_id, payable_document_id):
+        return await self.session.scalar(select(func.count()).select_from(ConstructionMeasurement).where(
+            ConstructionMeasurement.company_id == company_id,
+            ConstructionMeasurement.global_contract_id == contract_id,
+            ConstructionMeasurement.external_accounts_payable_id == payable_document_id))
+
+    async def has_contract_activity(self, company_id, contract_id):
+        consumed = await self.session.scalar(select(ConstructionSubcontractItem.id).where(
+            ConstructionSubcontractItem.company_id == company_id, ConstructionSubcontractItem.contract_id == contract_id,
+            ConstructionSubcontractItem.consumed_quantity > 0).limit(1))
+        if consumed is not None:
+            return True
+        measured = await self.session.scalar(select(ConstructionMeasurement.id).where(
+            ConstructionMeasurement.company_id == company_id,
+            (ConstructionMeasurement.subcontract_id == contract_id) | (ConstructionMeasurement.global_contract_id == contract_id))
+            .limit(1))
+        if measured is not None:
+            return True
+        return await self.session.scalar(select(ConstructionSubcontractPayable.id).where(
+            ConstructionSubcontractPayable.company_id == company_id,
+            ConstructionSubcontractPayable.contract_id == contract_id).limit(1)) is not None

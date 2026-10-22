@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react"
 
 import styles from "./MeasurementInspections.module.css"
 import { InspectorPicker } from "./InspectorPicker"
-import { roundStatusLabel } from "./inspectionVocabulary"
+import { inspectorVerdictBlock, roundStatusLabel } from "./inspectionVocabulary"
 
 const title = {
   compliant: "Registrar conformidade",
@@ -25,6 +25,7 @@ export function InspectionRoundForm({
   status,
   defaultInspectorPersonId,
   defaultInspectorName,
+  currentPersonId,
   saving,
   onCancel,
   onSubmit,
@@ -40,7 +41,8 @@ export function InspectionRoundForm({
   }, [])
 
   const previousRound = inspection.lastRound
-  const canSubmit = comment.trim().length > 0 && !saving
+  const inspectorBlock = status === "waived" ? "" : inspectorVerdictBlock(currentPersonId, inspectorPersonId)
+  const canSubmit = comment.trim().length > 0 && !saving && !inspectorBlock
 
   const handleSubmit = (event) => {
     event.preventDefault()
@@ -93,6 +95,7 @@ export function InspectionRoundForm({
           setInspectorName(personName)
         }}
       />
+      {inspectorBlock ? <span className={styles.fieldHint} role="status">{inspectorBlock}</span> : null}
 
       {status === "non_compliant" ? (
         <label className={styles.checkboxField}>

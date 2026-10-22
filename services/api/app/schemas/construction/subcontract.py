@@ -1,5 +1,6 @@
 from datetime import date
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -26,7 +27,9 @@ class SubcontractRequest(BaseModel):
     escrow_rate: Decimal = Field(default=0, ge=0, le=100, decimal_places=4)
     escrow_due_date: date | None = None
     notes: str | None = Field(default=None, max_length=4000)
-    items: list[SubcontractItemRequest] = Field(min_length=1, max_length=990)
+    pricing_mode: Literal["ITEMIZED", "GLOBAL"] = "ITEMIZED"
+    global_amount: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
+    items: list[SubcontractItemRequest] = Field(default_factory=list, max_length=990)
 
     @model_validator(mode="after")
     def validate_sheet(self):
@@ -36,6 +39,13 @@ class SubcontractRequest(BaseModel):
             raise ValueError("Retenção e caução precisam deixar saldo líquido positivo.")
         if self.escrow_rate and self.escrow_due_date is None:
             raise ValueError("Informe a data prevista de liberação da caução.")
+        if self.pricing_mode == "GLOBAL":
+            if self.global_amount is None:
+                raise ValueError("Informe o valor total do contrato global.")
+            if self.items:
+                raise ValueError("O contrato por valor global não tem planilha de serviços.")
+        elif not self.items:
+            raise ValueError("Inclua ao menos um serviço na planilha do contrato.")
         ids = [item.id for item in self.items if item.id]
         if len(ids) != len(set(ids)):
             raise ValueError("Os itens do contrato não podem se repetir.")
@@ -54,3 +64,7 @@ class SubcontractDirectBillRequest(BaseModel):
 class SubcontractDeductionRequest(BaseModel):
     direct_bill_id: UUID
     amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+
+
+class SubcontractOrdersRequest(BaseModel):
+    measurement_ids: list[UUID] = Field(min_length=1, max_length=1000)

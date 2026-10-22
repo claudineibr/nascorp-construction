@@ -759,6 +759,7 @@ def _zero_value_filters(
     due_from: date | None = Query(default=None),
     due_to: date | None = Query(default=None),
     search: str | None = Query(default=None, max_length=60),
+    subcontract_id: UUID | None = Query(default=None),
 ) -> dict:
     return {
         "supplier_person_id": supplier_person_id,
@@ -768,6 +769,7 @@ def _zero_value_filters(
         "due_from": due_from,
         "due_to": due_to,
         "search": search,
+        "subcontract_id": subcontract_id,
     }
 
 
@@ -876,6 +878,7 @@ async def link_shared_payable(
             payable_document_id=payable_document_id,
             measurement_ids=request_data.measurement_ids,
             user_id=ctx.user_id,
+            subcontract_id=request_data.subcontract_id,
         )
         return ConstructionSharedPayableResult(payable_document_id=payable_document_id, affected=affected)
     except ConstructionDomainError as exc:
@@ -899,6 +902,7 @@ async def unlink_shared_payable(
             project_id=project_id,
             payable_document_id=payable_document_id,
             measurement_ids=request_data.measurement_ids,
+            user_id=ctx.user_id,
         )
         return ConstructionSharedPayableResult(payable_document_id=payable_document_id, affected=affected)
     except ConstructionDomainError as exc:

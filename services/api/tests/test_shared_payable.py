@@ -143,6 +143,55 @@ async def test_orders_of_different_suppliers_or_title_of_another_supplier_are_re
 
 
 @pytest.mark.asyncio
+async def test_dnf_of_a_contract_does_not_take_orders_without_contract() -> None:
+    service, repository, erp, company_id, project, supplier_id = build_project()
+    title_id = uuid4()
+    contract_order = add_measurement(
+        repository, company_id, project, supplier_id, code="OS-001", amount=Decimal("500.00"),
+        external_accounts_payable_id=title_id, subcontract_id=uuid4(),
+    )
+    contract_order.external_accounts_payable_shared = True
+    zero_order = add_measurement(repository, company_id, project, supplier_id, code="OS-002")
+
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.link_shared_payable(
+            company_id=company_id, project_id=project.id, payable_document_id=title_id, measurement_ids=[zero_order.id]
+        )
+
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_SHARED_MIXED_CONTRACTS"
+    assert zero_order.external_accounts_payable_id is None
+    assert erp.checked == []
+
+
+@pytest.mark.asyncio
+async def test_contract_order_leaves_the_dnf_only_when_it_has_no_payment() -> None:
+    service, repository, erp, company_id, project, supplier_id = build_project()
+    title_id = uuid4()
+    contract_order = add_measurement(
+        repository, company_id, project, supplier_id, code="OS-001", amount=Decimal("500.00"),
+        external_accounts_payable_id=title_id, subcontract_id=uuid4(),
+    )
+    contract_order.external_accounts_payable_shared = True
+
+    with pytest.raises(ConstructionInvalidValueError) as paid:
+        await service.unlink_shared_payable(
+            company_id=company_id, project_id=project.id, payable_document_id=title_id, measurement_ids=[contract_order.id]
+        )
+    assert paid.value.error_code == "CONSTRUCTION_MEASUREMENT_SHARED_PAYABLE_PAID"
+    assert contract_order.external_accounts_payable_id == title_id
+
+    async def missing_title(**_):
+        raise ConstructionNotFoundError(resource_name="o título")
+
+    erp.check_shared_payable = missing_title
+    removed = await service.unlink_shared_payable(
+        company_id=company_id, project_id=project.id, payable_document_id=title_id, measurement_ids=[contract_order.id]
+    )
+    assert removed == 1
+    assert contract_order.external_accounts_payable_id is None
+
+
+@pytest.mark.asyncio
 async def test_order_from_another_project_is_not_found() -> None:
     service, repository, erp, company_id, project, supplier_id = build_project()
 

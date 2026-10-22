@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { InfoTip } from "../../components/InfoTip";
 import { subcontractRequest } from "../../services/constructionApi";
+import { formatBusinessDate } from "../../utils/brazilDate.js";
 import styles from "./SubcontractsPanel.module.css";
 import appStyles from "../../App.module.css";
 
@@ -22,7 +23,7 @@ export function ContractMeasurementFields({
     subcontractRequest({ bridge, path: `/projects/${projectId}/subcontracts` })
       .then((result) => {
         if (active)
-          setRows(result.items.filter((row) => row.status === "RELEASED"));
+          setRows(result.items.filter((row) => row.status === "RELEASED" && row.pricing_mode !== "GLOBAL"));
       })
       .catch((failure) => {
         if (active) setError(failure.message);
@@ -34,15 +35,37 @@ export function ContractMeasurementFields({
       active = false;
     };
   }, [bridge, projectId, attempt]);
+  const [pinned] = useState(() => ({ contractId: form.subcontractId, versionId: form.subcontractVersionId }));
+  const [pinnedTerms, setPinnedTerms] = useState(null);
+  useEffect(() => {
+    let active = true;
+    if (!pinned.contractId || !pinned.versionId) return;
+    subcontractRequest({
+      bridge,
+      path: `/subcontracts/${pinned.contractId}?version_id=${pinned.versionId}`,
+    })
+      .then((sheet) => {
+        if (active) setPinnedTerms({ valid_from: sheet.valid_from, valid_to: sheet.valid_to });
+      })
+      .catch((failure) => {
+        if (active) setError(failure.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [bridge, pinned]);
   const choose = (contractId) => {
     const row = rows.find((candidate) => candidate.id === contractId);
     onChange("subcontractId", row?.id ?? "");
+    if (!row) onChange("competenceDate", "");
     onChange("purpose", row ? "CONTRACT" : "SERVICE");
     if (row) {
       onChange("supplierPersonId", row.supplier_person_id);
       if (!form.documentType?.trim()) onChange("documentType", "NFS-e");
     }
   };
+  const usesPinnedTerms = Boolean(pinnedTerms) && form.subcontractId === pinned.contractId;
+  const terms = usesPinnedTerms ? pinnedTerms : rows.find((row) => row.id === form.subcontractId);
   const hint = form.purpose === "CONTROL"
     ? "OS de controle físico: registre serviços e FVS sem valor próprio. A DNF pode pagar um conjunto de OS depois."
     : form.purpose === "CONTRACT"
@@ -64,7 +87,10 @@ export function ContractMeasurementFields({
           onChange={(event) => {
             const purpose = event.target.value;
             onChange("purpose", purpose);
-            if (purpose !== "CONTRACT") onChange("subcontractId", "");
+            if (purpose !== "CONTRACT") {
+              onChange("subcontractId", "");
+              onChange("competenceDate", "");
+            }
             if (purpose !== "SERVICE") {
               onChange("grossAmount", "0,00");
               onChange("retentionsAmount", "0,00");
@@ -106,6 +132,26 @@ export function ContractMeasurementFields({
           ))}
         </select>
       </label>}
+      {form.subcontractId && (
+        <label>
+          Competência*
+          <input
+            type="date"
+            required
+            min={terms?.valid_from ?? undefined}
+            max={terms?.valid_to ?? undefined}
+            value={form.competenceDate ?? ""}
+            onChange={(event) => onChange("competenceDate", event.target.value)}
+          />
+          {terms && (
+            <span className={styles.hint}>
+              {usesPinnedTerms ? "Vigência da versão usada nesta medição" : "Vigência do contrato"}:{" "}
+              {formatBusinessDate(terms.valid_from)} a {formatBusinessDate(terms.valid_to)}.
+              A competência precisa estar dentro dela.
+            </span>
+          )}
+        </label>
+      )}
       <p className={styles.hint}>{hint}</p>
       {form.purpose === "CONTRACT" && !loading && !error && !rows.length && (
         <p className={styles.hint}>Nenhum contrato liberado disponível. Cadastre e libere a planilha na aba Empreitada antes de medir por contrato.</p>

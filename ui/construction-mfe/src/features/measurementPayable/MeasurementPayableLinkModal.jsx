@@ -9,7 +9,7 @@ import {
   linkMeasurementPayable,
   listMeasurementPayableCandidates,
 } from "../../services/constructionApi"
-import { payableStatusLabel } from "../measurementActions"
+import { newMeasurementPayablePath, payableStatusLabel } from "../measurementActions"
 
 const SEARCH_DEBOUNCE_MS = 400
 
@@ -75,7 +75,7 @@ export function MeasurementPayableLinkModal({ measurement, onClose, onLinked }) 
   }, [bridge, measurement.id, measurement.code, onLinked])
 
   const openNewPayable = () => {
-    window.open(`/accounts-payable/new?measurement_id=${measurement.id}`, "_blank", "noopener")
+    bridge?.navigate?.(newMeasurementPayablePath(measurement))
   }
 
   const confirm = async () => {
@@ -100,11 +100,11 @@ export function MeasurementPayableLinkModal({ measurement, onClose, onLinked }) 
         className={appStyles.modalCard}
         role="dialog"
         aria-modal="true"
-        aria-label={`Vincular título do ERP à medição ${measurement.code}`}
+        aria-label={`Vincular título existente à medição ${measurement.code}`}
         onClick={(event) => event.stopPropagation()}
       >
         <header className={appStyles.modalHeader}>
-          <h3>Vincular título do ERP à medição {measurement.code}</h3>
+          <h3>Vincular título existente à medição {measurement.code}</h3>
           <button type="button" className={appStyles.closeButton} onClick={onClose} disabled={saving}>
             Fechar
           </button>
@@ -115,7 +115,7 @@ export function MeasurementPayableLinkModal({ measurement, onClose, onLinked }) 
             medição, lançados nos centros de custo desta obra e ainda não vinculados a outra medição. Valor da medição:{" "}
             <strong>{money(measuredAmount)}</strong>.
             {canCreatePayable
-              ? " Se o fornecedor não tem nota nem recibo, use Lançar nova DNF: o título abre em outra aba com os dados da medição e fica vinculado a ela ao salvar."
+              ? " Se o fornecedor não tem nota nem recibo, use Lançar nova DNF: o Contas a Pagar abre nesta aba com os dados da medição, o título fica vinculado a ela ao salvar e a tela volta para a obra."
               : null}
           </p>
           <div className={styles.toolbar}>

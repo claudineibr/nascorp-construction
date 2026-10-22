@@ -358,6 +358,7 @@ class ConstructionMeasurement(PreservedHistory, Base):
     code: Mapped[str] = mapped_column(String(50), nullable=False)
     subcontract_id: Mapped[UUID | None] = mapped_column(ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_subcontracts.id"), index=True)
     subcontract_version_id: Mapped[UUID | None] = mapped_column(ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_subcontract_versions.id"))
+    global_contract_id: Mapped[UUID | None] = mapped_column(ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_subcontracts.id"), index=True)
     approval_cycle: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     reversal_pending: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     escrow_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=0, server_default="0")
