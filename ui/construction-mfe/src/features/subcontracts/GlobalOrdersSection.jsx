@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
+import { InfoTip } from "../../components/InfoTip";
 import { subcontractRequest } from "../../services/constructionApi";
 import { ZeroValueOrders, day } from "../sharedPayables/ZeroValueOrders";
 import { Dialog } from "./DirectBillsSection";
@@ -62,12 +63,12 @@ export function GlobalOrdersSection({ bridge, projectId, contract, canUpdate, on
     <section className={styles.block}>
       <div className={styles.blockHeader}>
         <div>
-          <h4>OS do contrato</h4>
-          <p className={styles.hint}>
+          <h4>OS do contrato
+          <InfoTip floating label="Sobre as OS do contrato">
             OS sem valor do empreiteiro que este contrato paga, inclusive as
             importadas do sistema anterior. A OS mantém os serviços e a FVS;
             o valor fica no contrato e nas DNFs.
-          </p>
+          </InfoTip></h4>
         </div>
         {canUpdate && (
           <button

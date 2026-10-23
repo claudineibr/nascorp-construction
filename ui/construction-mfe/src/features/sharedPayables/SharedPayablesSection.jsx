@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import { ExternalLink, Link2, ListChecks, RefreshCw } from "lucide-react"
+import { InfoTip } from "../../components/InfoTip"
 
 import appStyles from "../../App.module.css"
 import styles from "./SharedPayables.module.css"
@@ -161,11 +162,11 @@ export function SharedPayablesSection({ bridge, projectId }) {
   return (
     <section className={styles.section}>
       <div className={styles.toolbar}>
-        <p className={styles.notice}>
+        <InfoTip floating label="Como vincular as DNFs da empreitada às OS sem valor">
           Ordens de serviço sem valor são medições de controle da Caixa. O pagamento da empreitada sai numa DNF que cobre
           várias delas: ligue aqui a DNF às OS que ela pagou. A DNF das medições de um contrato é vinculada no próprio
           contrato, em DNF das medições do contrato, e também aparece nesta lista.
-        </p>
+        </InfoTip>
         <div className={styles.toolbarActions}>
           <button
             type="button"

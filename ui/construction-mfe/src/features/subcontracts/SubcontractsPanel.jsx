@@ -589,13 +589,13 @@ function SubcontractsWorkspace({ bridge, projectId }) {
             {globalMode ? (
               <section className={styles.block}>
                 <div className={styles.blockHeader}>
-                  <h4>Contrato por valor global</h4>
-                  <p className={styles.hint}>
+                  <h4>Contrato por valor global
+                  <InfoTip floating label="Sobre o contrato por valor global">
                     Não há planilha de serviços. Depois de liberar, vincule as
                     OS sem valor do empreiteiro em OS do contrato e lance a DNF
                     em DNF das medições do contrato. A soma das DNFs não passa
                     do valor total.
-                  </p>
+                  </InfoTip></h4>
                 </div>
                 {draft.id && (
                   <p className={styles.hint}>
@@ -606,15 +606,15 @@ function SubcontractsWorkspace({ bridge, projectId }) {
               </section>
             ) : <section className={styles.block}>
               <div className={styles.blockHeader}>
-                <h4>Itens da planilha</h4>
-                <p className={styles.hint}>
+                <h4>Itens da planilha
+                <InfoTip floating label="Como preencher os itens da planilha">
                   Cada item é um serviço contratado com quantidade e preço por
                   unidade, separado em material e mão de obra (use 0 quando não
                   houver).
                   {services.restricted
                     ? " Esta obra tem lista de serviços: escolha o serviço de cada item."
                     : ""}
-                </p>
+                </InfoTip></h4>
               </div>
               <SubcontractItemsTable
                 items={draft.items}

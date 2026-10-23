@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link2, Unlink } from "lucide-react";
+import { InfoTip } from "../../components/InfoTip";
 import appStyles from "../../App.module.css";
 import { money } from "../sharedPayables/SharedPayableLinkModal";
 import {
@@ -67,13 +68,13 @@ export function DirectBillsSection({
     <section className={styles.block}>
       <div className={styles.blockHeader}>
         <div>
-          <h4>Material faturado diretamente</h4>
-          <p className={styles.hint}>
+          <h4>Material faturado diretamente
+          <InfoTip floating label="Sobre o material faturado diretamente">
             Material que a construtora comprou para o empreiteiro e que será
             descontado nas medições. Vincule o título de material já aprovado
             no ERP; isso registra o crédito e não cria outra compra nem
             estoque.
-          </p>
+          </InfoTip></h4>
         </div>
         {canUpdate && (
           <button

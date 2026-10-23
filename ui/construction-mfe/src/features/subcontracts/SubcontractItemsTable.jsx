@@ -53,26 +53,32 @@ export function SubcontractItemsTable({
               <th>Especificação*</th>
               <th>Unidade*</th>
               <th>
-                Qtd. contratada*
+                <div className={styles.columnHeading}>
+                <span>Qtd. contratada*</span>
                 <InfoTip floating label="Sobre a quantidade contratada">
                   Quantidade total do serviço combinada no contrato, na unidade
                   informada. As medições aprovadas consomem esse saldo.
                 </InfoTip>
+                </div>
               </th>
               <th>
-                Material / un.*
+                <div className={styles.columnHeading}>
+                <span>Material / un.*</span>
                 <InfoTip floating label="Sobre o material por unidade">
                   Preço do material para uma unidade do serviço. Informe 0,00
                   quando o preço contratado não incluir material.
                 </InfoTip>
+                </div>
               </th>
               <th>
-                Mão de obra / un.*
+                <div className={styles.columnHeading}>
+                <span>Mão de obra / un.*</span>
                 <InfoTip floating label="Sobre a mão de obra por unidade">
                   Preço da mão de obra para uma unidade do serviço. O total do
                   item é a quantidade contratada multiplicada pela soma dos
                   preços de material e mão de obra. Informe 0,00 quando não houver.
                 </InfoTip>
+                </div>
               </th>
               <th>Total</th>
               <th>Medido · saldo</th>
