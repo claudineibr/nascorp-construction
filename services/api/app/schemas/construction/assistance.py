@@ -38,7 +38,7 @@ class AssistanceInput(AssistanceInputModel):
     project_id: UUID
     unit_id: UUID
     customer_person_id: UUID
-    attendant_person_id: UUID
+    attendant_person_id: UUID | None = None
     analyst_person_id: UUID | None = None
     opened_at: AwareDatetime
     notes: str | None = Field(default=None, max_length=8000)

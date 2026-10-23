@@ -90,7 +90,6 @@ def test_empty_requests_and_historical_completions():
 async def test_concurrent_numbers_and_reimport_gate_and_no_measurement_side_effects(monkeypatch):
     from unittest.mock import AsyncMock
 
-    monkeypatch.setattr(AssistanceRepository, "is_employee", AsyncMock(return_value=True))
     engine = await create_reachable_engine_or_skip()
     factory = async_sessionmaker(engine, expire_on_commit=False)
     company_id = uuid4()
@@ -153,6 +152,7 @@ async def test_concurrent_numbers_and_reimport_gate_and_no_measurement_side_effe
                         complaints=[{"description": "Reparo"}],
                     ),
                     uuid4(),
+                    actor_person_id=person_id,
                 )
                 return row.number
 
@@ -255,7 +255,6 @@ async def test_person_without_link_to_the_company_is_refused():
     repository = SimpleNamespace(
         project=AsyncMock(return_value=object()),
         unit=AsyncMock(return_value=object()),
-        is_employee=AsyncMock(return_value=True),
         valid_people=AsyncMock(return_value={attendant_id}),
     )
     data = AssistanceInput(
@@ -271,14 +270,14 @@ async def test_person_without_link_to_the_company_is_refused():
 
 
 @pytest.mark.asyncio
-async def test_new_attendant_must_be_employee_of_company():
+async def test_attendant_with_company_link_does_not_require_employee_role():
     from unittest.mock import AsyncMock
 
     company_id, person_id = uuid4(), uuid4()
     repository = SimpleNamespace(
         project=AsyncMock(return_value=object()),
         unit=AsyncMock(return_value=object()),
-        is_employee=AsyncMock(return_value=False),
+        valid_people=AsyncMock(return_value={person_id}),
     )
     data = AssistanceInput(
         project_id=uuid4(),
@@ -287,9 +286,31 @@ async def test_new_attendant_must_be_employee_of_company():
         attendant_person_id=person_id,
         opened_at=datetime.now(UTC) - timedelta(hours=1),
     )
-    with pytest.raises(ConstructionDomainError, match="funcionário ativo desta empresa"):
-        await AssistanceRequestService(repository).validate(company_id, data)
-    repository.is_employee.assert_awaited_once_with(company_id, person_id)
+    await AssistanceRequestService(repository).validate(company_id, data)
+    repository.valid_people.assert_awaited_once_with(company_id, {person_id})
+
+
+@pytest.mark.parametrize("existing", [False, True])
+async def test_save_resolves_attendant_from_actor_or_preserves_existing(existing):
+    from unittest.mock import AsyncMock
+
+    company_id, actor_id, actor_person_id, stored_person_id = uuid4(), uuid4(), uuid4(), uuid4()
+    request_id = uuid4() if existing else None
+    repository = SimpleNamespace(release_operation=AsyncMock())
+    service = AssistanceRequestService(repository)
+    service.get = AsyncMock(return_value=SimpleNamespace(status="open", attendant_person_id=stored_person_id))
+    service.validate = AsyncMock(side_effect=ConstructionDomainError(message="Stop before writing", status_code=422))
+    request = AssistanceInput(
+        project_id=uuid4(),
+        unit_id=uuid4(),
+        customer_person_id=uuid4(),
+        attendant_person_id=uuid4(),
+        opened_at=datetime.now(UTC) - timedelta(hours=1),
+    )
+    with pytest.raises(ConstructionDomainError, match="Stop before writing"):
+        await service.save(company_id, request, actor_id, request_id, actor_person_id=actor_person_id)
+    resolved = service.validate.await_args.args[1]
+    assert resolved.attendant_person_id == (stored_person_id if existing else actor_person_id)
 
 
 async def _seed_sat_company(factory, company_id, project_id, unit_ids):
@@ -348,7 +369,6 @@ async def _cleanup_sat_company(factory, company_id, project_id, unit_ids):
 async def test_editing_the_header_of_an_existing_sat_saves_the_notes(monkeypatch):
     from unittest.mock import AsyncMock
 
-    monkeypatch.setattr(AssistanceRepository, "is_employee", AsyncMock(return_value=True))
     engine = await create_reachable_engine_or_skip()
     factory = async_sessionmaker(engine, expire_on_commit=False)
     company_id, project_id, unit_id = uuid4(), uuid4(), uuid4()
@@ -364,7 +384,7 @@ async def test_editing_the_header_of_an_existing_sat_saves_the_notes(monkeypatch
         }
         async with factory() as session:
             created = await AssistanceRequestService(AssistanceRepository(session, ProjectScope.unlimited())).save(
-                company_id, AssistanceInput(**payload), uuid4()
+                company_id, AssistanceInput(**payload), uuid4(), actor_person_id=person_id
             )
             complaint_id = created.complaints[0].id
         async with factory() as session:
@@ -388,7 +408,6 @@ async def test_editing_the_header_of_an_existing_sat_saves_the_notes(monkeypatch
 async def test_next_number_counts_sats_hidden_by_the_history_filter(monkeypatch):
     from unittest.mock import AsyncMock
 
-    monkeypatch.setattr(AssistanceRepository, "is_employee", AsyncMock(return_value=True))
     engine = await create_reachable_engine_or_skip()
     factory = async_sessionmaker(engine, expire_on_commit=False)
     company_id, project_id, hidden_unit_id, unit_id = uuid4(), uuid4(), uuid4(), uuid4()
@@ -427,6 +446,7 @@ async def test_next_number_counts_sats_hidden_by_the_history_filter(monkeypatch)
                     complaints=[{"description": "Trinca"}],
                 ),
                 uuid4(),
+                actor_person_id=person_id,
             )
             assert row.number == 2
     finally:

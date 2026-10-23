@@ -272,7 +272,7 @@ const projectDetailTabs = [
   { id: "schedule", label: "Cronograma", icon: ListChecks },
   { id: "services", label: "Serviços", icon: ClipboardList },
   { id: "procurement", label: "Requisições", icon: PackageSearch },
-  { id: "purchaseOrders", label: "Pedidos de compra", icon: ShoppingCart },
+  { id: "purchaseOrders", label: "Compras", icon: ShoppingCart },
   { id: "accountsPayable", label: "Contas a pagar", icon: HandCoins },
   { id: "subcontracts", label: "Empreitada", icon: FileText },
   { id: "reports", label: "Relatórios", icon: BarChart3 },
@@ -4239,8 +4239,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
             loading={loading}
           />
 
-          <section className={styles.tabCard}>
-            <div className={styles.tabList}>
+          <section className={styles.projectTabCard}>
+            <nav className={styles.projectTabList} aria-label="Abas da obra">
               {projectDetailTabs.filter((tab) => (tab.id !== "purchaseOrders" || ProjectPurchaseOrders) && (tab.id !== "accountsPayable" || ProjectAccountsPayable)).map((tab) => {
                 const Icon = tab.icon
                 return (
@@ -4248,16 +4248,16 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                     key={tab.id}
                     type="button"
                     ref={projectDetailTab === tab.id ? revealActiveTab : undefined}
-                    className={`${styles.tabButton} ${projectDetailTab === tab.id ? styles.tabButtonActive : ""}`}
+                    className={`${styles.projectTabButton} ${projectDetailTab === tab.id ? styles.projectTabButtonActive : ""}`}
+                    aria-current={projectDetailTab === tab.id ? "page" : undefined}
                     onClick={() => setProjectDetailTab(tab.id)}
                   >
-                    <Icon size={16} />
+                    <Icon size={16} aria-hidden="true" />
                     {tab.label}
                   </button>
                 )
               })}
-            </div>
-          </section>
+            </nav>
 
           {projectDetailTab === "overview" ? (
             <DomainCard
@@ -4473,7 +4473,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
           {projectDetailTab === "purchaseOrders" && ProjectPurchaseOrders ? (
             <DomainCard
-              title="Pedidos de compra"
+              title="Compras"
               subtitle="Pedidos emitidos para esta obra. Abra o pedido para ver itens, recebimentos e títulos."
               content={<ProjectPurchaseOrders projectId={activeProjectId} />}
             />
@@ -4510,7 +4510,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
               }
             />
           ) : null}
-
+          </section>
         </>
       ) : null}
 
@@ -5216,13 +5216,7 @@ function ProjectDetailHeader({ project, units, schedulePhases, onBack, onEdit, o
           <p className={styles.textMuted}>{project.code}</p>
         </div>
       </div>
-      <div className={styles.detailMetaGrid}>
-        <DetailMetaItem
-          label="Tipo"
-          value={projectTypeLabel[project.projectType] ?? project.projectType}
-          hint={project.cnpjSpe ? `SPE ${project.cnpjSpe}` : null}
-        />
-        <DetailMetaItem label="Regime da obra" value={({ INCORPORATION: "Incorporação", CONTRACT_WORK: "Empreitada" })[project.developmentType] || "Não informado"} />
+      <div className={styles.projectMetaGrid}>
         <DetailMetaItem label="Prazo" value={periodLabel} hint={periodHint} />
         <DetailMetaItem
           label="Unidades"
@@ -5524,7 +5518,9 @@ function UnitDetailPanel({
     (total, measurement) => total + Number(measurement.netAmount ?? measurement.measuredAmount ?? 0),
     0
   )
-  const openMeasurements = measurements.filter((measurement) => !["approved", "paid"].includes(measurement.status)).length
+  const openMeasurements = measurements.filter(
+    (measurement) => !measurementCancelled(measurement) && !["approved", "paid"].includes(measurement.status),
+  ).length
   const linkedPayables = measurements.filter((measurement) => measurement.externalAccountsPayableId).length
   const estimatedMargin = Number(unit.salePrice ?? 0) - measuredCost
   const canReserve = unit.status === "available"
@@ -6449,7 +6445,7 @@ function RebuildSalePlanModal({ unit, form, composition, onClose, onChange, onSu
               />
             </label>
             <label className={styles.filterControl}>
-              <span>1o vencimento da entrada</span>
+              <span>1º vencimento da entrada</span>
               <input
                 type="date"
                 value={form.downPaymentDueDate}
@@ -9160,23 +9156,6 @@ function SaleUnitModal({
                 placeholder="0,00"
               />
             </label>
-            <label className={styles.checkboxControl}>
-              <input
-                type="checkbox"
-                checked={saleForm.financingCompleted}
-                disabled={loading}
-                onChange={(event) => onChange("financingCompleted", event.target.checked)}
-              />
-              <span>Financiamento concluído</span>
-            </label>
-            <label className={styles.filterControl}>
-              <span>Data do financiamento</span>
-              <input
-                type="date"
-                value={saleForm.financingDate}
-                onChange={(event) => onChange("financingDate", event.target.value)}
-              />
-            </label>
             <label className={styles.filterControl}>
               <span>Assinatura do contrato</span>
               <input
@@ -9321,6 +9300,25 @@ function SaleUnitModal({
                 </div>
               </div>
             ))}
+            <div className={styles.saleFinancingStatus} role="group" aria-label="Conclusão do financiamento">
+              <label className={styles.saleFinancingCompleted}>
+                <input
+                  type="checkbox"
+                  checked={saleForm.financingCompleted}
+                  disabled={loading}
+                  onChange={(event) => onChange("financingCompleted", event.target.checked)}
+                />
+                <span>Financiamento concluído</span>
+              </label>
+              <label className={styles.filterControl}>
+                <span>Data do financiamento</span>
+                <input
+                  type="date"
+                  value={saleForm.financingDate}
+                  onChange={(event) => onChange("financingDate", event.target.value)}
+                />
+              </label>
+            </div>
           </div>
 
           {isEditing ? (
@@ -9352,7 +9350,7 @@ function SaleUnitModal({
                   </span>
                 </div>
                 <div className={styles.filterControl}>
-                  <span>1o vencimento do saldo</span>
+                  <span>1º vencimento do saldo</span>
                   <strong className={styles.installmentPreview}>
                     {saleForm.firstDueDate ? formatDate(saleForm.firstDueDate) : "não definido"}
                   </strong>
@@ -9394,7 +9392,7 @@ function SaleUnitModal({
                   />
                 </label>
                 <label className={styles.filterControl}>
-                  <span>1o vencimento</span>
+                  <span>1º vencimento</span>
                   <input
                     type="date"
                     value={saleForm[source.dueDateField]}

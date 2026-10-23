@@ -34,11 +34,12 @@ const localDate = (value) =>
     ? new Date(new Date(value).getTime() - new Date(value).getTimezoneOffset() * 60000).toISOString().slice(0, 16)
     : ""
 const instant = (value) => (value ? new Date(value).toISOString() : null)
-const empty = (projectId, unitId) => ({
+const empty = (projectId, unitId, user) => ({
   project_id: projectId || "",
   unit_id: unitId || "",
   customer_person_id: "",
-  attendant_person_id: "",
+  attendant_person_id: user?.personId || "",
+  attendant_name: user?.name || user?.email || "Usuário logado",
   analyst_person_id: null,
   opened_at: new Date().toISOString(),
   notes: "",
@@ -53,7 +54,6 @@ const payload = (row) => ({
     "project_id",
     "unit_id",
     "customer_person_id",
-    "attendant_person_id",
     "analyst_person_id",
     "opened_at",
     "notes",
@@ -100,6 +100,7 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
   const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState("general")
   const [reason, setReason] = useState("")
+  const [reopening, setReopening] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [printing, setPrinting] = useState(null)
   const RowActionsMenu = bridge.components?.RowActionsMenu
@@ -118,6 +119,8 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
     if (busy) return
     setDraft(null)
     setCreating(false)
+    setReopening(false)
+    setReason("")
   }
   const readable = can("canRead")
   const editable = draft && (draft.id ? can("canUpdate") && draft.status === "open" : can("canCreate"))
@@ -276,6 +279,8 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
       })
       setDraft(action === "delete" ? null : result)
       setDeleting(false)
+      setReopening(false)
+      setReason("")
       await load()
       bridge.feedback?.success?.("Atendimento atualizado.")
     } catch (err) {
@@ -298,19 +303,17 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
   const person = (label, key) => (
     <ReferencePicker
       bridge={bridge}
-      kind={key === "attendant_person_id" ? "employee" : "person"}
+      kind="person"
       label={label}
       value={draft[key]}
-      displayName={key === "attendant_person_id" ? draft.attendant_name : undefined}
       onChange={(value) =>
         setDraft((old) => ({
           ...old,
           [key]: value,
-          ...(key === "attendant_person_id" ? { attendant_name: undefined } : {}),
         }))
       }
       disabled={!editable || busy}
-      required={["customer_person_id", "attendant_person_id"].includes(key)}
+      required={key === "customer_person_id"}
     />
   )
   const pageActions = (
@@ -321,7 +324,7 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
           type="button"
           onClick={() => {
             setCreating(true)
-            setDraft(empty(projectId, unitId))
+            setDraft(empty(projectId, unitId, bridge.user))
             setTab("general")
           }}
         >
@@ -358,20 +361,14 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
             </button>
           ) : null}
           {can("canUpdate") && draft.status === "completed" ? (
-            <>
-              <label className={styles.field}>
-                <span>Justificativa da reabertura *</span>
-                <input value={reason} onChange={(e) => setReason(e.target.value)} minLength={10} />
-              </label>
-              <button
-                type="button"
-                className={editorActionClasses.secondary}
-                disabled={busy || reason.trim().length < 10}
-                onClick={() => transition("reopen")}
-              >
-                Reabrir SAT
-              </button>
-            </>
+            <button
+              type="button"
+              className={editorActionClasses.secondary}
+              disabled={busy}
+              onClick={() => { setReason(""); setReopening(true) }}
+            >
+              Reabrir SAT
+            </button>
           ) : null}
           {can("canDelete") ? (
             <button
@@ -560,6 +557,7 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
           busy={busy}
           onClose={closeEditor}
           footer={editorFooter}
+          closeOnEsc={!reopening && !deleting}
         >
           <nav className={appStyles.tabList}>
             {[
@@ -626,7 +624,15 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
                       required
                     />
                     {!draft.id && !draft.unit_buyer_person_id ? person("Solicitante", "customer_person_id") : null}
-                    {person("Responsável pelo atendimento", "attendant_person_id")}
+                    <label className={styles.field}>
+                      <span>Responsável pelo atendimento *</span>
+                      <input
+                        value={draft.attendant_name || "Não informado"}
+                        title={draft.attendant_name || "Não informado"}
+                        disabled
+                        readOnly
+                      />
+                    </label>
                     {person("Responsável pela análise", "analyst_person_id")}
                     <label className={styles.field}>
                       <span>Abertura *</span>
@@ -887,6 +893,46 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
           ) : null}
         </AssistanceEditorSurface>
       ) : null}
+      {reopening && draft?.status === "completed" && ConfirmDialog ? (
+        <ConfirmDialog
+          isOpen
+          title="Reabrir SAT"
+          message="Informe o motivo da reabertura com pelo menos 10 caracteres. Ele será registrado no histórico."
+          confirmLabel="Confirmar reabertura"
+          reasonLabel="Justificativa da reabertura *"
+          reasonValue={reason}
+          onReasonChange={setReason}
+          reasonMinLength={10}
+          confirmDisabled={reason.trim().length < 10}
+          onConfirm={() => transition("reopen")}
+          onCancel={() => { if (!busy) { setReopening(false); setReason("") } }}
+          loading={busy}
+        />
+      ) : null}
+      {reopening && draft?.status === "completed" && !ConfirmDialog ? (
+        <AssistanceEditorSurface
+          bridge={bridge}
+          title="Reabrir SAT"
+          dialogMaxWidth={520}
+          busy={busy}
+          onClose={() => { if (!busy) { setReopening(false); setReason("") } }}
+          footer={<>
+            <button type="button" className={styles.modalSecondaryButton} disabled={busy}
+              onClick={() => { setReopening(false); setReason("") }}>Cancelar</button>
+            <button type="button" className={styles.modalPrimaryButton}
+              disabled={busy || reason.trim().length < 10} onClick={() => transition("reopen")}>
+              Confirmar reabertura
+            </button>
+          </>}
+        >
+          <label className={styles.field}>
+            <span>Justificativa da reabertura *</span>
+            <textarea rows={4} value={reason} onChange={(event) => setReason(event.target.value)}
+              minLength={10} disabled={busy} />
+          </label>
+          <p>Informe pelo menos 10 caracteres. O motivo será registrado no histórico.</p>
+        </AssistanceEditorSurface>
+      ) : null}
       {deleting && ConfirmDialog ? (
         <ConfirmDialog
           isOpen
@@ -907,7 +953,7 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
   )
 }
 
-function AssistanceEditorSurface({ bridge, title, busy, onClose, footer, children }) {
+function AssistanceEditorSurface({ bridge, title, busy, onClose, footer, children, dialogMaxWidth = 1100, closeOnEsc = true }) {
   const Modal = bridge.components?.Modal
   const content = <div className={styles.editor}>{children}</div>
   return Modal ? (
@@ -915,15 +961,15 @@ function AssistanceEditorSurface({ bridge, title, busy, onClose, footer, childre
       isOpen
       title={title}
       onClose={onClose}
-      closeOnEsc={!busy}
+      closeOnEsc={closeOnEsc && !busy}
       closeOnOverlayClick={!busy}
-      dialogMaxWidth={1100}
+      dialogMaxWidth={dialogMaxWidth}
       footer={footer}
     >
       {content}
     </Modal>
   ) : (
-    <Dialog title={title} wide busy={busy} onClose={onClose}>
+    <Dialog title={title} wide={dialogMaxWidth > 600} busy={busy} onClose={onClose}>
       {content}
       <div className={styles.fallbackFooter}>{footer}</div>
     </Dialog>

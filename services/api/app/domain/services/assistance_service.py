@@ -121,11 +121,8 @@ class AssistanceRequestService:
             self.invalid("Obra ou unidade indisponível para esta empresa e seu acesso.")
         if row and (row.project_id != data.project_id or row.unit_id != data.unit_id):
             self.invalid("A obra e a unidade da SAT não podem ser alteradas.")
-        if (row is None or row.attendant_person_id != data.attendant_person_id) and not await self.repository.is_employee(
-            company_id,
-            data.attendant_person_id,
-        ):
-            self.invalid("O responsável pelo atendimento deve ser um funcionário ativo desta empresa.")
+        if not data.attendant_person_id:
+            self.invalid("O usuário logado precisa ter uma pessoa vinculada para registrar o atendimento.")
         ids = {data.customer_person_id, data.attendant_person_id}
         ids.update([data.analyst_person_id] if data.analyst_person_id else [])
         for child in [*data.complaints, *data.services]:
@@ -229,12 +226,19 @@ class AssistanceRequestService:
             if child_id not in seen:
                 child.deleted_at = datetime.now(UTC)
 
-    async def save(self, company_id, data, actor, request_id=None):
+    async def save(self, company_id, data, actor, request_id=None, *, actor_person_id=None):
         logger.info(f"[sat] salvar: company_id={company_id} sat_id={request_id}")
         await self.repository.release_operation(company_id)
         row = await self.get(company_id, request_id, True) if request_id else None
         if row and row.status != "open":
             self.invalid("Reabra a SAT antes de alterar o atendimento.")
+        data = data.model_copy(update={
+            "attendant_person_id": row.attendant_person_id if row else actor_person_id,
+        })
+        logger.info(
+            f"[sat] responsavel_atendimento: company_id={company_id} sat_id={request_id} "
+            f"actor_user_id={actor} attendant_person_id={data.attendant_person_id}"
+        )
         await self.validate(company_id, data, row)
         before = serialize(row) if row else None
         if before:

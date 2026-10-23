@@ -138,19 +138,6 @@ class AssistanceRepository:
             )
         )
 
-    async def is_employee(self, company_id, person_id):
-        return (
-            await self.session.scalar(
-                select(persons.c.id).where(
-                    persons.c.id == person_id,
-                    persons.c.id.in_(self.employee_ids(company_id)),
-                    persons.c.deleted_at.is_(None),
-                    persons.c.is_active.is_(True),
-                )
-            )
-            is not None
-        )
-
     async def print_branding(self, company_id):
         row = (
             (

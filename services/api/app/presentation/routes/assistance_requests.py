@@ -114,7 +114,7 @@ async def create_request(
     service=Depends(get_assistance_service),
 ):
     try:
-        return await response(service, await service.save(ctx.company_id, data, ctx.user_id))
+        return await response(service, await service.save(ctx.company_id, data, ctx.user_id, actor_person_id=ctx.person_id))
     except ConstructionDomainError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
@@ -127,7 +127,7 @@ async def update_request(
     service=Depends(get_assistance_service),
 ):
     try:
-        return await response(service, await service.save(ctx.company_id, data, ctx.user_id, request_id))
+        return await response(service, await service.save(ctx.company_id, data, ctx.user_id, request_id, actor_person_id=ctx.person_id))
     except ConstructionDomainError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
