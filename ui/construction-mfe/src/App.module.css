@@ -238,6 +238,31 @@
   color: var(--color-primary);
 }
 
+.unitTabList .tabButton {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 38px;
+  border-color: var(--color-text);
+  color: var(--color-text);
+  padding: 0.5rem 1rem;
+}
+
+.unitTabList .tabButton:hover {
+  background: color-mix(in srgb, var(--color-primary) 14%, var(--color-surface-muted));
+  border-color: var(--color-primary);
+}
+
+.unitTabList .tabButton:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
+}
+
+.unitTabList .tabButtonActive {
+  background: color-mix(in srgb, var(--color-primary) 24%, var(--color-surface-muted));
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
 .projectTabCard {
   composes: card;
   box-sizing: border-box;
@@ -1596,6 +1621,7 @@
 
 .measurementFormGrid {
   align-items: start;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 .measurementFormGrid > .filterControl input,
 .measurementFormGrid > .filterControl select {
@@ -1603,4 +1629,20 @@
   min-width: 0;
   width: 100%;
   height: 2.6rem;
+}
+
+.measurementSupplierField {
+  box-sizing: border-box;
+  grid-column: span 2;
+  min-width: 0;
+}
+
+@media (width <= 760px) {
+  .measurementFormGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .measurementSupplierField {
+    grid-column: 1 / -1;
+  }
 }

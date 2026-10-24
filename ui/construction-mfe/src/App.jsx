@@ -3453,7 +3453,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }
 
   const closeMeasurementItems = () => {
-    if (savingMeasurementItem) {
+    if (savingMeasurementItem || confirmRequest) {
       return
     }
 
@@ -3546,22 +3546,31 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     }
   }
 
-  const handleDeleteMeasurementItem = async (item) => {
-    if (!itemsTargetMeasurement) {
+  const handleDeleteMeasurementItem = (item) => {
+    if (!itemsTargetMeasurement || savingMeasurementItem || confirmRequest) {
       return
     }
 
-    setSavingMeasurementItem(true)
-    try {
-      await deleteConstructionMeasurementItem({ bridge, itemId: item.id })
-      bridge?.feedback?.success?.("Item de serviço removido.")
-      await loadMeasurementItems(itemsTargetMeasurement.id)
-      await loadMeasurements()
-    } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover o item de serviço.")
-    } finally {
-      setSavingMeasurementItem(false)
-    }
+    const measurementId = itemsTargetMeasurement.id
+    setConfirmRequest({
+      title: "Excluir item de serviço",
+      message: `Confirma a exclusão do item ${item.sequenceNumber} — ${item.description}?`,
+      confirmLabel: "Excluir item",
+      danger: true,
+      run: async () => {
+        setSavingMeasurementItem(true)
+        try {
+          await deleteConstructionMeasurementItem({ bridge, itemId: item.id })
+          bridge?.feedback?.success?.("Item de serviço removido.")
+          await loadMeasurementItems(measurementId)
+          await loadMeasurements()
+        } catch (requestError) {
+          bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover o item de serviço.")
+        } finally {
+          setSavingMeasurementItem(false)
+        }
+      },
+    })
   }
 
   const handleCreateInspection = async (itemId, inspectionForm) => {
@@ -3787,7 +3796,14 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }
 
   const handleMeasurementFieldChange = (field, value) => {
-    setMeasurementForm((currentForm) => ({ ...currentForm, [field]: value }))
+    setMeasurementForm((currentForm) => ({
+      ...currentForm,
+      [field]: value,
+      ...(field === "retentionsAmount" && currentForm.purpose === "SERVICE" ? {
+        netAmount: formatCurrencyFromNumber(Math.max(0,
+          parseCurrencyFormValue(currentForm.grossAmount) - parseCurrencyFormValue(value))),
+      } : {}),
+    }))
   }
 
   const handleMeasurementSubmit = async (event) => {
@@ -3810,7 +3826,13 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         await createConstructionMeasurement({
           bridge,
           projectId: activeProjectId,
-          measurementData: measurementForm,
+          measurementData: {
+            ...measurementForm,
+            grossAmount: "0,00",
+            retentionsAmount: "0,00",
+            netAmount: "0,00",
+            measuredAmount: "0",
+          },
         })
         bridge?.feedback?.success?.("Medição criada com sucesso.")
       } else if (editingMeasurementId) {
@@ -4491,8 +4513,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
           {projectDetailTab === "subcontracts" ? (
             <DomainCard
-              title="DNFs da empreitada (OS sem valor)"
-              subtitle="Uma DNF paga várias ordens de serviço sem valor do mesmo fornecedor."
+              title="Títulos da empreitada"
               content={<SharedPayablesSection bridge={bridge} projectId={activeProjectId} />}
             />
           ) : null}
@@ -4658,6 +4679,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
       {confirmRequest ? (
         <ConfirmModal
+          bridge={bridge}
           title={confirmRequest.title}
           message={confirmRequest.message}
           confirmLabel={confirmRequest.confirmLabel}
@@ -5597,7 +5619,7 @@ function UnitDetailPanel({
       </div>
 
       <section className={styles.tabCard}>
-        <div className={styles.tabList}>
+        <div className={`${styles.tabList} ${styles.unitTabList}`}>
           {unitDetailTabs.filter((tab) => (["delivery_term", "debt_confession"].includes(tab.id) ? bridge.canRead?.("contract") : tab.id !== "assistance" || bridge.canRead?.("construction_units"))).map((tab) => {
             const Icon = tab.icon
             return (
@@ -6757,7 +6779,22 @@ function PayInstallmentModal({
   )
 }
 
-function ConfirmModal({ title, message, confirmLabel, danger, onCancel, onConfirm, loading }) {
+function ConfirmModal({ bridge, title, message, confirmLabel, danger, onCancel, onConfirm, loading }) {
+  const ConfirmDialog = bridge?.components?.ConfirmDialog
+  if (ConfirmDialog) {
+    return (
+      <ConfirmDialog
+        isOpen
+        title={title}
+        message={message}
+        confirmLabel={confirmLabel}
+        variant={danger ? "danger" : "default"}
+        loading={loading}
+        onCancel={() => { if (!loading) onCancel() }}
+        onConfirm={onConfirm}
+      />
+    )
+  }
   return (
     <div className={`${styles.modalOverlay} ${styles.confirmOverlay}`} role="presentation" onClick={onCancel}>
       <section
@@ -8192,7 +8229,7 @@ function MeasurementModal({
           <ContractMeasurementFields bridge={bridge} projectId={projectId} form={measurementForm} onChange={onChange} />
           <div className={`${styles.formGrid} ${styles.measurementFormGrid}`}>
             {mode === "edit" && (
-              <div className={styles.detailMetaItem}>
+              <div className={`${styles.detailMetaItem} ${styles.spanTwoColumns}`}>
                 <span>Código</span>
                 <strong>
                   {measurementForm.code} · OS {measurementForm.sequenceNumber || "-"}
@@ -8200,14 +8237,14 @@ function MeasurementModal({
               </div>
             )}
             {lockedUnit ? (
-              <div className={styles.detailMetaItem}>
+              <div className={`${styles.detailMetaItem} ${styles.spanTwoColumns}`}>
                 <span>Unidade*</span>
                 <strong>
                   {lockedUnit.code} - {lockedUnit.description || formatUnitType(lockedUnit.unitType)}
                 </strong>
               </div>
             ) : (
-              <label className={styles.filterControl}>
+              <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
                 <span>Unidade*</span>
                 <select value={measurementForm.unitId} onChange={(event) => onChange("unitId", event.target.value)} required>
                   <option value="">Selecione</option>
@@ -8234,16 +8271,18 @@ function MeasurementModal({
                 ))}
               </select>
             </label>
-            <PersonPicker
-              label={measurementForm.subcontractId ? "Fornecedor do contrato" : "Fornecedor"}
-              disabled={Boolean(measurementForm.subcontractId)}
-              value={measurementForm.supplierPersonId}
-              onChange={(value) => onChange("supplierPersonId", value)}
-              knownPeople={people}
-              emptyLabel="Buscar fornecedor pelo nome"
-              warnUnqualified
-              qualificationWarnings={QUALIFICATION_WARNINGS}
-            />
+            <div className={styles.measurementSupplierField}>
+              <PersonPicker
+                label={measurementForm.subcontractId ? "Fornecedor do contrato" : "Fornecedor"}
+                disabled={Boolean(measurementForm.subcontractId)}
+                value={measurementForm.supplierPersonId}
+                onChange={(value) => onChange("supplierPersonId", value)}
+                knownPeople={people}
+                emptyLabel="Buscar fornecedor pelo nome"
+                warnUnqualified
+                qualificationWarnings={QUALIFICATION_WARNINGS}
+              />
+            </div>
             <label className={styles.filterControl}>
               <span>Vencimento previsto*</span>
               <input
@@ -8253,7 +8292,7 @@ function MeasurementModal({
                 required
               />
             </label>
-            {measurementForm.purpose === "SERVICE" && (
+            {mode === "edit" && measurementForm.purpose === "SERVICE" && (
               <>
                 <label className={styles.filterControl}>
                   <span>Valor bruto</span>
@@ -8262,7 +8301,7 @@ function MeasurementModal({
                     inputMode="decimal"
                     placeholder="0,00"
                     value={measurementForm.grossAmount}
-                    onChange={(event) => onChange("grossAmount", formatCurrencyInput(event.target.value))}
+                    readOnly
                   />
                 </label>
                 <label className={styles.filterControl}>
@@ -8282,7 +8321,7 @@ function MeasurementModal({
                     inputMode="decimal"
                     placeholder="0,00"
                     value={measurementForm.netAmount}
-                    onChange={(event) => onChange("netAmount", formatCurrencyInput(event.target.value))}
+                    readOnly
                   />
                 </label>
               </>

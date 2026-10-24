@@ -27,7 +27,7 @@ function SharedPayableOrdersModal({ bridge, projectId, payable, canUpdate, onClo
         measurementIds: [...selected],
       })
       bridge?.feedback?.success?.(
-        `${result.affected} OS removida(s) da DNF ${payable.documentNumber ?? "sem número"}. Elas voltam a ficar sem título e podem ir para outra DNF.`,
+        `${result.affected} OS removida(s) do título ${payable.documentNumber ?? "sem número"}. Elas voltam a ficar sem título e podem ir para outro documento.`,
       )
       setSelected(new Set())
       setConfirming(false)
@@ -46,12 +46,12 @@ function SharedPayableOrdersModal({ bridge, projectId, payable, canUpdate, onClo
         className={`${appStyles.modalCard} ${styles.wideModal}`}
         role="dialog"
         aria-modal="true"
-        aria-label={`OS cobertas pela DNF ${payable.documentNumber ?? ""}`}
+        aria-label={`OS cobertas pelo título ${payable.documentNumber ?? ""}`}
         onClick={(event) => event.stopPropagation()}
       >
         <header className={appStyles.modalHeader}>
           <h3>
-            OS cobertas pela DNF {payable.documentNumber ?? "sem número"} · {payable.personName || "Fornecedor"}
+            OS cobertas pelo título {payable.documentNumber ?? "sem número"} · {payable.personName || "Fornecedor"}
           </h3>
           <button type="button" className={appStyles.closeButton} onClick={onClose} disabled={saving}>
             Fechar
@@ -78,7 +78,7 @@ function SharedPayableOrdersModal({ bridge, projectId, payable, canUpdate, onClo
                 onClick={() => setConfirming(true)}
                 disabled={!selected.size || saving}
               >
-                Remover {selected.size} OS da DNF
+                Remover {selected.size} OS do título
               </button>
             ) : null}
           </div>
@@ -97,16 +97,16 @@ function SharedPayableOrdersModal({ bridge, projectId, payable, canUpdate, onClo
             className={appStyles.modalCard}
             role="dialog"
             aria-modal="true"
-            aria-label="Remover OS da DNF"
+            aria-label="Remover OS do título"
             onClick={(event) => event.stopPropagation()}
           >
             <header className={appStyles.modalHeader}>
-              <h3>Remover OS da DNF</h3>
+              <h3>Remover OS do título</h3>
             </header>
             <div className={appStyles.modalBody}>
               <p>
-                Remover {selected.size} OS da DNF {payable.documentNumber ?? "sem número"}? O título no ERP não muda; as
-                OS voltam a ficar sem título e podem ser vinculadas a outra DNF.
+                Remover {selected.size} OS do título {payable.documentNumber ?? "sem número"}? O título no ERP não muda; as
+                OS voltam a ficar sem título e podem ser vinculadas a outro documento.
               </p>
               <div className={appStyles.modalFooter}>
                 <button
@@ -149,7 +149,7 @@ export function SharedPayablesSection({ bridge, projectId }) {
       setRows(await listSharedPayables({ bridge, projectId }))
       setError("")
     } catch (failure) {
-      setError(failure?.message ?? "Não foi possível buscar as DNFs da empreitada.")
+      setError(failure?.message ?? "Não foi possível buscar os títulos da empreitada.")
     } finally {
       setLoading(false)
     }
@@ -162,10 +162,11 @@ export function SharedPayablesSection({ bridge, projectId }) {
   return (
     <section className={styles.section}>
       <div className={styles.toolbar}>
-        <InfoTip floating label="Como vincular as DNFs da empreitada às OS sem valor">
-          Ordens de serviço sem valor são medições de controle da Caixa. O pagamento da empreitada sai numa DNF que cobre
-          várias delas: ligue aqui a DNF às OS que ela pagou. A DNF das medições de um contrato é vinculada no próprio
-          contrato, em DNF das medições do contrato, e também aparece nesta lista.
+        <InfoTip floating label="Sobre os documentos da empreitada e as OS cobertas">
+          Esta lista reúne os títulos que pagam as OS da obra, incluindo notas fiscais e documentos não fiscais.
+          Vincular OS não altera o tipo nem o número cadastrado no Contas a Pagar. A coluna Documento mostra o número
+          e o tipo original; Número não informado indica que o título está sem número no cadastro.
+          Os títulos das medições de contrato são vinculados no próprio contrato e também aparecem aqui.
         </InfoTip>
         <div className={styles.toolbarActions}>
           <button
@@ -193,14 +194,14 @@ export function SharedPayablesSection({ bridge, projectId }) {
       ) : null}
       <div className={styles.tableWrapper}>
         {loading ? (
-          <p className={styles.empty}>Buscando DNFs da empreitada...</p>
+          <p className={styles.empty}>Buscando títulos da empreitada...</p>
         ) : !rows.length ? (
-          <p className={styles.empty}>Nenhuma DNF de empreitada vinculada a OS desta obra.</p>
+          <p className={styles.empty}>Nenhum título de empreitada vinculado a OS desta obra.</p>
         ) : (
           <table className={styles.table}>
             <thead>
               <tr>
-                <th>DNF</th>
+                <th>Documento</th>
                 <th>Fornecedor</th>
                 <th>Emissão</th>
                 <th>Valor</th>
@@ -213,7 +214,7 @@ export function SharedPayablesSection({ bridge, projectId }) {
               {rows.map((row) => (
                 <tr key={row.id}>
                   <td>
-                    {row.documentNumber ? `Nº ${row.documentNumber}` : "Sem número"}
+                    {row.documentNumber ? `Nº ${row.documentNumber}` : "Número não informado"}
                     <small>{row.documentTypeLabel || row.description || ""}</small>
                   </td>
                   <td>{row.personName || "-"}</td>
@@ -231,7 +232,7 @@ export function SharedPayablesSection({ bridge, projectId }) {
                         className={styles.iconButton}
                         onClick={() => setOrdersTarget(row)}
                         title="Ver OS cobertas"
-                        aria-label={`Ver OS cobertas pela DNF ${row.documentNumber ?? ""}`}
+                        aria-label={`Ver OS cobertas pelo título ${row.documentNumber ?? ""}`}
                       >
                         <ListChecks size={16} aria-hidden="true" />
                       </button>
@@ -241,7 +242,7 @@ export function SharedPayablesSection({ bridge, projectId }) {
                           className={styles.iconButton}
                           onClick={() => setLinkTarget({ payable: row })}
                           title="Vincular mais OS"
-                          aria-label={`Vincular mais OS à DNF ${row.documentNumber ?? ""}`}
+                          aria-label={`Vincular mais OS ao título ${row.documentNumber ?? ""}`}
                         >
                           <Link2 size={16} aria-hidden="true" />
                         </button>
@@ -252,7 +253,7 @@ export function SharedPayablesSection({ bridge, projectId }) {
                           className={styles.iconButton}
                           onClick={() => openPayable(row)}
                           title="Ver título no ERP"
-                          aria-label={`Ver a DNF ${row.documentNumber ?? ""} no ERP`}
+                          aria-label={`Ver o título ${row.documentNumber ?? ""} no ERP`}
                         >
                           <ExternalLink size={16} aria-hidden="true" />
                         </button>

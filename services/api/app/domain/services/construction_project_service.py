@@ -2580,6 +2580,10 @@ class ConstructionProjectService:
         assert_measurement_editable(measurement)
 
         updates = request.model_dump(exclude_unset=True)
+        financial_fields_changed = any(
+            field in updates and updates[field] != getattr(measurement, field)
+            for field in ("gross_amount", "retentions_amount", "net_amount", "measured_amount")
+        )
         if "subcontract_id" in updates or getattr(measurement, "subcontract_id", None):
             contracts = SubcontractService(self)
             contract = await contracts.bind_parent(measurement, updates)
@@ -2661,6 +2665,16 @@ class ConstructionProjectService:
                 raise ConstructionInvalidValueError(message="Remova os itens antes de trocar a finalidade da medição.")
         updates["purpose"] = purpose
         self._apply_updates(entity=measurement, updates=updates)
+        if purpose == "SERVICE" and financial_fields_changed:
+            await self._sync_measurement_amounts_from_items(measurement=measurement)
+            if measurement.retentions_amount > measurement.gross_amount:
+                raise ConstructionInvalidValueError(
+                    message="As retenções da medição não podem passar da soma dos itens.",
+                    error_code="CONSTRUCTION_MEASUREMENT_RETENTIONS_INVALID",
+                )
+            _logger.info(f"[measurement] amounts_recalculated: company_id={company_id} measurement_id={measurement_id} "
+                         f"gross={measurement.gross_amount} retained={measurement.retentions_amount} net={measurement.net_amount}")
+
         await self.repository.commit()
         await self.repository.refresh(measurement)
         return measurement

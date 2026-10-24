@@ -2237,6 +2237,63 @@ async def test_measurement_amount_follows_the_sum_of_its_items() -> None:
 
 
 @pytest.mark.asyncio
+async def test_measurement_retention_edit_uses_item_totals_instead_of_submitted_totals():
+    company_id, measurement, service = await _build_measurement_scenario()
+    await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(description="Serviço", amount=Decimal("1000.00")),
+    )
+
+    updated = await service.update_measurement(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementUpdate(
+            gross_amount=Decimal("5000.00"),
+            retentions_amount=Decimal("100.00"),
+            net_amount=Decimal("5000.00"),
+            measured_amount=Decimal("5000.00"),
+        ),
+    )
+
+    assert updated.gross_amount == Decimal("1000.00")
+    assert updated.net_amount == Decimal("900.00")
+    assert updated.measured_amount == Decimal("900.00")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retained", ["1000.00", "1100.00"])
+async def test_measurement_retention_edit_cannot_exhaust_item_totals(retained):
+    company_id, measurement, service = await _build_measurement_scenario()
+    await service.create_measurement_item(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementItemCreate(description="Serviço", amount=Decimal("1000.00")),
+    )
+
+    with pytest.raises(ConstructionInvalidValueError):
+        await service.update_measurement(
+            company_id=company_id,
+            measurement_id=measurement.id,
+            request=ConstructionMeasurementUpdate(retentions_amount=Decimal(retained)),
+        )
+
+
+@pytest.mark.asyncio
+async def test_measurement_metadata_edit_preserves_historical_totals_without_items():
+    company_id, measurement, service = await _build_measurement_scenario(measured_amount=Decimal("1000.00"))
+
+    updated = await service.update_measurement(
+        company_id=company_id,
+        measurement_id=measurement.id,
+        request=ConstructionMeasurementUpdate(description="Histórico preservado"),
+    )
+
+    assert updated.gross_amount == Decimal("1000.00")
+    assert updated.net_amount == Decimal("1000.00")
+
+
+@pytest.mark.asyncio
 async def test_measurement_item_sequence_is_generated_per_measurement() -> None:
     company_id, measurement, service = await _build_measurement_scenario()
 

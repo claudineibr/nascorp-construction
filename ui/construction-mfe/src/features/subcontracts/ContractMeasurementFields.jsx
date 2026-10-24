@@ -70,15 +70,24 @@ export function ContractMeasurementFields({
     ? "OS de controle físico: registre serviços e FVS sem valor próprio. A DNF pode pagar um conjunto de OS depois."
     : form.purpose === "CONTRACT"
       ? "Informe somente quantidades executadas. O contrato fornece empreiteiro, serviços e preços."
-      : "Serviço avulso: informe o valor próprio do serviço; não consome saldo de contrato.";
+      : "Serviço avulso: crie a medição sem informar valores. Depois, em Itens e inspeção, informe o valor de cada serviço; a soma calcula o total da medição. Retenções podem ser informadas na edição, após incluir os serviços. Não consome saldo de contrato.";
   return (
     <fieldset className={`${styles.panel} ${styles.contractBox}`}>
       <legend>
         Finalidade da medição
-        <InfoTip label="Quando vincular um contrato de empreitada">
+        <InfoTip floating label="Sobre a finalidade da medição">
           Vincule quando o serviço faz parte de um contrato liberado na aba
           Empreitada: o valor sai do preço contratado e a aprovação consome o
           saldo. Sem contrato, escolha serviço avulso com pagamento próprio ou OS de controle sem valor próprio.
+          <br /><br />{hint}
+          {form.subcontractId && <>
+            <br /><br />O fornecedor é o empreiteiro do contrato e não pode ser alterado
+              nesta medição. Após criar, informe as quantidades em Itens e inspeção;
+              os totais serão calculados pelos preços contratados e exibidos nos
+              detalhes. O líquido inclui a parcela futura de caução.
+            <br /><br />Retenções identificadas, documento fiscal e parcelas são conferidos
+              no lançamento do título no financeiro, após a aprovação da medição.
+          </>}
         </InfoTip>
       </legend>
       <label>
@@ -134,7 +143,9 @@ export function ContractMeasurementFields({
       </label>}
       {form.subcontractId && (
         <label>
-          Competência*
+          <span>Competência* <InfoTip floating label="Como informar a competência da medição">
+            A competência precisa estar dentro da vigência do contrato ou da versão usada nesta medição.
+          </InfoTip></span>
           <input
             type="date"
             required
@@ -147,28 +158,12 @@ export function ContractMeasurementFields({
             <span className={styles.hint}>
               {usesPinnedTerms ? "Vigência da versão usada nesta medição" : "Vigência do contrato"}:{" "}
               {formatBusinessDate(terms.valid_from)} a {formatBusinessDate(terms.valid_to)}.
-              A competência precisa estar dentro dela.
             </span>
           )}
         </label>
       )}
-      <p className={styles.hint}>{hint}</p>
       {form.purpose === "CONTRACT" && !loading && !error && !rows.length && (
         <p className={styles.hint}>Nenhum contrato liberado disponível. Cadastre e libere a planilha na aba Empreitada antes de medir por contrato.</p>
-      )}
-      {form.subcontractId && (
-        <>
-          <p>
-            O fornecedor é o empreiteiro do contrato e não pode ser alterado
-            nesta medição. Após criar, informe as quantidades em Itens e inspeção;
-            os totais serão calculados pelos preços contratados e exibidos nos
-            detalhes. O líquido inclui a parcela futura de caução.
-          </p>
-          <p className={styles.hint}>
-            Retenções identificadas, documento fiscal e parcelas são conferidos
-            no lançamento do título no financeiro, após a aprovação da medição.
-          </p>
-        </>
       )}
     </fieldset>
   );
