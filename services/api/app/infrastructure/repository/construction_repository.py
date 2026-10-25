@@ -611,6 +611,7 @@ class ConstructionRepository:
         due_to: date | None = None,
         search: str | None = None,
         subcontract_id: UUID | None = None,
+        global_selection: bool = False,
     ) -> list:
         amount = func.coalesce(ConstructionMeasurement.net_amount, ConstructionMeasurement.measured_amount, 0)
         conditions = [
@@ -624,9 +625,17 @@ class ConstructionRepository:
                 or_(
                     ConstructionMeasurement.subcontract_id == subcontract_id,
                     ConstructionMeasurement.global_contract_id == subcontract_id,
+                    and_(
+                        global_selection,
+                        ConstructionMeasurement.subcontract_id.is_(None),
+                        ConstructionMeasurement.global_contract_id.is_(None),
+                        amount == 0,
+                    ),
                 ),
                 ConstructionMeasurement.reversal_pending.is_(False),
             ])
+            if global_selection:
+                conditions.append(amount == 0)
         elif payable_document_id is None:
             conditions.extend([
                 ConstructionMeasurement.subcontract_id.is_(None),

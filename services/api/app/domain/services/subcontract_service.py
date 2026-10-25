@@ -228,50 +228,12 @@ class SubcontractService:
             "external_accounts_payable_id": measurement.external_accounts_payable_id} for measurement, unit_code in rows]
 
     async def link_orders(self, company_id, contract_id, measurement_ids, actor_user_id):
-        contract = await self.global_contract(company_id, contract_id, True)
-        if contract.status != "RELEASED":
-            self.fail("Libere o contrato global antes de vincular OS.")
-        measurements = await self.projects._shared_payable_measurements(
-            company_id=company_id, project_id=contract.project_id, measurement_ids=measurement_ids, lock=True)
-        for measurement in measurements:
-            if measurement.global_contract_id == contract.id:
-                continue
-            if measurement.status != "approved" or measurement.reversal_pending:
-                self.fail(f"A OS {measurement.code} precisa estar aprovada para entrar no contrato global.")
-            amount = measurement.net_amount if measurement.net_amount is not None else (measurement.measured_amount or Decimal("0"))
-            if measurement.global_contract_id is not None or measurement.subcontract_id is not None:
-                self.fail(f"A OS {measurement.code} já pertence a outro contrato de empreitada.")
-            if amount > 0:
-                self.fail(f"A OS {measurement.code} tem valor próprio: o contrato global só aceita OS sem valor.")
-            if measurement.external_accounts_payable_id is not None:
-                self.fail(f"A OS {measurement.code} já tem título no ERP.")
-            if measurement.supplier_person_id != contract.supplier_person_id:
-                self.fail(f"A OS {measurement.code} é de outro fornecedor: o contrato global só aceita OS do empreiteiro dele.")
-            if measurement.status == "rejected" and measurement.rejected_at is None:
-                self.fail(f"A OS {measurement.code} está cancelada.")
-        linked = 0
-        for measurement in measurements:
-            if measurement.global_contract_id != contract.id:
-                measurement.global_contract_id = contract.id
-                linked += 1
-        await self.session.commit()
-        _logger.info("construction.subcontract.global_orders_linked contract_id=%s count=%s user_id=%s", contract.id, linked, actor_user_id)
-        return linked
+        await self.global_contract(company_id, contract_id)
+        self.fail("Selecione as OS ao criar ou vincular o título do contrato global.")
 
     async def unlink_orders(self, company_id, contract_id, measurement_ids, actor_user_id):
-        contract = await self.global_contract(company_id, contract_id, True)
-        measurements = await self.projects._shared_payable_measurements(
-            company_id=company_id, project_id=contract.project_id, measurement_ids=measurement_ids, lock=True)
-        for measurement in measurements:
-            if measurement.global_contract_id != contract.id:
-                self.fail(f"A OS {measurement.code} não está neste contrato.")
-            if measurement.external_accounts_payable_id is not None:
-                self.fail(f"Remova a OS {measurement.code} da DNF antes de tirá-la do contrato.")
-        for measurement in measurements:
-            measurement.global_contract_id = None
-        await self.session.commit()
-        _logger.info("construction.subcontract.global_orders_unlinked contract_id=%s count=%s user_id=%s", contract.id, len(measurements), actor_user_id)
-        return len(measurements)
+        await self.global_contract(company_id, contract_id)
+        self.fail("As OS do contrato global só são liberadas ao cancelar o título no ERP.")
 
     async def register_global_payable(self, company_id, contract_id, payable_document_id, payload, actor_user_id):
         contract = await self.global_contract(company_id, contract_id, True)
@@ -282,10 +244,14 @@ class SubcontractService:
             if current.contract_id != contract.id:
                 self.fail("Esta DNF já paga outro contrato global.")
             return
+        if contract.status != "RELEASED":
+            self.fail("O contrato global precisa estar liberado e sem título vinculado para receber um lançamento.")
         total = money(Decimal(str(payload.get("total_amount") or "0")))
         if total <= 0:
             self.fail("A DNF precisa ter valor positivo.")
         paid = money(Decimal((await self.repository.global_paid_totals(company_id, [contract.id])).get(contract.id, 0)))
+        if paid > 0:
+            self.fail("O contrato global já tem título vinculado e está fechado para novos lançamentos.")
         if paid + total > contract.global_amount:
             _logger.info("construction.subcontract.global_payable_over_balance contract_id=%s document_id=%s total=%s paid=%s",
                 contract.id, payable_document_id, total, paid)
@@ -293,13 +259,10 @@ class SubcontractService:
         self.session.add(ConstructionSubcontractPayable(id=uuid4(), company_id=company_id, contract_id=contract.id,
             payable_document_id=payable_document_id, amount=total, document_snapshot=payload,
             linked_by_user_id=actor_user_id))
-
-    async def release_global_payable_if_empty(self, company_id, contract_id, payable_document_id):
-        if await self.repository.global_orders_on_document(company_id, contract_id, payable_document_id):
-            return
-        current = await self.repository.active_global_payable(company_id, payable_document_id)
-        if current is not None and current.contract_id == contract_id:
-            current.status = "REMOVED"
+        contract.status = "CLOSED"
+        contract.closure_reason = "Contrato global encerrado após vínculo do título."
+        contract.closed_by_user_id = actor_user_id
+        _logger.info(f"[subcontract] closed_after_payable: contract_id={contract.id} document_id={payable_document_id}")
 
     async def measurement_version(self, company_id, contract, version_id=None):
         if version_id:
@@ -566,6 +529,8 @@ class SubcontractService:
         row = await self.get(company_id, contract_id, True)
         if row.status != "CLOSED" or not row.released_version:
             self.fail("Somente contrato encerrado com planilha liberada pode ser reaberto.")
+        if row.pricing_mode == "GLOBAL" and (await self.repository.global_paid_totals(company_id, [row.id])).get(row.id, 0) > 0:
+            self.fail("Cancele o título no ERP para liberar as OS e o contrato global para novos lançamentos.")
         row.status = "RELEASED"
         await self.session.commit()
         return await self.detail(company_id, contract_id)

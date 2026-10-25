@@ -12,12 +12,14 @@ import { ZeroValueOrders, day } from "./ZeroValueOrders"
 const openPayable = (payable) => window.open(`/accounts-payable/${payable.id}/edit`, "_blank", "noopener")
 
 function SharedPayableOrdersModal({ bridge, projectId, payable, canUpdate, onClose, onChanged }) {
+  const canRemove = canUpdate && !payable.globalCoveredCount
   const [selected, setSelected] = useState(() => new Set())
   const [reloadKey, setReloadKey] = useState(0)
   const [confirming, setConfirming] = useState(false)
   const [saving, setSaving] = useState(false)
 
   const remove = async () => {
+    if (!canRemove) return
     setSaving(true)
     try {
       const result = await unlinkSharedPayable({
@@ -58,6 +60,7 @@ function SharedPayableOrdersModal({ bridge, projectId, payable, canUpdate, onClo
           </button>
         </header>
         <div className={appStyles.modalBody}>
+          {payable.globalCoveredCount ? <p className={styles.notice}>As OS do contrato global só são liberadas ao cancelar o título no ERP.</p> : null}
           <ZeroValueOrders
             bridge={bridge}
             projectId={projectId}
@@ -65,13 +68,13 @@ function SharedPayableOrdersModal({ bridge, projectId, payable, canUpdate, onClo
             selected={selected}
             onSelectedChange={setSelected}
             reloadKey={reloadKey}
-            disabled={saving || !canUpdate}
+            disabled={saving || !canRemove}
           />
           <div className={appStyles.modalFooter}>
             <button type="button" className={appStyles.secondaryButton} onClick={onClose} disabled={saving}>
               Fechar
             </button>
-            {canUpdate ? (
+            {canRemove ? (
               <button
                 type="button"
                 className={`${appStyles.secondaryButton} ${appStyles.dangerButton}`}

@@ -141,15 +141,10 @@ class SubcontractRepository:
             .outerjoin(ConstructionUnit, ConstructionUnit.id == ConstructionMeasurement.unit_id)
             .where(ConstructionMeasurement.company_id == company_id,
                 ConstructionMeasurement.global_contract_id == contract_id,
+                ConstructionMeasurement.external_accounts_payable_id.is_not(None),
                 *scope_conditions(ConstructionMeasurement, self.scope))
             .order_by(ConstructionUnit.code, ConstructionMeasurement.sequence_number, ConstructionMeasurement.code))
         return list(rows.all())
-
-    async def global_orders_on_document(self, company_id, contract_id, payable_document_id):
-        return await self.session.scalar(select(func.count()).select_from(ConstructionMeasurement).where(
-            ConstructionMeasurement.company_id == company_id,
-            ConstructionMeasurement.global_contract_id == contract_id,
-            ConstructionMeasurement.external_accounts_payable_id == payable_document_id))
 
     async def has_contract_activity(self, company_id, contract_id):
         consumed = await self.session.scalar(select(ConstructionSubcontractItem.id).where(

@@ -2137,6 +2137,7 @@ const toPayableDocumentView = (item) => ({
   coveredCount: Number(item.covered_count ?? 0),
   coveredAmount: Number(item.covered_amount ?? 0),
   contractCoveredCount: Number(item.contract_covered_count ?? 0),
+  globalCoveredCount: Number(item.global_covered_count ?? 0),
   netAmount: item.net_amount ?? item.total_amount ?? null,
   personId: item.person_id ?? null,
   personName: item.person_name ?? "",

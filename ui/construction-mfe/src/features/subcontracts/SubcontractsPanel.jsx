@@ -592,14 +592,14 @@ function SubcontractsWorkspace({ bridge, projectId }) {
                   <h4>Contrato por valor global
                   <InfoTip floating label="Sobre o contrato por valor global">
                     Não há planilha de serviços. Depois de liberar, vincule as
-                    OS sem valor do empreiteiro em OS do contrato e lance a DNF
-                    em DNF das medições do contrato. A soma das DNFs não passa
+                    OS sem valor do empreiteiro ao lançar o título
+                    em Títulos das medições do contrato. A soma dos títulos não passa
                     do valor total.
                   </InfoTip></h4>
                 </div>
                 {draft.id && (
                   <p className={styles.hint}>
-                    Valor total {money(draft.total_amount)} · pago em DNFs {money(draft.paid_amount)} ·
+                    Valor total {money(draft.total_amount)} · pago em títulos {money(draft.paid_amount)} ·
                     saldo {money(draft.remaining_amount)}
                   </p>
                 )}
@@ -697,7 +697,8 @@ function SubcontractsWorkspace({ bridge, projectId }) {
                   <button
                     type="button"
                     className={appStyles.secondaryButton}
-                    disabled={busy}
+                    disabled={busy || (globalMode && Number(draft.paid_amount) > 0)}
+                    title={globalMode && Number(draft.paid_amount) > 0 ? "Cancele o título no ERP para liberar as OS e o contrato global." : undefined}
                     onClick={() =>
                       execute(
                         `/subcontracts/${draft.id}/reopen`,
@@ -716,10 +717,7 @@ function SubcontractsWorkspace({ bridge, projectId }) {
           {draft.id && globalMode && (
             <GlobalOrdersSection
               bridge={bridge}
-              projectId={projectId}
               contract={draft}
-              canUpdate={canUpdate && !dirty}
-              onChanged={() => open(draft.id)}
             />
           )}
           {draft.id && !globalMode && (

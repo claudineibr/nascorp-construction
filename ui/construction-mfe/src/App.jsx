@@ -3876,7 +3876,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     setConfirmRequest({
       title: `Aprovar a medição ${measurement.code}`,
       message: measurement.subcontractId
-        ? "A medição passa a valer, conta no avanço da obra e consome o saldo do contrato. O título a pagar não é gerado: vincule a DNF no próprio contrato, na aba Empreitada, em DNF das medições do contrato."
+        ? "A medição passa a valer, conta no avanço da obra e consome o saldo do contrato. O título a pagar não é gerado: vincule o título no próprio contrato, na aba Empreitada, em Títulos das medições do contrato."
         : "A medição passa a valer e conta no avanço da obra. O título a pagar não é gerado: depois da aprovação, use Ações > Lançar título no ERP ou Vincular título existente.",
       confirmLabel: "Aprovar medição",
       danger: false,

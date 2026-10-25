@@ -36,15 +36,15 @@ export const measurementPayableBadge = (measurement) => {
     return {
       tone: "success",
       label: "Vinculado",
-      detail: measurement.externalAccountsPayableShared ? "DNF da empreitada" : null,
+      detail: measurement.externalAccountsPayableShared ? "Título da empreitada" : null,
     }
   }
   if (measurement.status === "approved" && measurement.globalContractId) {
     return {
       tone: "muted",
       label: "Pendente",
-      detail: "DNF no contrato global",
-      title: "OS de contrato por valor global: vincule a DNF no próprio contrato, na aba Empreitada da obra, em DNF das medições do contrato.",
+      detail: "Título no contrato global",
+      title: "OS de contrato por valor global: vincule o título no próprio contrato, na aba Empreitada da obra, em Títulos das medições do contrato.",
     }
   }
   if (measurement.status === "approved" && !measurement.subcontractId && isZeroValueMeasurement(measurement)) {
@@ -52,15 +52,15 @@ export const measurementPayableBadge = (measurement) => {
       tone: "muted",
       label: "Sem valor",
       detail: "vincule na aba Empreitada",
-      title: "Medição de controle sem valor: vincule a DNF que paga a empreitada na aba Empreitada da obra.",
+      title: "Medição de controle sem valor: vincule o título que paga a empreitada na aba Empreitada da obra.",
     }
   }
   if (measurement.status === "approved" && measurement.subcontractId) {
     return {
       tone: "muted",
       label: "Pendente",
-      detail: "DNF na aba Empreitada",
-      title: "Medição de contrato: vincule a DNF no próprio contrato, na aba Empreitada da obra, em DNF das medições do contrato.",
+      detail: "Título na aba Empreitada",
+      title: "Medição de contrato: vincule o título no próprio contrato, na aba Empreitada da obra, em Títulos das medições do contrato.",
     }
   }
   return { tone: "muted", label: "Pendente", detail: null }

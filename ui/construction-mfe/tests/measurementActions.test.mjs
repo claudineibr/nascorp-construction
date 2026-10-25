@@ -46,11 +46,11 @@ test("financial badge tells own title, subcontract DNF, zero value and pending a
   )
   assert.equal(
     measurementPayableBadge({ ...base, netAmount: "0.00", externalAccountsPayableId: "t", externalAccountsPayableShared: true }).detail,
-    "DNF da empreitada",
+    "Título da empreitada",
   )
   assert.equal(measurementPayableBadge({ ...base, netAmount: "0.00" }).label, "Sem valor")
   assert.equal(measurementPayableBadge({ ...base, netAmount: "0.00", subcontractId: "contract" }).label, "Pendente")
-  assert.equal(measurementPayableBadge({ ...base, netAmount: "810.00", subcontractId: "contract" }).detail, "DNF na aba Empreitada")
+  assert.equal(measurementPayableBadge({ ...base, netAmount: "810.00", subcontractId: "contract" }).detail, "Título na aba Empreitada")
   assert.equal(measurementPayableBadge({ ...base, netAmount: "810.00" }).label, "Pendente")
 })
 test("contract measurement is paid by the contract DNF and cannot link its own title", () => {

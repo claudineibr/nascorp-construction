@@ -97,7 +97,7 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
           setError("")
         })
         .catch((failure) => {
-          if (active) setError(failure?.message ?? "Não foi possível buscar as DNFs no ERP.")
+          if (active) setError(failure?.message ?? "Não foi possível buscar os títulos no ERP.")
         })
         .finally(() => {
           if (active) setLoadingCandidates(false)
@@ -136,11 +136,11 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
     ? "Marque pelo menos uma OS"
     : tooMany ? `Marque no máximo ${SHARED_PAYABLE_BATCH_LIMIT} OS por vez` : ""
   const blockReason = !creating && !chosen
-    ? "Escolha a DNF"
+    ? "Escolha o título"
     : selectionBlocker || (!creating && totalMismatch
-          ? "A soma dos líquidos das OS precisa ser igual ao líquido da DNF"
+          ? "A soma dos líquidos das OS precisa ser igual ao líquido do título"
           : !creating && overBalance
-            ? "A DNF passa do saldo do contrato global"
+            ? "O título passa do saldo do contrato global"
             : "")
 
   const confirm = async () => {
@@ -168,11 +168,11 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
         subcontractId: contract?.id ?? null,
       })
       bridge?.feedback?.success?.(
-        `${result.affected} OS vinculada(s) à DNF ${chosen.documentNumber ?? "sem número"}.`,
+        `${result.affected} OS vinculada(s) ao título ${chosen.documentNumber ?? "sem número"}.`,
       )
       onLinked()
     } catch (linkError) {
-      bridge?.feedback?.error?.(linkError?.message ?? "Não foi possível vincular as OS à DNF.")
+      bridge?.feedback?.error?.(linkError?.message ?? "Não foi possível vincular as OS ao título.")
     } finally {
       setSaving(false)
     }
@@ -184,11 +184,11 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
         className={`${appStyles.modalCard} ${styles.wideModal}`}
         role="dialog"
         aria-modal="true"
-        aria-label={creating ? `Criar título para as medições do contrato ${contract.code}` : contract ? `Vincular DNF às medições do contrato ${contract.code}` : "Vincular OS sem valor à DNF da empreitada"}
+        aria-label={creating ? `Criar título para as medições do contrato ${contract.code}` : contract ? `Vincular título às medições do contrato ${contract.code}` : "Vincular OS sem valor ao título da empreitada"}
         onClick={(event) => event.stopPropagation()}
       >
         <header className={appStyles.modalHeader}>
-          <h3>{creating ? `Criar título para as medições do contrato ${contract.code}` : contract ? `Vincular DNF às medições do contrato ${contract.code}` : "Vincular OS sem valor à DNF da empreitada"}</h3>
+          <h3>{creating ? `Criar título para as medições do contrato ${contract.code}` : contract ? `Vincular título às medições do contrato ${contract.code}` : "Vincular OS sem valor ao título da empreitada"}</h3>
           <button type="button" className={appStyles.closeButton} onClick={onClose} disabled={saving}>
             Fechar
           </button>
@@ -199,9 +199,9 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
               ? "Marque as medições que este título paga. Ao salvar o lançamento no Contas a Pagar, elas serão vinculadas automaticamente."
               : contract
               ? globalContract
-                ? "Escolha a DNF do empreiteiro e marque as OS do contrato global que ela paga. O valor da DNF entra no pago do contrato e não pode passar do saldo dele."
-                : "Escolha a DNF do empreiteiro e marque as medições aprovadas do contrato que ela paga. A soma dos líquidos das medições precisa ser igual ao líquido da DNF (valor menos os tributos retidos)."
-              : "Escolha o fornecedor, a DNF que pagou a empreitada e marque as OS sem valor que ela cobre. Aparecem só DNFs do fornecedor lançadas nos centros de custo desta obra e que não pagam uma OS com valor."}
+                ? "Escolha o título do empreiteiro e marque as OS do contrato global que ele paga. O valor não pode passar do saldo. Após o vínculo, o contrato global é encerrado para novos lançamentos."
+                : "Escolha o título do empreiteiro e marque as medições aprovadas do contrato que ele paga. A soma dos líquidos das medições precisa ser igual ao líquido do título (valor menos os tributos retidos)."
+              : "Escolha o fornecedor, o título que pagou a empreitada e marque as OS sem valor que ele cobre. Aparecem só títulos do fornecedor lançados nos centros de custo desta obra e que não pagam uma OS com valor."}
           </p>
           {error ? (
             <p role="alert" className={styles.error}>
@@ -226,7 +226,7 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
                 <option value="">{loadingSuppliers ? "Carregando fornecedores..." : "Selecione"}</option>
                 {suppliers.map((row) => (
                   <option key={row.supplierPersonId} value={row.supplierPersonId}>
-                    {row.name} · {row.openCount} OS sem DNF
+                    {row.name} · {row.openCount} OS sem título
                   </option>
                 ))}
               </select>
@@ -235,14 +235,14 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
 
           {supplierId && !creating ? (
             <div className={styles.step}>
-              <h4>2. DNF da empreitada</h4>
+              <h4>2. Título da empreitada</h4>
               <div className={styles.toolbar}>
                 <label className={styles.search}>
                   <input
                     value={search}
                     onChange={(event) => setSearch(event.target.value)}
                     placeholder="Buscar número ou descrição"
-                    aria-label="Buscar DNF por número ou descrição"
+                    aria-label="Buscar título por número ou descrição"
                     disabled={saving || Boolean(initialPayable)}
                   />
                 </label>
@@ -272,15 +272,15 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
                     </tbody>
                   </table>
                 ) : loadingCandidates ? (
-                  <p className={styles.empty}>Buscando DNFs no ERP...</p>
+                  <p className={styles.empty}>Buscando títulos no ERP...</p>
                 ) : !candidates.length ? (
-                  <p className={styles.empty}>Nenhuma DNF livre deste fornecedor nos centros de custo da obra.</p>
+                  <p className={styles.empty}>Nenhum título livre deste fornecedor nos centros de custo da obra.</p>
                 ) : (
                   <table className={styles.table}>
                     <thead>
                       <tr>
                         <th aria-label="Escolher" />
-                        <th>DNF</th>
+                        <th>Título</th>
                         <th>Tipo</th>
                         <th>Emissão</th>
                         <th>Valor</th>
@@ -295,7 +295,7 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
                             <input
                               type="radio"
                               name="shared-payable"
-                              aria-label={`Escolher a DNF ${row.documentNumber ?? "sem número"}`}
+                              aria-label={`Escolher o título ${row.documentNumber ?? "sem número"}`}
                               checked={chosen?.id === row.id}
                               onChange={() => setChosen(row)}
                               disabled={saving}
@@ -324,7 +324,7 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
 
           {supplierId && (chosen || creating) ? (
             <div className={styles.step}>
-              <h4>{creating ? "2. Medições que o título paga" : contract ? "3. Medições do contrato que a DNF paga" : "3. OS sem valor que a DNF cobre"}</h4>
+              <h4>{creating ? "2. Medições que o título paga" : contract ? "3. Medições do contrato que o título paga" : "3. OS sem valor que o título cobre"}</h4>
               <ZeroValueOrders
                 bridge={bridge}
                 projectId={projectId}
@@ -337,13 +337,13 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
               />
               {contract && !globalContract && !creating ? (
                 <p className={totalMismatch ? styles.error : styles.notice} role="status">
-                  Soma dos líquidos marcados: {money(selectedTotal + coveredBefore)} · Líquido da DNF: {money(chosenNet)}
+                  Soma dos líquidos marcados: {money(selectedTotal + coveredBefore)} · Líquido do título: {money(chosenNet)}
                   {chosenNet !== Number(chosen.totalAmount ?? 0) ? ` (valor ${money(chosen.totalAmount)} menos tributos retidos)` : ""}
                 </p>
               ) : null}
               {globalContract && !creating ? (
                 <p className={overBalance ? styles.error : styles.notice} role="status">
-                  Valor da DNF: {money(chosen.totalAmount)} · Saldo do contrato global: {money(contract.remainingAmount)}
+                  Valor do título: {money(chosen.totalAmount)} · Saldo do contrato global: {money(contract.remainingAmount)}
                 </p>
               ) : null}
               {tooMany ? (
@@ -367,7 +367,7 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
             >
               {creating ? "Continuar para lançamento" : saving
                 ? "Vinculando..."
-                : `Vincular ${selected.size} OS${chosen ? ` à DNF ${chosen.documentNumber ?? ""}` : ""}`}
+                : `Vincular ${selected.size} OS${chosen ? ` ao título ${chosen.documentNumber ?? ""}` : ""}`}
             </button>
           </div>
         </div>

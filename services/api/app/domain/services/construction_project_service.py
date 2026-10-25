@@ -2277,15 +2277,27 @@ class ConstructionProjectService:
         **filters,
     ) -> tuple[list[dict[str, Any]], int]:
         await self.get_project(company_id=company_id, project_id=project_id)
+        await self._global_selection_filters(company_id, project_id, filters)
         return await self.repository.list_zero_value_measurements(
             company_id=company_id, project_id=project_id, page=page, page_size=page_size, **filters
         )
 
     async def zero_value_measurement_ids(self, *, company_id: UUID, project_id: UUID, **filters) -> list[UUID]:
         await self.get_project(company_id=company_id, project_id=project_id)
+        await self._global_selection_filters(company_id, project_id, filters)
         return await self.repository.zero_value_measurement_ids(
             company_id=company_id, project_id=project_id, limit=SHARED_PAYABLE_BATCH_LIMIT, **filters
         )
+
+    async def _global_selection_filters(self, company_id, project_id, filters):
+        if filters.get("subcontract_id") is None:
+            return
+        contract = await SubcontractService(self).get(company_id, filters["subcontract_id"])
+        if contract.project_id != project_id:
+            raise ConstructionNotFoundError(resource_name="o contrato desta obra")
+        if contract.pricing_mode == "GLOBAL":
+            filters["global_selection"] = True
+            filters["supplier_person_id"] = contract.supplier_person_id
 
     async def list_shared_payables(self, *, company_id: UUID, project_id: UUID, user_id: UUID | None) -> list[dict]:
         await self.get_project(company_id=company_id, project_id=project_id)
@@ -2362,11 +2374,19 @@ class ConstructionProjectService:
             company_id=company_id, project_id=project_id, measurement_ids=measurement_ids, lock=True
         )
         global_contract = contract is not None and contract.pricing_mode == "GLOBAL"
+        if global_contract and contract.status == "CLOSED" and any(
+            measurement.external_accounts_payable_id != payable_document_id for measurement in measurements
+        ):
+            raise ConstructionInvalidValueError(
+                message="O contrato global está encerrado e não recebe novas OS. Cancele o título para liberar os vínculos.",
+                error_code="CONSTRUCTION_GLOBAL_CONTRACT_CLOSED",
+            )
         for measurement in measurements:
             amount = measurement.net_amount if measurement.net_amount is not None else measurement.measured_amount
             if contract is not None:
                 belongs = (
-                    getattr(measurement, "global_contract_id", None) == contract.id
+                    (getattr(measurement, "global_contract_id", None) in (None, contract.id)
+                     and measurement.subcontract_id is None)
                     if global_contract
                     else measurement.subcontract_id == contract.id
                 )
@@ -2443,6 +2463,8 @@ class ConstructionProjectService:
         for measurement in measurements:
             if measurement.external_accounts_payable_id is None:
                 linked += 1
+            if global_contract:
+                measurement.global_contract_id = contract.id
             self._apply_accounts_payable_snapshot_from_payload(measurement=measurement, payload=payload)
             measurement.external_accounts_payable_shared = True
         await self.repository.commit()
@@ -2515,6 +2537,11 @@ class ConstructionProjectService:
             company_id=company_id, project_id=project_id, measurement_ids=measurement_ids, lock=True
         )
         for measurement in measurements:
+            if getattr(measurement, "global_contract_id", None) is not None:
+                raise ConstructionInvalidValueError(
+                    message="As OS do contrato global só são liberadas ao cancelar o título no ERP.",
+                    error_code="CONSTRUCTION_GLOBAL_PAYABLE_UNLINK_FORBIDDEN",
+                )
             if measurement.external_accounts_payable_id != payable_document_id or not measurement.external_accounts_payable_shared:
                 raise ConstructionInvalidValueError(
                     message=f"A OS {measurement.code} não está vinculada a esta DNF da empreitada.",
@@ -2553,12 +2580,6 @@ class ConstructionProjectService:
             measurement.external_accounts_payable_id = None
             measurement.external_accounts_payable_status = None
             measurement.external_accounts_payable_shared = False
-        global_contract_ids = {getattr(m, "global_contract_id", None) for m in measurements} - {None}
-        if global_contract_ids:
-            await self.repository.flush()
-            contracts = SubcontractService(self)
-            for global_contract_id in global_contract_ids:
-                await contracts.release_global_payable_if_empty(company_id, global_contract_id, payable_document_id)
         await self.repository.commit()
         _logger.info(
             "construction.measurement.shared_payable_unlinked project_id=%s payable_document_id=%s count=%s",

@@ -290,6 +290,24 @@
   border-radius: var(--radius-lg);
   background: var(--color-surface);
 }
+.accordionToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.accordionToggle:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
+}
+
 .blockHeader {
   display: flex;
   flex-wrap: wrap;
