@@ -314,15 +314,25 @@ class SubcontractService:
             measurement.subcontract_version_id = None
         if contract_id is None:
             return None
-        contract = await self.get(measurement.company_id, contract_id)
+        contract = await self.get(measurement.company_id, contract_id,
+            lock=contract_id != measurement.subcontract_id)
         self.assert_itemized(contract)
         supplier_id = updates.get("supplier_person_id", measurement.supplier_person_id)
         if contract.project_id != measurement.project_id or contract.status != "RELEASED":
             self.fail("Selecione contrato liberado da obra da medição.")
         if supplier_id and supplier_id != contract.supplier_person_id:
             self.fail("O fornecedor da medição precisa corresponder ao contrato.")
+        if contract_id != measurement.subcontract_id:
+            await self.ensure_measurement_balance(contract)
         updates["supplier_person_id"] = contract.supplier_person_id
         return contract
+
+    async def ensure_measurement_balance(self, contract):
+        items = await self.repository.items(contract.company_id, contract.id)
+        if not any(item.active and item.quantity > item.consumed_quantity for item in items):
+            _logger.info(f"[subcontract.measurement] sem_saldo: company_id={contract.company_id} contract_id={contract.id}")
+            self.fail(f"O contrato {contract.code} não possui saldo disponível para nova medição. "
+                "Não há quantitativo ativo restante para medir. Revise o contrato e as medições existentes.")
 
     async def financial_amounts(self, measurement, gross):
         version = await self.repository.version_by_id(measurement.company_id, measurement.subcontract_id, measurement.subcontract_version_id)

@@ -15,6 +15,9 @@
   gap: 0.9rem 1rem;
   align-items: start;
 }
+.contractIdentity {
+  grid-template-columns: 6.5rem minmax(10rem, 1fr) minmax(13rem, 1fr) minmax(18rem, 1.6fr);
+}
 .fields > label,
 .row > label {
   display: flex;
@@ -538,6 +541,15 @@
 .measureItemsTable th:nth-child(5) { width: 10%; }
 .measureItemsTable th:nth-child(6) { width: 12rem; }
 .measureItemsTable th:nth-child(7) { width: 13%; }
+@media (width <= 1100px) {
+  .contractIdentity {
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+  }
+  .contractIdentity > :nth-child(3),
+  .contractIdentity > :last-child {
+    grid-column: 1 / -1;
+  }
+}
 @media (width <= 900px) {
   .row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -547,6 +559,13 @@
   }
 }
 @media (width <= 640px) {
+  .contractIdentity {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .contractIdentity > label:first-child {
+    max-width: 8rem;
+  }
+
   .row {
     grid-template-columns: minmax(0, 1fr);
   }

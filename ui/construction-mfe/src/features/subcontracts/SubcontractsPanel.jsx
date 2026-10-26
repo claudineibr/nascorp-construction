@@ -469,7 +469,7 @@ function SubcontractsWorkspace({ bridge, projectId }) {
                 <h4>Dados do contrato</h4>
                 <p className={styles.hint}>* Campo obrigatório</p>
               </div>
-              <div className={styles.fields}>
+              <div className={`${styles.fields} ${styles.contractIdentity}`}>
                 <label>
                   Código*
                   <input
@@ -501,19 +501,7 @@ function SubcontractsWorkspace({ bridge, projectId }) {
                     <option value="GLOBAL">Valor global (OS sem valor)</option>
                   </select>
                 </label>
-                {globalMode && (
-                  <label>
-                    Valor total do contrato*
-                    <input
-                      required
-                      type="text"
-                      inputMode="decimal"
-                      placeholder="0,00"
-                      value={draft.global_amount ?? ""}
-                      onChange={(e) => patch({ global_amount: formatCurrencyInput(e.target.value) })}
-                    />
-                  </label>
-                )}
+
                 <PersonPicker
                   bridge={bridge}
                   label="Empreiteiro"
@@ -523,6 +511,8 @@ function SubcontractsWorkspace({ bridge, projectId }) {
                   required
                   disabled={readOnly || measuredAny}
                 />
+              </div>
+              <div className={styles.fields}>
                 <label>
                   Vigência inicial*
                   <input
@@ -541,6 +531,19 @@ function SubcontractsWorkspace({ bridge, projectId }) {
                     onChange={(e) => patch({ valid_to: e.target.value })}
                   />
                 </label>
+                {globalMode && (
+                  <label>
+                    Valor total do contrato*
+                    <input
+                      required
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="0,00"
+                      value={draft.global_amount ?? ""}
+                      onChange={(e) => patch({ global_amount: formatCurrencyInput(e.target.value) })}
+                    />
+                  </label>
+                )}
                 <label>
                   Retenções tributárias (%)*
                   <input

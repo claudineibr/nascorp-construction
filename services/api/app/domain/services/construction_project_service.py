@@ -2060,10 +2060,11 @@ class ConstructionProjectService:
         subcontract = None
         if request.subcontract_id:
             contracts = SubcontractService(self)
-            subcontract = await contracts.get(company_id, request.subcontract_id)
+            subcontract = await contracts.get(company_id, request.subcontract_id, lock=True)
             if subcontract.project_id != project_id or subcontract.status != "RELEASED":
                 raise ConstructionInvalidValueError(message="Selecione contrato liberado desta obra.")
             contracts.assert_itemized(subcontract)
+            await contracts.ensure_measurement_balance(subcontract)
             if request.supplier_person_id and request.supplier_person_id != subcontract.supplier_person_id:
                 raise ConstructionInvalidValueError(message="O fornecedor da medição precisa corresponder ao contrato.")
             await self._assert_contract_competence(contracts, subcontract, None, request.competence_date)
