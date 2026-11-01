@@ -1,6 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { Info } from "lucide-react"
+import { HelpCircle } from "lucide-react"
 
 import styles from "./InfoTip.module.css"
 
@@ -55,7 +55,7 @@ export function InfoTip({ label, children, floating = false }) {
           event.currentTarget.blur()
         }
       }}>
-      <Info size={12} aria-hidden="true" />
+      <HelpCircle size={12} aria-hidden="true" />
       {floating ? open && createPortal(tooltip, document.body) : tooltip}
     </button>
   )
