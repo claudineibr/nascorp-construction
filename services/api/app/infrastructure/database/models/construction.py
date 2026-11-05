@@ -167,6 +167,7 @@ class ConstructionUnit(PreservedHistory, Base):
     )
     code: Mapped[str] = mapped_column(String(50), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    original_description: Mapped[str | None] = mapped_column(Text, nullable=True)
     unit_type: Mapped[str] = mapped_column(String(80), nullable=False)
     typology: Mapped[str | None] = mapped_column(String(80), nullable=True)
     floor: Mapped[str | None] = mapped_column(String(30), nullable=True)
@@ -233,7 +234,7 @@ class ConstructionUnitSale(Base):
     __tablename__ = "construction_unit_sales"
     __table_args__ = (
         UniqueConstraint("unit_id", "sequence", name="uq_construction_unit_sales_sequence"),
-        CheckConstraint("status IN ('ACTIVE', 'TERMINATED')", name="ck_unit_sales_status"),
+        CheckConstraint("status IN ('ACTIVE', 'TERMINATED', 'TRANSFERRED')", name="ck_unit_sales_status"),
         CheckConstraint("source IN ('NATIVE', 'LEGACY')", name="ck_unit_sales_source"),
         Index(
             "uq_construction_unit_sales_active",
@@ -283,6 +284,13 @@ class ConstructionUnitSale(Base):
     paid_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
     created_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     terminated_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    transferred_at = mapped_column(DateTime(timezone=True), nullable=True)
+    transferred_to_unit_id = mapped_column(PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_units.id", name="fk_sale_transfer_target", ondelete="SET NULL"),
+        nullable=True, index=True)
+    transferred_from_sale_id = mapped_column(PG_UUID(as_uuid=True),
+        ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_unit_sales.id", name="fk_sale_transfer_source", ondelete="SET NULL"),
+        nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -218,6 +218,7 @@ class ConstructionUnitResponse(BaseModel):
     block_id: UUID | None = None
     code: str
     description: str | None = None
+    original_description: str | None = None
     unit_type: str
     typology: str | None = None
     floor: str | None = None
@@ -393,6 +394,9 @@ class ConstructionUnitSaleResponse(BaseModel):
     termination_reason: str | None = None
     termination_notes: str | None = None
     external_termination_id: UUID | None = None
+    transferred_at: datetime | None = None
+    transferred_to_unit_id: UUID | None = None
+    transferred_from_sale_id: UUID | None = None
     refund_amount: Decimal | None = None
     paid_amount: Decimal | None = None
     created_at: datetime

@@ -88,6 +88,7 @@ import {
 } from "./features/measurementInspections/inspectionVocabulary"
 import { AssistancePanel } from "./features/assistance/AssistancePanel.jsx"
 import { UnitTerminationModal } from "./features/unitTermination/UnitTerminationModal.jsx"
+import { UnitTransferModal } from "./features/unitTransfer/UnitTransfer.jsx"
 import { UnitSalesHistory } from "./features/unitTermination/UnitSalesHistory.jsx"
 import { TerminationTermsEditor, emptyTerminationTerms } from "./features/unitTermination/TerminationTermsEditor.jsx"
 import { CreditOffsetModal } from "./features/unitTermination/CreditOffsetModal.jsx"
@@ -117,6 +118,7 @@ import {
   createConstructionProcurementRequest,
   createConstructionProject,
   getConstructionProject,
+  getConstructionUnit,
   createConstructionSchedulePhase,
   createConstructionUnit,
   createConstructionUnitAdjustment,
@@ -290,7 +292,7 @@ const unitDetailTabs = [
   { id: "contract", label: "Contrato", icon: FileText },
   { id: "delivery_term", label: "Termo Entrega", icon: FileText },
   { id: "debt_confession", label: "T.C.D", icon: FileText },
-  { id: "sales", label: "Histórico de vendas", icon: History },
+  { id: "sales", label: "Histórico", icon: History },
 ]
 
 const revealActiveTab = (node) => {
@@ -817,7 +819,7 @@ function toFormSchedulePhase(phase) {
 function toFormUnit(unit) {
   return {
     code: unit.code ?? "",
-    description: unit.description ?? "",
+    description: unit.originalDescription ?? unit.description ?? "",
     quantity: "1",
     unitType: unit.unitType ?? "",
     typology: unit.typology ?? "",
@@ -1279,6 +1281,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
   const [filters, setFilters] = useState(defaultFilters)
   const [projects, setProjects] = useState([])
+  const projectLoadRequest = useRef(0)
+  const pendingBuyerNavigation = useRef("")
+  const buyerUnitNavigator = useRef(null)
   const [totalProjects, setTotalProjects] = useState(0)
   const [projectPage, setProjectPage] = useState(1)
   const [projectPageSize, setProjectPageSize] = useState(defaultProjectPageSize)
@@ -1312,6 +1317,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [submittingSchedule, setSubmittingSchedule] = useState(false)
 
   const [units, setUnits] = useState([])
+  const unitLoadRequest = useRef(0)
   const [loadingUnits, setLoadingUnits] = useState(false)
   const [unitError, setUnitError] = useState(null)
   const [isUnitModalOpen, setIsUnitModalOpen] = useState(false)
@@ -1363,6 +1369,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [saleTargetUnit, setSaleTargetUnit] = useState(null)
   const saleTargetUnitIdRef = useRef(null)
   const [terminationUnit, setTerminationUnit] = useState(null)
+  const [transferUnit, setTransferUnit] = useState(null)
+  const canTransferUnits = Boolean(bridge?.canUpdate?.("construction_units") && bridge?.canUpdate?.("receivable"))
   const canTerminateUnits = Boolean(bridge?.canCreate?.("construction_unit_termination"))
   const [documentationTypes, setDocumentationTypes] = useState([])
   const [loadingDocumentationTypes, setLoadingDocumentationTypes] = useState(false)
@@ -1424,6 +1432,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [personLookupError, setPersonLookupError] = useState(null)
 
   const loadProjects = useCallback(async () => {
+    const requestId = ++projectLoadRequest.current
     setLoading(true)
     setError(null)
     try {
@@ -1437,6 +1446,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         endDate: filters.endDate,
         buyerPersonId: filters.buyerPersonId,
       })
+      if (requestId !== projectLoadRequest.current) return
       setProjects(result.items)
       setTotalProjects(result.total)
       setProjectTotalPages(result.totalPages)
@@ -1446,10 +1456,21 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       if (result.totalPages > 0 && projectPage > result.totalPages) {
         setProjectPage(result.totalPages)
       }
+      if (filters.buyerPersonId && pendingBuyerNavigation.current === filters.buyerPersonId) {
+        pendingBuyerNavigation.current = ""
+        const project = result.total === 1 ? result.items[0] : null
+        if (project?.buyerUnits.length === 1 && bridge.canRead?.("construction_units")) {
+          await buyerUnitNavigator.current?.({
+            unitId: project.buyerUnits[0].unitId, personId: filters.buyerPersonId, requestId, project,
+          })
+        }
+      }
     } catch (requestError) {
-      setError(requestError?.message ?? "Não foi possível carregar as obras.")
+      if (requestId === projectLoadRequest.current) {
+        setError(requestError?.message ?? "Não foi possível carregar as obras.")
+      }
     } finally {
-      setLoading(false)
+      if (requestId === projectLoadRequest.current) setLoading(false)
     }
   }, [
     bridge,
@@ -1464,6 +1485,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
   useEffect(() => {
     void loadProjects()
+    return () => { projectLoadRequest.current += 1 }
   }, [loadProjects])
 
   useEffect(() => {
@@ -1615,6 +1637,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }, [activeProjectId, bridge])
 
   const loadUnits = useCallback(async () => {
+    const requestId = ++unitLoadRequest.current
     if (!activeProjectId) {
       setUnits([])
       return
@@ -1627,11 +1650,13 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         bridge,
         projectId: activeProjectId,
       })
-      setUnits(result.items)
+      if (requestId === unitLoadRequest.current) setUnits(result.items)
     } catch (requestError) {
-      setUnitError(requestError?.message ?? "Não foi possível carregar as unidades.")
+      if (requestId === unitLoadRequest.current) {
+        setUnitError(requestError?.message ?? "Não foi possível carregar as unidades.")
+      }
     } finally {
-      setLoadingUnits(false)
+      if (requestId === unitLoadRequest.current) setLoadingUnits(false)
     }
   }, [activeProjectId, bridge])
 
@@ -1869,6 +1894,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   ])
 
   const handleFilterChange = (field, value) => {
+    ++projectLoadRequest.current
+    pendingBuyerNavigation.current = field === "buyerPersonId" ? value : ""
     setFilters((currentFilters) => ({ ...currentFilters, [field]: value }))
     // Filtrar estando na pagina 5 cairia numa faixa que o novo filtro talvez
     // nem tenha.
@@ -1881,6 +1908,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }
 
   const clearFilters = () => {
+    ++projectLoadRequest.current
+    pendingBuyerNavigation.current = ""
     setFilters(defaultFilters)
     setProjectPage(1)
   }
@@ -1895,9 +1924,18 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }
 
   const closeProjectDetail = () => {
+    clearFilters()
+    ++unitLoadRequest.current
+    setUnitBuyerFilter({ projectId: null, personId: "" })
+    setActiveProjectId(null)
+    setRestoredProject(null)
     setProjectDetailTab("overview")
     setActiveUnitId(null)
     setUnitDetailTab("summary")
+    setUnits([])
+    setLoadingUnits(false)
+    setUnitPaymentPlan(null)
+    setUnitPaymentPlanError(null)
     setViewMode("projects")
   }
 
@@ -3318,6 +3356,51 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     [bridge]
   )
 
+  const openUnitById = async (unitId, { buyerPersonId = "", isCurrent = () => true, projectHint = null } = {}) => {
+    const destination = await getConstructionUnit({ bridge, unitId })
+    if (!isCurrent()) return
+    if (buyerPersonId && (!buyerHoldingUnitStatuses.includes(destination.status)
+      || ![destination.buyerPersonId, destination.secondaryBuyerPersonId].includes(buyerPersonId))) {
+      throw new Error("A unidade não está mais vinculada a esse comprador. Atualize a busca.")
+    }
+    const sameProject = destination.projectId === activeProjectId
+    const knownProject = projectHint?.id === destination.projectId ? projectHint : sameProject ? selectedProject : null
+    const project = knownProject ?? await getConstructionProject({ bridge, projectId: destination.projectId })
+    if (!isCurrent()) return
+    ++unitLoadRequest.current
+    setRestoredProject(project)
+    setActiveProjectId(destination.projectId)
+    setUnitBuyerFilter({ projectId: destination.projectId, personId: buyerPersonId })
+    setUnits((current) => sameProject
+      ? [...current.filter((item) => item.id !== destination.id), destination]
+      : [destination])
+    setUnitError(null)
+    setLoadingUnits(false)
+    setProjectDetailTab("units")
+    setViewMode("projectDetail")
+    openUnitDetail(destination)
+    if (sameProject) void loadUnits()
+  }
+
+  const openTransferredUnit = async (transfer) => {
+    await openUnitById(transfer.target_unit_id)
+    setTransferUnit(null)
+  }
+
+  const openBuyerUnit = async ({ unitId, personId, requestId = ++projectLoadRequest.current, project }) => {
+    pendingBuyerNavigation.current = ""
+    try {
+      await openUnitById(unitId, {
+        buyerPersonId: personId, projectHint: project, isCurrent: () => requestId === projectLoadRequest.current,
+      })
+    } catch (requestError) {
+      if (requestId === projectLoadRequest.current) {
+        bridge?.feedback?.error?.(requestError.message ?? "Não foi possível abrir a unidade do comprador.")
+      }
+    }
+  }
+  buyerUnitNavigator.current = openBuyerUnit
+
   const reloadUnitAfterTermination = async () => {
     await loadUnits()
     if (selectedUnit) {
@@ -4172,7 +4255,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       {viewMode === "projects" ? (
         <>
           <section className={styles.filtersCard}>
-            <div className={styles.filtersGrid}>
+            <div className={styles.projectFiltersGrid}>
               <label className={styles.filterControl}>
                 <span>Buscar</span>
                 <input
@@ -4234,6 +4317,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
               <ProjectList
                 projects={projects}
                 showBuyerUnits={Boolean(filters.buyerPersonId)}
+                onOpenBuyerUnit={bridge.canRead?.("construction_units")
+                  ? (unitId, project) => openBuyerUnit({ unitId, personId: filters.buyerPersonId, project }) : null}
                 loading={loading}
                 error={error}
                 onRetry={loadProjects}
@@ -4374,6 +4459,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                     onRelease={handleReleaseUnit}
                     onSale={openSaleUnitModal}
                     onTerminate={canTerminateUnits ? setTerminationUnit : null}
+                    onTransfer={canTransferUnits ? setTransferUnit : null}
                     onRequestConfirm={setConfirmRequest}
                     onUnitChanged={reloadUnitAfterTermination}
                     onCreateMeasurement={openCreateMeasurement}
@@ -4682,6 +4768,13 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           onSubmit={handleSubmitPayInstallment}
           loading={submittingInstallmentPayment}
         />
+      ) : null}
+
+      {transferUnit ? (
+        <UnitTransferModal bridge={bridge} unit={transferUnit}
+          onClose={async () => { setTransferUnit(null); await reloadUnitAfterTermination() }}
+          requestConfirm={setConfirmRequest}
+          onDone={openTransferredUnit} />
       ) : null}
 
       {terminationUnit ? (
@@ -5302,7 +5395,9 @@ function DetailMetaItem({ label, value, hint = null }) {
   )
 }
 
-function ProjectList({ projects, showBuyerUnits = false, loading, error, onRetry, onOpenDetails, onEdit, onDelete }) {
+function ProjectList({
+  projects, showBuyerUnits = false, onOpenBuyerUnit, loading, error, onRetry, onOpenDetails, onEdit, onDelete,
+}) {
   if (loading) {
     return (
       <div className={styles.tableWrapper} aria-busy="true">
@@ -5361,19 +5456,26 @@ function ProjectList({ projects, showBuyerUnits = false, loading, error, onRetry
               </td>
               {showBuyerUnits ? (
                 <td>
-                  {project.buyerUnits.map((unit) => (
-                    <div key={unit.unitId}>
-                      {unit.blockName ? `${unit.blockName} · ${unit.code}` : unit.code}
-                      <div className={styles.rowSecondaryText}>
-                        {[
-                          unitStatusLabel[unit.status] ?? unit.status,
-                          unit.isSecondaryBuyer ? "2º comprador" : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
+                  <div className={styles.buyerUnitsList}>
+                    {project.buyerUnits.map((unit) => (
+                      <div key={unit.unitId}>
+                        <div className={styles.buyerUnitRow}>
+                          {onOpenBuyerUnit ? (
+                            <button type="button" className={styles.buyerUnitLink}
+                              title={`Abrir detalhes da unidade ${unit.code}`}
+                              onClick={() => onOpenBuyerUnit(unit.unitId, project)}>
+                              {unit.code}
+                            </button>
+                          ) : <strong>{unit.code}</strong>}
+                          <span className={`${styles.buyerUnitStatus} ${styles[`status${unit.status}`] || ""}`}>
+                            {unitStatusLabel[unit.status] ?? unit.status}
+                          </span>
+                          {unit.isSecondaryBuyer && <span className={styles.buyerUnitRole}>2º comprador</span>}
+                        </div>
+                        {unit.blockName && <div className={styles.rowSecondaryText}>Bloco: {unit.blockName}</div>}
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </td>
               ) : null}
               <td>{projectTypeLabel[project.projectType] ?? project.projectType ?? "-"}</td>
@@ -5522,6 +5624,7 @@ function UnitDetailPanel({
   onRelease,
   onSale,
   onTerminate,
+  onTransfer,
   onRequestConfirm,
   onUnitChanged,
   onCreateMeasurement,
@@ -5575,7 +5678,7 @@ function UnitDetailPanel({
       <div className={styles.scopeHeader}>
         <div className={styles.scopeMeta}>
           <div className={styles.detailTitleRow}>
-            <h2>{unit.description || unit.code}</h2>
+            <h2>{unit.code}{unit.description ? ` — ${unit.description}` : ""}</h2>
             <span className={`${styles.statusPill} ${styles[`status${unit.status}`] || ""}`}>
               {unitStatusLabel[unit.status] ?? unit.status}
             </span>
@@ -5611,10 +5714,15 @@ function UnitDetailPanel({
               Vender
             </button>
           ) : null}
+          {onTransfer && unit.status === "sold" ? (
+            <button type="button" className={styles.unitTransferButton} onClick={() => onTransfer(unit)}>
+              <RefreshCw size={16} aria-hidden="true" /> Trocar unidade
+            </button>
+          ) : null}
           {onTerminate && ["sold", "delivered", "terminated"].includes(unit.status) ? (
             <button
               type="button"
-              className={`${styles.secondaryButton} ${styles.dangerButton}`}
+              className={styles.unitTerminationButton}
               onClick={() => onTerminate(unit)}
             >
               <CircleX size={16} />

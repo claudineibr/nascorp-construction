@@ -1,0 +1,14 @@
+.fieldLabel {
+  align-items: center;
+  box-sizing: border-box;
+  display: inline-flex;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.fields {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+

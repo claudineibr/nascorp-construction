@@ -18,3 +18,12 @@ export const formatBusinessDate = (value) => {
 }
 
 export const getBusinessTimezone = () => businessTimezone
+
+export const formatBusinessDateTime = (value) => {
+  if (!value) return "-"
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return formatBusinessDate(value)
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? "-" : new Intl.DateTimeFormat("pt-BR", {
+    timeZone: businessTimezone, dateStyle: "short", timeStyle: "medium",
+  }).format(parsed)
+}

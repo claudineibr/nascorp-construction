@@ -340,6 +340,38 @@
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
+.projectFiltersGrid {
+  composes: filtersGrid;
+  align-items: end;
+  box-sizing: border-box;
+  grid-template-columns: minmax(240px, 1.8fr) minmax(220px, 1.5fr) minmax(130px, 0.6fr) repeat(2, minmax(160px, 1fr));
+  min-width: 0;
+}
+
+.projectFiltersGrid > *,
+.projectFiltersGrid .filterControl input,
+.projectFiltersGrid .filterControl select {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.projectFiltersGrid .filterControl input,
+.projectFiltersGrid .filterControl select {
+  width: 100%;
+}
+
+@media (max-width: 1280px) {
+  .projectFiltersGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .projectFiltersGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .unitFilters {
   box-sizing: border-box;
   display: grid;
@@ -835,6 +867,42 @@
   color: var(--color-danger-text);
 }
 
+.unitActionButton {
+  composes: primaryButton;
+  box-sizing: border-box;
+  color: var(--color-text-inverse, var(--color-surface));
+}
+
+.unitActionButton:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
+}
+
+.unitTransferButton {
+  composes: unitActionButton;
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.unitTransferButton:hover:not(:disabled) {
+  background: var(--color-primary-strong);
+  border-color: var(--color-primary-strong);
+  color: var(--color-text-inverse, var(--color-surface));
+}
+
+.unitTerminationButton {
+  composes: unitActionButton;
+  background: transparent;
+  border-color: var(--color-warning-solid, var(--color-warning-text));
+  color: var(--color-text);
+}
+
+.unitTerminationButton:hover:not(:disabled) {
+  background: transparent;
+  border-color: var(--color-warning-solid, var(--color-warning-text));
+  color: var(--color-text);
+}
+
 .statusPill {
   align-items: center;
   border-radius: var(--radius-full);
@@ -842,6 +910,61 @@
   font-size: 12px;
   font-weight: 700;
   padding: 4px 10px;
+}
+
+.buyerUnitsList {
+  box-sizing: border-box;
+  display: grid;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.buyerUnitRow {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.buyerUnitLink {
+  background: transparent;
+  border: 0;
+  border-radius: 3px;
+  box-sizing: border-box;
+  color: var(--color-primary);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  min-width: 0;
+  padding: 0.15rem 0;
+  text-align: left;
+  text-underline-offset: 3px;
+  white-space: nowrap;
+}
+
+.buyerUnitLink:hover {
+  color: var(--color-primary-strong);
+  text-decoration: underline;
+}
+
+.buyerUnitLink:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
+}
+
+.buyerUnitStatus {
+  composes: statusPill;
+  box-sizing: border-box;
+  font-size: max(11px, 0.75rem);
+  padding: 2px 8px;
+}
+
+.buyerUnitRole {
+  box-sizing: border-box;
+  color: var(--color-text-muted);
+  font-size: max(11px, 0.75rem);
 }
 
 .statusdraft {

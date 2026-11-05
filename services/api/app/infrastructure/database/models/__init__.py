@@ -23,10 +23,12 @@ from app.infrastructure.database.models.construction import (
     ConstructionUnit,
 )
 from app.infrastructure.database.models.subcontract import ConstructionSubcontract, ConstructionSubcontractItem, ConstructionSubcontractVersion, ConstructionSubcontractConsumption, ConstructionSubcontractDirectBill, ConstructionSubcontractDeduction, ConstructionSubcontractPayable
+from app.infrastructure.database.models.unit_buyer_history import ConstructionUnitBuyerHistory
 from app.infrastructure.database.models.event import DeadLetterEvent, OutboxEvent, ProcessedEvent
 
 
 __all__ = [
+    "ConstructionUnitBuyerHistory",
     "ConstructionBlock",
     "ConstructionDocumentationType",
     "ConstructionMeasurement",

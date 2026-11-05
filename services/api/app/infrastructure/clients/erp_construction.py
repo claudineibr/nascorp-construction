@@ -19,6 +19,7 @@ class ErpConstructionClient:
         ConstructionEventType.PROJECT_CREATED: "/v1/internal/construction/events/project-created",
         ConstructionEventType.UNIT_CREATED: "/v1/internal/construction/events/unit-created",
         ConstructionEventType.UNIT_SOLD: "/v1/internal/construction/events/unit-sold",
+        ConstructionEventType.UNIT_TRANSFERRED: "/v1/internal/construction/events/unit-transferred",
         ConstructionEventType.UNIT_STATUS_CHANGED: "/v1/internal/construction/events/unit-status-changed",
         ConstructionEventType.PROCUREMENT_REQUESTED: "/v1/internal/construction/events/procurement-requested",
     }
@@ -26,6 +27,7 @@ class ErpConstructionClient:
         ConstructionEventType.PROJECT_CREATED: ErpEventType.COST_CENTER_CREATED,
         ConstructionEventType.UNIT_CREATED: ErpEventType.COST_CENTER_CREATED,
         ConstructionEventType.UNIT_SOLD: ErpEventType.CONTRACT_RECEIVABLE_CREATED,
+        ConstructionEventType.UNIT_TRANSFERRED: ErpEventType.UNIT_TRANSFERRED,
         ConstructionEventType.UNIT_STATUS_CHANGED: ErpEventType.UNIT_RECLASSIFIED,
         ConstructionEventType.PROCUREMENT_REQUESTED: ErpEventType.PROCUREMENT_REQUEST_ACCEPTED,
     }
@@ -33,6 +35,7 @@ class ErpConstructionClient:
         ConstructionEventType.PROJECT_CREATED: ("construction_project_id", ConstructionAggregateType.PROJECT),
         ConstructionEventType.UNIT_CREATED: ("construction_unit_id", ConstructionAggregateType.UNIT),
         ConstructionEventType.UNIT_SOLD: ("construction_unit_id", ConstructionAggregateType.UNIT),
+        ConstructionEventType.UNIT_TRANSFERRED: ("construction_unit_id", ConstructionAggregateType.UNIT),
         ConstructionEventType.UNIT_STATUS_CHANGED: ("construction_unit_id", ConstructionAggregateType.UNIT),
         ConstructionEventType.PROCUREMENT_REQUESTED: (
             "construction_procurement_request_id",
@@ -534,6 +537,19 @@ class ErpConstructionClient:
             response.raise_for_status()
             return response.json()
 
+    async def rename_unit_description(self, *, company_id, user_id, cost_center_id, description):
+        return await self._post_internal(
+            path="/v1/internal/construction/unit-description",
+            company_id=company_id, user_id=user_id,
+            payload={"cost_center_id": str(cost_center_id), "description": description[:255]},
+        )
+
+    async def preview_unit_transfer(self, *, company_id, user_id, payload):
+        return await self._post_internal(
+            path="/v1/internal/construction/unit-transfer/preview",
+            company_id=company_id, user_id=user_id, payload=payload,
+        )
+
     async def preview_unit_termination(self, *, company_id: UUID, user_id: UUID | None, payload: dict) -> dict:
         return await self._post_internal(
             path="/v1/internal/construction/unit-termination/preview",
@@ -639,38 +655,6 @@ class ErpConstructionClient:
                 "/v1/internal/construction/unit-adjustment",
                 headers=headers,
                 json=payload,
-            )
-            response.raise_for_status()
-            return response.json()
-
-    async def rename_unit_cost_center(
-        self,
-        *,
-        company_id: UUID,
-        user_id: UUID | None,
-        cost_center_id: UUID,
-        description: str,
-    ) -> dict[str, object]:
-        """Acerta o nome do centro de custo da unidade no ERP.
-
-        So a descricao viaja. O codigo do centro de custo e identificador
-        contabil e nao muda -- o ERP recusaria de qualquer forma.
-        """
-        if not settings.erp_service_key:
-            raise RuntimeError("ERP service key is not configured for Construction cost center integration.")
-
-        headers = {
-            "X-Service-Key": settings.erp_service_key,
-            "X-Company-ID": str(company_id),
-        }
-        if user_id is not None:
-            headers["X-User-ID"] = str(user_id)
-
-        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
-            response = await client.patch(
-                f"/v1/internal/construction/cost-centers/{cost_center_id}",
-                headers=headers,
-                json={"description": description},
             )
             response.raise_for_status()
             return response.json()

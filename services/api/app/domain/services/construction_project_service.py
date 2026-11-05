@@ -48,6 +48,8 @@ from app.domain.events.contracts import EventEnvelope
 from app.domain.services.construction_integration_dispatcher import ConstructionIntegrationDispatchResult
 from app.domain.services.construction_service_template_parser import parse_service_template_spreadsheet
 from app.domain.services.subcontract_service import SubcontractService
+from app.domain.services.unit_buyer_history_service import UnitBuyerHistoryService
+from app.domain.services.unit_transfer_service import UnitTransferService
 from app.domain.measurement_workflow import assert_measurement_editable, measurement_item_label, measurement_purpose, resolve_measurement_purpose
 from app.domain.unit_commission_status import unit_commission_status
 from app.domain.unit_termination_terms import normalize_termination_terms
@@ -216,7 +218,7 @@ REINSPECTION_REQUIRED_MESSAGE = (
 )
 
 
-class ConstructionProjectService:
+class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
     @staticmethod
     def to_commission_response(commission):
         from app.schemas.construction.project import ConstructionUnitCommissionResponse
@@ -760,6 +762,7 @@ class ConstructionProjectService:
             block_id=request.block_id,
             code=request.code.strip(),
             description=request.description.strip() if request.description else None,
+            original_description=request.description.strip() if request.description else None,
             unit_type=request.unit_type.strip(),
             typology=request.typology.strip() if request.typology else None,
             floor=request.floor,
@@ -800,6 +803,7 @@ class ConstructionProjectService:
         request: ConstructionUnitUpdate,
         actor_user_id: UUID | None = None,
     ) -> ConstructionUnit:
+        await self._editable_transfer_unit(company_id, unit_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
         updates = request.model_dump(exclude_unset=True)
         if "status" in updates:
@@ -854,30 +858,17 @@ class ConstructionProjectService:
             if existing_unit and existing_unit.id != unit.id:
                 raise ConstructionDuplicateCodeError(resource_name="a unidade", code=next_code)
 
-        # A descricao carrega o DONO, e muda a cada revenda. O centro de custo
-        # era batizado na criacao e nunca mais: o relatorio de custos seguia
-        # mostrando o comprador anterior. Renomeia ANTES de gravar -- se o ERP
-        # recusar, a unidade nao muda, e os dois nunca divergem.
-        nova_descricao = updates.get("description")
-        renomear = (
-            nova_descricao is not None
-            and (nova_descricao or "").strip() != (unit.description or "").strip()
-            and unit.analytic_cost_center_id is not None
-            and self.erp_client is not None
-        )
-        if renomear:
-            try:
-                await self.erp_client.rename_unit_cost_center(
-                    company_id=company_id,
-                    user_id=actor_user_id,
-                    cost_center_id=unit.analytic_cost_center_id,
-                    description=nova_descricao,
+        if "description" in updates:
+            current_description = unit.original_description if unit.original_description is not None else unit.description
+            if (updates["description"] or "").strip() == (current_description or "").strip():
+                updates.pop("description")
+            else:
+                _logger.info(f"[unit_name] descricao_alterada: unit_id={unit.id}")
+                await self._sync_unit_buyer_description(
+                    unit, unit.buyer_person_id, actor_user_id, sync_cost_center=True,
+                    base_override=updates["description"] or "",
                 )
-            except httpx.HTTPStatusError as request_error:
-                raise self._erp_domain_error(
-                    request_error=request_error,
-                    fallback_message="Não foi possível renomear o centro de custo da unidade no ERP.",
-                ) from request_error
+                updates["description"] = unit.description
 
         previous_status = unit.status
         if next_status and next_status != previous_status and next_status == ConstructionUnitStatus.DELIVERED:
@@ -984,6 +975,7 @@ class ConstructionProjectService:
         )
 
     async def delete_unit(self, *, company_id: UUID, unit_id: UUID) -> None:
+        await self._editable_transfer_unit(company_id, unit_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
         await self._assert_history_can_be_deleted(unit)
         # Apagar a unidade tira o dono junto -- pela porta maior. Ver
@@ -1002,6 +994,7 @@ class ConstructionProjectService:
         request: ConstructionUnitReserveRequest,
         actor_user_id: UUID | None = None,
     ) -> ConstructionUnit:
+        await self._editable_transfer_unit(company_id, unit_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
         if unit.status != ConstructionUnitStatus.AVAILABLE:
             raise ConstructionInvalidValueError(
@@ -1014,6 +1007,7 @@ class ConstructionProjectService:
             people={"O comprador": request.buyer_person_id},
         )
 
+        await self._sync_unit_buyer_description(unit, request.buyer_person_id, actor_user_id, sync_cost_center=True)
         unit.status = ConstructionUnitStatus.RESERVED
         unit.buyer_person_id = request.buyer_person_id
         unit.reserved_at = datetime.now(tz=UTC)
@@ -1022,7 +1016,8 @@ class ConstructionProjectService:
         await self.repository.refresh(unit)
         return unit
 
-    async def release_unit_reservation(self, *, company_id: UUID, unit_id: UUID) -> ConstructionUnit:
+    async def release_unit_reservation(self, *, company_id: UUID, unit_id: UUID, actor_user_id=None) -> ConstructionUnit:
+        await self._editable_transfer_unit(company_id, unit_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
         if unit.status != ConstructionUnitStatus.RESERVED:
             raise ConstructionInvalidValueError(
@@ -1034,6 +1029,7 @@ class ConstructionProjectService:
             company_id=company_id, unit=unit, acao="liberar a reserva"
         )
 
+        await self._sync_unit_buyer_description(unit, None, actor_user_id, sync_cost_center=True)
         unit.status = ConstructionUnitStatus.AVAILABLE
         unit.buyer_person_id = None
         unit.reserved_at = None
@@ -1050,6 +1046,7 @@ class ConstructionProjectService:
         request: ConstructionUnitSaleConfirmRequest,
         actor_user_id: UUID | None = None,
     ) -> ConstructionUnit:
+        await self._editable_transfer_unit(company_id, unit_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
 
         # Unidade ja vendida cai no mesmo caminho de proposito: e assim que a
@@ -1145,7 +1142,9 @@ class ConstructionProjectService:
                     error_code="CONSTRUCTION_FINANCING_FUTURE_DATE",
                 )
 
-            if not any(source["source_type"] == "financing" and source["amount"] > 0 for source in payment_sources):
+            if not any(
+                source["source_type"] == "financing" and Decimal(source["amount"]) > 0 for source in payment_sources
+            ):
                 raise ConstructionInvalidValueError(
                     message="A data do financiamento exige financiamento maior que zero.",
                     error_code="CONSTRUCTION_FINANCING_REQUIRED",
@@ -1154,6 +1153,10 @@ class ConstructionProjectService:
         await self._replace_unit_payment_sources(unit=unit, payment_sources=payment_sources)
         await self._replace_unit_documentations(unit=unit, documentations=documentations)
 
+        previous_description = unit.description
+        await self._sync_unit_buyer_history(
+            unit, request.buyer_person_id, datetime.now(UTC), actor_user_id, "Venda ou alteração do comprador",
+        )
         unit.status = ConstructionUnitStatus.SOLD
         unit.buyer_person_id = request.buyer_person_id
         unit.secondary_buyer_person_id = request.secondary_buyer_person_id
@@ -1191,10 +1194,19 @@ class ConstructionProjectService:
             actor_user_id=actor_user_id,
             sale=sale,
         )
-        dispatch_result = await self._dispatch_integration_event(
-            event=sale_event,
-            fallback_message="Não foi possível registrar a venda no ERP.",
+        renamed = unit.description != previous_description and await self._rename_unit_cost_center(
+            unit, unit.description, actor_user_id,
         )
+        try:
+            dispatch_result = await self._dispatch_integration_event(
+                event=sale_event,
+                fallback_message="Não foi possível registrar a venda no ERP.",
+            )
+        except Exception:
+            if renamed:
+                _logger.info(f"[unit_name] venda_falhou_restaurar: unit_id={unit.id}")
+                await self._restore_unit_cost_center_name(unit, previous_description, actor_user_id)
+            raise
         if dispatch_result is not None and dispatch_result.response_event is not None:
             erp_event = dispatch_result.response_event
             self._apply_contract_snapshot_from_payload(unit=unit, payload=erp_event.payload)
@@ -1472,6 +1484,7 @@ class ConstructionProjectService:
         request: ConstructionUnitTerminationRequest,
         actor_user_id: UUID | None = None,
     ) -> dict[str, Any]:
+        await self._editable_transfer_unit(company_id, unit_id)
         _logger.info(f"[unit_termination] distratar: company_id={company_id} unit_id={unit_id} user={actor_user_id}")
         unit = self._require_terminable_unit(await self.repository.lock_unit(company_id=company_id, unit_id=unit_id))
         project = await self.repository.get_project(company_id=company_id, project_id=unit.project_id)
@@ -1479,15 +1492,22 @@ class ConstructionProjectService:
         sale_id = sale.id
         payload = await self._termination_payload(unit=unit, sale=sale, project=project, request=request)
         await self.repository.commit()
+        previous_description = unit.description
+        renamed = await self._rename_unit_cost_center_for_buyer(unit, None, actor_user_id)
         try:
             result = await self.erp_client.apply_unit_termination(
                 company_id=company_id, user_id=actor_user_id, payload=payload
             )
-        except httpx.HTTPStatusError as request_error:
-            raise self._erp_domain_error(
-                request_error=request_error,
-                fallback_message="Não foi possível registrar o distrato no ERP.",
-            ) from request_error
+        except Exception as error:
+            if renamed:
+                _logger.info(f"[unit_name] distrato_falhou_restaurar: unit_id={unit_id}")
+                await self._restore_unit_cost_center_name(unit, previous_description, actor_user_id)
+            if isinstance(error, httpx.HTTPStatusError):
+                raise self._erp_domain_error(
+                    request_error=error,
+                    fallback_message="Não foi possível registrar o distrato no ERP.",
+                ) from error
+            raise
 
         unit = await self.repository.lock_unit(company_id=company_id, unit_id=unit_id)
         sale = await self.repository.get_unit_sale(company_id=company_id, sale_id=sale_id, lock=True)
@@ -1511,6 +1531,7 @@ class ConstructionProjectService:
         sale.terminated_by_user_id = actor_user_id
         sale.external_contract_id = sale.external_contract_id or unit.external_contract_id
         sale.external_receivable_id = sale.external_receivable_id or unit.external_receivable_id
+        await self._sync_unit_buyer_history(unit, None, sale.terminated_at, actor_user_id, "Distrato")
         await self._release_terminated_unit(unit)
         await self.repository.commit()
         await self.repository.refresh(unit)
@@ -1528,6 +1549,7 @@ class ConstructionProjectService:
         request: ConstructionUnitTerminationReactivateRequest,
         actor_user_id: UUID | None = None,
     ) -> dict[str, Any]:
+        await self._editable_transfer_unit(company_id, unit_id)
         _logger.info(f"[unit_termination] reativar: company_id={company_id} unit_id={unit_id} user={actor_user_id}")
         unit = await self.repository.lock_unit(company_id=company_id, unit_id=unit_id)
         if unit is None:
@@ -1545,7 +1567,20 @@ class ConstructionProjectService:
                 message="A unidade não tem distrato que possa ser reativado.",
                 error_code="CONSTRUCTION_UNIT_TERMINATION_NOT_FOUND",
             )
+        if await self.repository.has_unit_sale_after(company_id=company_id, unit_id=unit_id, sequence=sale.sequence):
+            _logger.info(
+                f"[unit_termination] reativar_recusado_venda_posterior: unit_id={unit_id} sale_sequence={sale.sequence}"
+            )
+            raise ConstructionInvalidValueError(
+                message=(
+                    "A unidade tem venda ou troca posterior a este distrato: "
+                    "só o registro mais recente da unidade pode ser reativado."
+                ),
+                error_code="CONSTRUCTION_UNIT_TERMINATION_NOT_LATEST",
+            )
         sale_id = sale.id
+        previous_description = unit.description
+        renamed = await self._rename_unit_cost_center_for_buyer(unit, sale.buyer_person_id, actor_user_id)
         try:
             result = await self.erp_client.reactivate_unit_termination(
                 company_id=company_id,
@@ -1556,12 +1591,20 @@ class ConstructionProjectService:
                     "reason": request.reason.strip(),
                 },
             )
-        except httpx.HTTPStatusError as request_error:
-            raise self._erp_domain_error(
-                request_error=request_error,
-                fallback_message="Não foi possível reativar o distrato no ERP.",
-            ) from request_error
+        except Exception as error:
+            if renamed:
+                _logger.info(f"[unit_name] reativacao_falhou_restaurar: unit_id={unit_id}")
+                await self._restore_unit_cost_center_name(unit, previous_description, actor_user_id)
+            if isinstance(error, httpx.HTTPStatusError):
+                raise self._erp_domain_error(
+                    request_error=error,
+                    fallback_message="Não foi possível reativar o distrato no ERP.",
+                ) from error
+            raise
 
+        await self._sync_unit_buyer_history(
+            unit, sale.buyer_person_id, datetime.now(UTC), actor_user_id, "Reativação do distrato",
+        )
         snapshot = dict(sale.termination_snapshot or {})
         unit.delivered_at = sale.delivered_at or unit.delivered_at
         previous_status = snapshot.get("unit_status")
@@ -1679,6 +1722,7 @@ class ConstructionProjectService:
         observation: str | None = None,
         actor_user_id: UUID | None = None,
     ) -> dict[str, Any]:
+        await self._editable_transfer_unit(company_id, unit_id)
         unit, target_receivable_id = await self._resolve_unit_receivable_target(
             company_id=company_id,
             unit_id=unit_id,
@@ -1736,25 +1780,16 @@ class ConstructionProjectService:
             if not should_process_event:
                 return unit
 
-        self._apply_contract_snapshot_from_payload(unit=unit, payload=event.payload)
         contract_status = str(event.payload.get("contract_status") or "")
         if contract_status.upper() == "CANCELED" and unit.status in self.TERMINABLE_UNIT_STATUSES:
-            project = await self.repository.get_project(company_id=unit.company_id, project_id=unit.project_id)
-            sale = await self._ensure_current_sale(unit=unit, project=project, actor_user_id=None)
-            reason = str(event.payload.get("reason") or "").strip() or "Contrato cancelado no ERP"
             _logger.info(
-                f"[unit_termination] contrato_cancelado_no_erp: unit_id={unit.id} sale_id={sale.id} event_id={event.event_id}"
+                f"[unit_termination] cancelamento_erp_recusado: unit_id={unit.id} event_id={event.event_id}"
             )
-            sale.status = "TERMINATED"
-            sale.terminated_at = await self._record_unit_termination(unit, sale)
-            company_timezone = await self.repository.get_company_timezone(company_id=unit.company_id)
-            if company_timezone not in BRAZIL_TIMEZONES:
-                company_timezone = current_business_timezone()
-            sale.termination_date = get_business_today(company_timezone)
-            sale.termination_reason = reason[:500]
-            sale.external_contract_id = sale.external_contract_id or unit.external_contract_id
-            sale.external_receivable_id = sale.external_receivable_id or unit.external_receivable_id
-            await self._release_terminated_unit(unit)
+            raise ConstructionInvalidValueError(
+                message="O contrato de venda da unidade não pode ser cancelado pelo ERP: use o distrato em Obras.",
+                error_code="CONSTRUCTION_UNIT_CONTRACT_CANCEL_FORBIDDEN",
+            )
+        self._apply_contract_snapshot_from_payload(unit=unit, payload=event.payload)
 
         await self.repository.commit()
         await self.repository.refresh(unit)
@@ -5108,6 +5143,7 @@ class ConstructionProjectService:
         venda; preenchido, aponta a parcela de um aditivo. Vencimento e valor
         nao entram: o ERP nao os altera em caminho nenhum.
         """
+        await self._editable_transfer_unit(company_id, unit_id)
         unit, target_receivable_id = await self._resolve_unit_receivable_target(
             company_id=company_id,
             unit_id=unit_id,
@@ -5179,6 +5215,7 @@ class ConstructionProjectService:
         reescreve o que esta em aberto. Cobranca que precisa sobreviver a isso
         e aditivo, que tem documento proprio.
         """
+        await self._editable_transfer_unit(company_id, unit_id)
         await self._refuse_when_nothing_left_to_charge(company_id=company_id, unit_id=unit_id)
         unit, target_receivable_id = await self._resolve_unit_receivable_target(
             company_id=company_id,
@@ -5218,6 +5255,7 @@ class ConstructionProjectService:
         guarda a parcela, gera o recibo e o lançamento contábil; aqui só
         provamos que a unidade tem recebível e repassamos.
         """
+        await self._editable_transfer_unit(company_id, unit_id)
         unit, target_receivable_id = await self._resolve_unit_receivable_target(
             company_id=company_id,
             unit_id=unit_id,
@@ -5253,6 +5291,7 @@ class ConstructionProjectService:
         multi-forma: mandar o operador ao Contas a Receber para corrigir
         supunha uma permissao que ele pode nao ter.
         """
+        await self._editable_transfer_unit(company_id, unit_id)
         unit, target_receivable_id = await self._resolve_unit_receivable_target(
             company_id=company_id,
             unit_id=unit_id,
@@ -5281,6 +5320,7 @@ class ConstructionProjectService:
         receivable_id: UUID | None = None,
         user_id: UUID | None = None,
     ) -> None:
+        await self._editable_transfer_unit(company_id, unit_id)
         unit, target_receivable_id = await self._resolve_unit_receivable_target(
             company_id=company_id,
             unit_id=unit_id,
@@ -5309,6 +5349,7 @@ class ConstructionProjectService:
         reason: str,
         user_id: UUID | None = None,
     ) -> None:
+        await self._editable_transfer_unit(company_id, unit_id)
         unit, target_receivable_id = await self._resolve_unit_receivable_target(
             company_id=company_id,
             unit_id=unit_id,
@@ -5392,6 +5433,7 @@ class ConstructionProjectService:
         agora, e nao lido dela na emissao: trocar o modelo da obra depois nao
         pode reescrever o que ja foi lancado.
         """
+        await self._editable_transfer_unit(company_id, unit_id)
         await self._refuse_when_nothing_left_to_charge(company_id=company_id, unit_id=unit_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
         await self._require_company_people(
@@ -5440,7 +5482,7 @@ class ConstructionProjectService:
         request: ConstructionUnitCommissionUpdate,
         actor_user_id: UUID | None = None,
     ) -> ConstructionUnitCommissionModel:
-        commission = await self._get_unit_commission(company_id=company_id, commission_id=commission_id)
+        commission = await self._editable_transfer_commission(company_id, commission_id)
         updates = request.model_dump(exclude_unset=True)
 
         # `_apply_updates` e um setattr cru, e `exclude_unset` so diz que a chave
@@ -5489,14 +5531,14 @@ class ConstructionProjectService:
         seria pior que o problema. Quem quiser refletir no contrato reabre a
         venda e salva.
         """
-        commission = await self._get_unit_commission(company_id=company_id, commission_id=commission_id)
+        commission = await self._editable_transfer_commission(company_id, commission_id)
         commission.payment_date = payment_date
         await self.repository.commit()
         await self.repository.refresh(commission)
         return commission
 
     async def delete_unit_commission(self, *, company_id: UUID, commission_id: UUID) -> None:
-        commission = await self._get_unit_commission(company_id=company_id, commission_id=commission_id)
+        commission = await self._editable_transfer_commission(company_id, commission_id)
         # Sinal apagado nao tem de onde ser recuperado, e ja houve sumico sem
         # causa identificada: o rastro fica aqui para a proxima vez.
         _logger.info(
@@ -5524,6 +5566,7 @@ class ConstructionProjectService:
         ``replace_open_installments``, que refaz as parcelas em aberto e
         destruiria o aditivo.
         """
+        await self._editable_transfer_unit(company_id, unit_id)
         await self._refuse_when_nothing_left_to_charge(company_id=company_id, unit_id=unit_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
 
@@ -5865,6 +5908,10 @@ class ConstructionProjectService:
                 raise ConstructionInvalidValueError(message="O ERP não confirmou o contrato da unidade.")
             unit = await self._get_unit(company_id=request_event.company_id, unit_id=request_event.aggregate_id)
             self._apply_contract_snapshot_from_payload(unit=unit, payload=response_event.payload)
+        elif request_event.event_type == ConstructionEventType.UNIT_TRANSFERRED:
+            if (response_event.event_type != ErpEventType.UNIT_TRANSFERRED
+                    or str(response_event.payload.get("target_unit_id")) != request_event.payload["target_unit_id"]):
+                raise ConstructionInvalidValueError(message="O ERP não confirmou o destino da troca de unidade.")
         elif request_event.event_type == ConstructionEventType.UNIT_STATUS_CHANGED:
             if response_event.event_type != ErpEventType.UNIT_RECLASSIFIED:
                 raise ConstructionInvalidValueError(message="O ERP não confirmou a reclassificação da unidade.")

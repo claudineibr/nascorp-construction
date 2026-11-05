@@ -20,6 +20,8 @@ from app.domain.constants import (
 from app.infrastructure.repository._project_scope_filters import scope_conditions
 from app.infrastructure.database.history import PreservedHistory
 from app.infrastructure.repository._history import preserve_deletion, protected_history
+from app.infrastructure.repository.unit_buyer_history_repository import UnitBuyerHistoryRepository
+from app.infrastructure.repository.unit_transfer_repository import UnitTransferRepository
 from app.domain.events.constants import ConstructionEventType
 
 from app.infrastructure.database.models import (
@@ -64,7 +66,7 @@ def _buyer_unit_conditions(buyer_person_id: UUID) -> list:
 logger = logging.getLogger(__name__)
 
 
-class ConstructionRepository:
+class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository):
     """As consultas de Obras, ja limitadas as obras que o ator enxerga.
 
     O escopo entra AQUI, e nao nas 79 rotas: `ConstructionProjectService` tem
@@ -135,6 +137,7 @@ class ConstructionRepository:
             ConstructionEventType.PROJECT_CREATED: ConstructionProject,
             ConstructionEventType.UNIT_CREATED: ConstructionUnit,
             ConstructionEventType.UNIT_SOLD: ConstructionUnit,
+            ConstructionEventType.UNIT_TRANSFERRED: ConstructionUnit,
             ConstructionEventType.UNIT_STATUS_CHANGED: ConstructionUnit,
         }[event.event_type]
         return await self.session.scalar(select(model).where(
@@ -349,6 +352,21 @@ class ConstructionRepository:
             .with_for_update()
             .execution_options(populate_existing=True)
         )
+
+    async def has_unit_sale_after(self, *, company_id, unit_id, sequence):
+        return await self.session.scalar(
+            select(ConstructionUnitSale.id).where(
+                ConstructionUnitSale.company_id == company_id,
+                ConstructionUnitSale.unit_id == unit_id,
+                ConstructionUnitSale.sequence > sequence,
+                or_(
+                    ConstructionUnitSale.source != "LEGACY",
+                    ConstructionUnitSale.transferred_from_sale_id.is_not(None),
+                    ConstructionUnitSale.transferred_at.is_not(None),
+                ),
+                *scope_conditions(ConstructionUnitSale, self.scope),
+            ).limit(1)
+        ) is not None
 
     async def next_unit_sale_sequence(self, *, company_id, unit_id) -> int:
         return await self._next_scoped_sequence(

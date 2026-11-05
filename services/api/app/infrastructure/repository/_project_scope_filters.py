@@ -56,7 +56,10 @@ from app.infrastructure.database.models.subcontract import ConstructionSubcontra
 # que é a própria obra.
 from app.infrastructure.database.models.assistance import AssistanceRequest, AssistanceContact, AssistanceComplaint, AssistanceService, AssistanceHistory, AssistanceMigrationState
 
+from app.infrastructure.database.models.unit_buyer_history import ConstructionUnitBuyerHistory
+
 _CAMINHO = {
+    ConstructionUnitBuyerHistory: (ConstructionUnit, "unit_id"),
     AssistanceContact: (AssistanceRequest, "request_id"),
     AssistanceComplaint: (AssistanceRequest, "request_id"),
     AssistanceService: (AssistanceRequest, "request_id"),

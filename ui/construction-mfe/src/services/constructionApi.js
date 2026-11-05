@@ -117,6 +117,7 @@ const toUnitView = (unit) => ({
   blockId: unit.block_id ?? null,
   code: unit.code,
   description: unit.description ?? "",
+  originalDescription: unit.original_description ?? null,
   unitType: unit.unit_type,
   typology: unit.typology ?? "",
   floor: unit.floor ?? "",
@@ -984,6 +985,11 @@ export async function deleteConstructionSchedulePhase({ bridge, phaseId }) {
   })
 }
 
+export async function getConstructionUnit({ bridge, unitId }) {
+  const payload = await requestJson({ bridge, path: `/v1/construction/units/${unitId}` })
+  return toUnitView(payload)
+}
+
 export async function listConstructionUnits({ bridge, projectId }) {
   const payload = await requestJson({
     bridge,
@@ -1103,6 +1109,9 @@ const toUnitSaleView = (sale) => ({
   terminationReason: sale.termination_reason ?? "",
   terminationNotes: sale.termination_notes ?? "",
   externalTerminationId: sale.external_termination_id ?? null,
+  transferredAt: sale.transferred_at ?? null,
+  transferredToUnitId: sale.transferred_to_unit_id ?? null,
+  transferredFromSaleId: sale.transferred_from_sale_id ?? null,
   refundAmount: sale.refund_amount ?? null,
   paidAmount: sale.paid_amount ?? null,
 })
@@ -2352,3 +2361,29 @@ export const downloadErpCommissionReceiptPdf = ({ bridge, commissionId }) => dow
   bridge, path: `/v1/receipts/construction-commissions/${commissionId}/pdf`,
   fallbackMessage: "Não foi possível baixar o recibo do sinal.",
 })
+
+export function searchUnitTransferTargets({ bridge, unitId, search }) {
+  const query = new URLSearchParams({ page_size: "50" })
+  if (search?.trim().length >= 4) query.set("search", search.trim())
+  return requestJson({ bridge, path: `/v1/construction/units/${unitId}/transfer-targets?${query}` })
+}
+
+export function previewUnitTransfer({ bridge, unitId, data }) {
+  return requestJson({ bridge, path: `/v1/construction/units/${unitId}/transfer/preview`, method: "POST", body: data })
+}
+
+export function applyUnitTransfer({ bridge, unitId, data }) {
+  return requestJson({ bridge, path: `/v1/construction/units/${unitId}/transfer`, method: "POST", body: data })
+}
+
+export function listUnitTransfers({ bridge, unitId }) {
+  return requestJson({ bridge, path: `/v1/construction/units/${unitId}/transfers` })
+}
+
+export function retryUnitTransfer({ bridge, unitId, transferId }) {
+  return requestJson({ bridge, path: `/v1/construction/units/${unitId}/transfers/${transferId}/retry`, method: "POST" })
+}
+
+export function listUnitBuyerHistory({ bridge, unitId }) {
+  return requestJson({ bridge, path: `/v1/construction/units/${unitId}/buyer-history` })
+}

@@ -1,5 +1,6 @@
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import httpx
@@ -19,6 +20,7 @@ from app.domain.exceptions import (
 from app.domain.events.constants import ConstructionEventType, ConstructionIntegrationMode, ErpEventType
 from app.domain.events.contracts import EventEnvelope
 from app.domain.services import ConstructionIntegrationDispatcher, ConstructionProjectService
+from app.infrastructure.database.models.unit_buyer_history import ConstructionUnitBuyerHistory
 from app.infrastructure.database.models import (
     ConstructionDocumentationType,
     ConstructionMeasurement,
@@ -88,6 +90,8 @@ class FakeConstructionRepository:
         self.project_service_links: set[tuple[object, object, object]] = set()
         self.foreign_receipt_template_ids: set = set()
         self.company_timezones: dict = {}
+        self.buyer_history: list[ConstructionUnitBuyerHistory] = []
+        self.session = SimpleNamespace(info={})
         self.commits = 0
         self.replaced_children = 0
 
@@ -278,6 +282,10 @@ class FakeConstructionRepository:
 
     async def get_unit_commission(self, *, company_id, commission_id):
         return self.unit_commissions.get((company_id, commission_id))
+
+    async def lock_transfer_commission(self, company_id, commission_id):
+        commission = self.unit_commissions.get((company_id, commission_id))
+        return None if commission is None or commission.deleted_at is not None else commission
 
     async def get_next_commission_sequence(self, *, company_id, unit_id):
         commissions = [
@@ -674,6 +682,10 @@ class FakeConstructionRepository:
             self.occurrences[(entity.company_id, entity.id)] = entity
             return
 
+        if isinstance(entity, ConstructionUnitBuyerHistory):
+            self.buyer_history.append(entity)
+            return
+
         self.measurements[(entity.company_id, entity.id)] = entity
 
     async def commit(self) -> None:
@@ -797,6 +809,23 @@ class FakeConstructionRepository:
         candidates.sort(key=lambda sale: sale.sequence, reverse=True)
         candidates.sort(key=lambda sale: sale.terminated_at.timestamp() if sale.terminated_at else float("-inf"), reverse=True)
         return candidates[0] if candidates else None
+
+    async def pending_unit_transfer(self, company_id, unit_id):
+        return None
+
+    async def unit_buyer_history(self, company_id, unit_id, open_only=False):
+        return [
+            row for row in self.buyer_history
+            if row.company_id == company_id and row.unit_id == unit_id and (not open_only or row.excluded_at is None)
+        ]
+
+    async def has_unit_sale_after(self, *, company_id, unit_id, sequence):
+        return any(
+            sale.sequence > sequence and (
+                sale.source != "LEGACY" or sale.transferred_from_sale_id is not None or sale.transferred_at is not None
+            )
+            for sale in await self.list_unit_sales(company_id=company_id, unit_id=unit_id)
+        )
 
     async def next_unit_sale_sequence(self, *, company_id, unit_id):
         sales = await self.list_unit_sales(company_id=company_id, unit_id=unit_id)
@@ -967,18 +996,24 @@ class FakeErpPeopleDirectory:
             return {"items": [], "total": 0}
         return {"items": [{"id": str(person_id), "name": "Pessoa da empresa"}], "total": 1}
 
+    async def get_person_name(self, *, company_id, user_id, person_id):
+        return None if person_id in self.foreign_person_ids else "Pessoa da empresa"
+
+    async def rename_unit_description(self, *, company_id, user_id, cost_center_id, description):
+        self.renamed_units = [*getattr(self, "renamed_units", []), (cost_center_id, description)]
+
 
 class FakeErpMeasurementClient(FakeErpPeopleDirectory):
     def __init__(self) -> None:
         self.events: list[EventEnvelope] = []
         self.confirmation_events: list[EventEnvelope] = []
-        #: Nomes que este ERP falso sabe resolver. Vazio de proposito: o caso
-        #: comum e o nome NAO vir, e a gravacao tem de acontecer assim mesmo.
         self.person_names: dict = {}
         self.foreign_product_ids: set = set()
 
     async def get_person_name(self, *, company_id, user_id, person_id):
-        return self.person_names.get(person_id)
+        return self.person_names.get(person_id) or await super().get_person_name(
+            company_id=company_id, user_id=user_id, person_id=person_id
+        )
 
     async def get_person_qualification_status(self, *, company_id, user_id, person_id):
         return "none"
@@ -3278,7 +3313,7 @@ async def test_confirm_unit_sale_persists_broker_signature_and_notes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_contract_status_updated_event_cancellation_reverts_unit_to_available() -> None:
+async def test_apply_contract_status_updated_event_refuses_cancellation_of_sold_unit() -> None:
     company_id = uuid4()
     repository = FakeConstructionRepository()
     event_repository = FakeEventRepository()
@@ -3307,16 +3342,14 @@ async def test_apply_contract_status_updated_event_cancellation_reverts_unit_to_
         contract_status="CANCELED",
     )
 
-    first_result = await service.apply_contract_status_updated_event(event=event)
-    second_result = await service.apply_contract_status_updated_event(event=event)
+    with pytest.raises(ConstructionInvalidValueError) as error:
+        await service.apply_contract_status_updated_event(event=event)
 
-    assert first_result.status == "available"
-    assert first_result.external_contract_id is None and first_result.current_sale_id is None
-    [sale] = await repository.list_unit_sales(company_id=company_id, unit_id=unit.id)
-    assert sale.status == "TERMINATED" and sale.termination_reason == "Contrato cancelado no ERP"
-    assert sale.external_contract_status == "CANCELED" and sale.terminated_at is not None
-    assert second_result.status == "available"
-    assert repository.commits == 1
+    assert error.value.error_code == "CONSTRUCTION_UNIT_CONTRACT_CANCEL_FORBIDDEN"
+    assert unit.status == "sold" and unit.sold_at is not None
+    assert unit.external_contract_id is None and unit.external_contract_status is None
+    assert await repository.list_unit_sales(company_id=company_id, unit_id=unit.id) == []
+    assert repository.commits == 0
 
 
 @pytest.mark.asyncio
@@ -4523,13 +4556,14 @@ async def test_procurement_item_cannot_point_to_another_project(field_name) -> N
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("via_event", [False, True])
-async def test_termination_deletes_only_unpaid_commissions_of_the_unit(via_event):
+async def test_termination_deletes_only_unpaid_commissions_of_the_unit():
     from app.schemas.construction.project import ConstructionUnitUpdate
 
     company_id = uuid4()
     repository = FakeConstructionRepository()
-    unit = ConstructionUnit(id=uuid4(), company_id=company_id, project_id=uuid4(), code="U1",
+    project = ConstructionProject(id=uuid4(), company_id=company_id, code="P1", name="Obra", status="active")
+    repository.projects[(company_id, project.id)] = project
+    unit = ConstructionUnit(id=uuid4(), company_id=company_id, project_id=project.id, code="U1",
         unit_type="Casa", status="sold", sold_at=datetime(2026, 1, 1, tzinfo=UTC))
     repository.units[(company_id, unit.id)] = unit
     commissions = [
@@ -4545,19 +4579,14 @@ async def test_termination_deletes_only_unpaid_commissions_of_the_unit(via_event
     for commission in commissions:
         repository.unit_commissions[(commission.company_id, commission.id)] = commission
     service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository())
-    if via_event:
-        event = make_erp_contract_status_updated_event(company_id=company_id, unit_id=unit.id, contract_status="CANCELED")
-        await service.apply_contract_status_updated_event(event=event)
-        await service.apply_contract_status_updated_event(event=event)
-    else:
-        with pytest.raises(ConstructionInvalidValueError):
-            await service.update_unit(company_id=company_id, unit_id=unit.id,
-                request=ConstructionUnitUpdate(status="terminated"), actor_user_id=uuid4())
-        service.erp_client = FakeTerminationClient()
-        await service.terminate_unit(company_id=company_id, unit_id=unit.id,
-            request=ConstructionUnitTerminationRequest(termination_date=date(2026, 10, 1), reason="Desistência"),
-            actor_user_id=uuid4())
-        repository.commits -= 1
+    with pytest.raises(ConstructionInvalidValueError):
+        await service.update_unit(company_id=company_id, unit_id=unit.id,
+            request=ConstructionUnitUpdate(status="terminated"), actor_user_id=uuid4())
+    service.erp_client = FakeTerminationClient()
+    await service.terminate_unit(company_id=company_id, unit_id=unit.id,
+        request=ConstructionUnitTerminationRequest(termination_date=date(2026, 10, 1), reason="Desistência"),
+        actor_user_id=uuid4())
+    repository.commits -= 1
     assert commissions[0].deleted_at is not None
     assert all(commission.deleted_at is None for commission in commissions[1:])
     [sale] = await repository.list_unit_sales(company_id=company_id, unit_id=unit.id)
@@ -4570,7 +4599,7 @@ async def test_termination_deletes_only_unpaid_commissions_of_the_unit(via_event
     assert repository.commits == 1
 
 
-class FakeTerminationClient:
+class FakeTerminationClient(FakeErpPeopleDirectory):
     def __init__(self, fail=False):
         self.fail = fail
         self.calls = []
@@ -4935,30 +4964,26 @@ async def test_reactivation_restores_unit_status_recorded_at_termination(keep_sn
 
 
 @pytest.mark.asyncio
-async def test_contract_canceled_event_uses_company_timezone_and_is_not_reactivable():
-    from app.domain.business_clock import business_clock_scope
-    from app.schemas.construction.project import ConstructionUnitTerminationReactivateRequest
-
+@pytest.mark.parametrize("status", ["sold", "delivered"])
+async def test_contract_canceled_event_keeps_unit_contract_and_buyer(status):
     company_id = uuid4()
     repository = FakeConstructionRepository()
-    repository.company_timezones[company_id] = "America/Rio_Branco"
     _, unit = _sold_unit_with_sale(repository, company_id=company_id)
+    unit.status = status
+    buyer, contract, receivable = unit.buyer_person_id, unit.external_contract_id, unit.external_receivable_id
     client = FakeSaleTerminationClient()
     service = ConstructionProjectService(repository=repository, event_repository=FakeEventRepository(), erp_client=client)
     event = make_erp_contract_status_updated_event(company_id=company_id, unit_id=unit.id, contract_status="CANCELED")
 
-    with business_clock_scope("America/Sao_Paulo", instant=datetime(2026, 10, 21, 3, 30, tzinfo=UTC)):
+    with pytest.raises(ConstructionInvalidValueError) as error:
         await service.apply_contract_status_updated_event(event=event)
 
-    [sale] = await repository.list_unit_sales(company_id=company_id, unit_id=unit.id)
-    assert sale.status == "TERMINATED" and sale.external_termination_id is None
-    assert sale.termination_date == date(2026, 10, 20)
-    with pytest.raises(ConstructionInvalidValueError) as error:
-        await service.reactivate_unit_termination(
-            company_id=company_id, unit_id=unit.id, request=ConstructionUnitTerminationReactivateRequest(reason="Voltou")
-        )
-    assert error.value.error_code == "CONSTRUCTION_UNIT_TERMINATION_NOT_FOUND"
-    assert client.termination_calls == []
+    assert error.value.error_code == "CONSTRUCTION_UNIT_CONTRACT_CANCEL_FORBIDDEN"
+    assert unit.status == status and unit.buyer_person_id == buyer and unit.terminated_at is None
+    assert unit.external_contract_id == contract and unit.external_receivable_id == receivable
+    assert unit.external_contract_status is None
+    assert await repository.list_unit_sales(company_id=company_id, unit_id=unit.id) == []
+    assert client.termination_calls == [] and repository.commits == 0
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,11 @@ from app.domain.permissions import ConstructionFeature, PermissionAction
 from app.domain.services import ConstructionProjectService
 from app.domain.services.construction_contract_context_service import ConstructionContractContextService
 from app.schemas.construction.unit_contract import ConstructionUnitContractContextResponse
+from app.schemas.construction.unit_buyer_history import UnitBuyerHistoryList
+from app.schemas.construction.unit_transfer import (
+    ConstructionUnitTransferRequest, ConstructionUnitTransferResponse, ConstructionUnitTransferList,
+    ConstructionUnitTransferTargetList,
+)
 from app.domain.services.construction_service_template_parser import build_service_template_example
 from app.infrastructure.clients import ErpConstructionClient
 from app.infrastructure.database.session import get_session
@@ -131,6 +136,7 @@ async def get_project_service(
     """
     event_repository = EventRepository(session=session)
     session.info['actor_user_id'] = ctx.user_id
+    session.info['actor_person_id'] = ctx.person_id
     return ConstructionProjectService(
         repository=ConstructionRepository(session=session, scope=ctx.project_scope),
         event_repository=event_repository,
@@ -453,7 +459,9 @@ async def release_unit_reservation(
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionUnitResponse:
     try:
-        unit = await service.release_unit_reservation(company_id=ctx.company_id, unit_id=unit_id)
+        unit = await service.release_unit_reservation(
+            company_id=ctx.company_id, unit_id=unit_id, actor_user_id=ctx.user_id,
+        )
         return ConstructionUnitResponse.model_validate(unit)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
@@ -493,6 +501,20 @@ async def list_unit_sales(
             page_size=len(sales),
             total_pages=1 if sales else 0,
         )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get('/units/{unit_id}/buyer-history', response_model=UnitBuyerHistoryList)
+async def unit_buyer_history(
+    unit_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+):
+    try:
+        items = await service.list_unit_buyer_history(ctx.company_id, unit_id)
+        return {'items': items, 'total': len(items), 'page': 1,
+                'page_size': len(items), 'total_pages': 1 if items else 0}
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 
@@ -2076,3 +2098,73 @@ def _http_error(*, exc: ConstructionDomainError) -> HTTPException:
         status_code=exc.status_code,
         detail={"message": exc.message, "error_code": exc.error_code},
     )
+
+
+@router.get("/units/{unit_id}/transfer-targets", response_model=ConstructionUnitTransferTargetList)
+async def unit_transfer_targets(
+    unit_id: UUID,
+    search: str | None = Query(default=None, max_length=200),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+):
+    try:
+        return await service.list_unit_transfer_targets(ctx.company_id, unit_id, search, page, page_size)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/transfer/preview", response_model=ConstructionUnitTransferResponse)
+async def preview_unit_transfer(
+    unit_id: UUID,
+    data: ConstructionUnitTransferRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    _finance_ctx=Depends(require_permission("receivable", PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+):
+    try:
+        return await service.preview_unit_transfer(ctx.company_id, unit_id, data, ctx.user_id)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/transfer", response_model=ConstructionUnitTransferResponse)
+async def transfer_unit(
+    unit_id: UUID,
+    data: ConstructionUnitTransferRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    _finance_ctx=Depends(require_permission("receivable", PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+):
+    try:
+        return await service.transfer_unit(ctx.company_id, unit_id, data, ctx.user_id)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/units/{unit_id}/transfers", response_model=ConstructionUnitTransferList)
+async def unit_transfers(
+    unit_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+):
+    try:
+        items = await service.list_unit_transfers(ctx.company_id, unit_id)
+        return {"items": items, "total": len(items)}
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/units/{unit_id}/transfers/{event_id}/retry")
+async def retry_unit_transfer(
+    unit_id: UUID,
+    event_id: UUID,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
+    _finance_ctx=Depends(require_permission("receivable", PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+):
+    try:
+        return await service.retry_unit_transfer(ctx.company_id, unit_id, event_id, ctx.user_id)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc

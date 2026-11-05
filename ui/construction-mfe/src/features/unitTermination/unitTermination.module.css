@@ -108,6 +108,31 @@
   composes: table from "../../App.module.css";
 }
 
+.historyTable td {
+  vertical-align: top;
+}
+
+.historyDetails {
+  box-sizing: border-box;
+  display: grid;
+  gap: 0.65rem;
+  min-width: 240px;
+  overflow-wrap: anywhere;
+}
+
+.historyAmounts {
+  box-sizing: border-box;
+  min-width: 130px;
+}
+
+.historyTable caption {
+  box-sizing: border-box;
+  color: var(--color-text);
+  font-weight: 600;
+  padding: calc(0.85rem * var(--density, 1));
+  text-align: left;
+}
+
 @media (max-width: 768px) {
   .deductionRow {
     grid-template-columns: 1fr;

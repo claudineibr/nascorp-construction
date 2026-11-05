@@ -20,6 +20,7 @@ async def test_status_transition_persists_event_before_unit_commit(previous, sta
     repository, events = AsyncMock(), AsyncMock()
     repository.get_unit.return_value = unit
     repository.lock_unit.return_value = unit
+    repository.pending_unit_transfer.return_value = None
     calls = []
     events.add_outbox_event.side_effect = lambda **kwargs: calls.append(("event", kwargs["event"]))
     repository.commit.side_effect = lambda: calls.append(("commit", None))

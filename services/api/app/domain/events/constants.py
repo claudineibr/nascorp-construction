@@ -24,6 +24,7 @@ class ConstructionEventType:
     UNIT_CREATED = "construction.unit.created.v1"
     MEASUREMENT_APPROVED = "construction.measurement.approved.v1"
     UNIT_SOLD = "construction.unit.sold.v1"
+    UNIT_TRANSFERRED = "construction.unit.transferred.v1"
     UNIT_STATUS_CHANGED = "construction.unit.status_changed.v1"
     PROCUREMENT_REQUESTED = "construction.procurement.requested.v2"
 
@@ -35,6 +36,7 @@ class ErpEventType:
     CONTRACT_RECEIVABLE_CREATED = "erp.contract.receivable.created.v1"
     CONTRACT_STATUS_UPDATED = "erp.contract.status.updated.v1"
     UNIT_RECLASSIFIED = "erp.unit.reclassified.v1"
+    UNIT_TRANSFERRED = "erp.unit.transferred.v1"
     PROCUREMENT_REQUEST_ACCEPTED = "erp.procurement.request.accepted.v1"
     PROCUREMENT_REQUEST_UPDATED = "erp.procurement.request.updated.v1"
 

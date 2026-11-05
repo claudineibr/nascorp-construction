@@ -37,7 +37,7 @@ async def test_financing_fields_are_written_snapshotted_and_cleared():
         installments=1,
         financing_completed=True,
         financing_date=date(2020, 1, 1),
-        payment_sources=[dict(source_type="financing", amount="100000", installments=1)],
+        payment_sources=[dict(source_type="financing", amount="100000", due_date="2026-10-01", installments=1)],
     )
     result = await service.confirm_unit_sale(company_id=company, unit_id=unit.id, request=request)
     assert result.financing_completed is True and result.financing_date == date(2020, 1, 1)
@@ -73,7 +73,7 @@ async def test_financing_snapshot_is_restored_when_termination_is_reactivated():
 @pytest.mark.parametrize(
     "financing_date, sources, error",
     [
-        (date(2100, 1, 1), [dict(source_type="financing", amount="100000")], "CONSTRUCTION_FINANCING_FUTURE_DATE"),
+        (date(2100, 1, 1), [dict(source_type="financing", amount="100000", due_date="2026-10-01")], "CONSTRUCTION_FINANCING_FUTURE_DATE"),
         (date(2020, 1, 1), [], "CONSTRUCTION_FINANCING_REQUIRED"),
     ],
 )

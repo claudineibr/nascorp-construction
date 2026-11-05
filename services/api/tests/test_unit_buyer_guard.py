@@ -12,6 +12,7 @@ direto; `delete_unit` levava a unidade inteira -- e o dono junto -- sem guard
 nenhum.
 """
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -20,7 +21,7 @@ import pytest
 from app.domain.constants import ConstructionUnitStatus
 from app.domain.exceptions import ConstructionPersonOutsideCompanyError, ConstructionResourceInUseError
 from app.domain.services import ConstructionProjectService
-from app.infrastructure.database.models import ConstructionUnit
+from app.infrastructure.database.models import ConstructionProject, ConstructionUnit
 from app.schemas.construction import ConstructionUnitReserveRequest
 
 from .test_construction_project_service import FakeErpPeopleDirectory
@@ -31,11 +32,35 @@ class _RepositorioFalso:
         self.unit = unit
         self.apagados = []
         self.commits = 0
+        self.session = SimpleNamespace(info={})
+        self.project = ConstructionProject(
+            id=unit.project_id, company_id=unit.company_id, code="OBRA", name="Obra", status="active",
+        ) if unit is not None else None
 
     async def get_unit(self, *, company_id, unit_id):
         if self.unit is None or self.unit.id != unit_id:
             return None
         return self.unit
+
+    async def get_project(self, *, company_id, project_id):
+        if self.project is None or self.project.id != project_id:
+            return None
+        return self.project
+
+    async def has_protected_history(self, entity):
+        return entity.external_contract_id is not None or entity.external_receivable_id is not None
+
+    async def unit_buyer_history(self, company_id, unit_id, open_only=False):
+        return []
+
+    async def add(self, entity):
+        return entity
+
+    async def lock_unit(self, *, company_id, unit_id):
+        return await self.get_unit(company_id=company_id, unit_id=unit_id)
+
+    async def pending_unit_transfer(self, company_id, unit_id):
+        return None
 
     async def delete(self, entity):
         self.apagados.append(entity)
