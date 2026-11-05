@@ -4495,8 +4495,16 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
           {projectDetailTab === "purchaseOrders" && ProjectPurchaseOrders ? (
             <DomainCard
-              title="Compras"
-              subtitle="Pedidos emitidos para esta obra. Abra o pedido para ver itens, recebimentos e títulos."
+              title={
+                <>
+                  Compras
+                  <InfoTip label="Sobre as compras da obra">
+                    Pedidos de compra emitidos para esta obra, gerados por cotação ou por pedido direto.
+                    Abra o número do pedido para ver itens, recebimentos e títulos. Novo pedido direto só
+                    aparece para quem a empresa autorizou a comprar sem requisição e pode criar pedidos.
+                  </InfoTip>
+                </>
+              }
               content={<ProjectPurchaseOrders projectId={activeProjectId} />}
             />
           ) : null}
