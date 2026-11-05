@@ -1,0 +1,62 @@
+.panel,
+.panel * {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.panel {
+  display: grid;
+  gap: calc(1rem * var(--density, 1));
+  color: var(--color-text);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.primaryButton {
+  composes: primaryButton from "../../App.module.css";
+}
+
+.secondaryButton {
+  composes: secondaryButton from "../../App.module.css";
+}
+
+.fileInput {
+  display: none;
+}
+
+.tableWrapper {
+  composes: tableWrapper from "../../App.module.css";
+}
+
+.table {
+  composes: table from "../../App.module.css";
+}
+
+.table th:last-child,
+.table td:last-child {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.fileName {
+  overflow-wrap: anywhere;
+}
+
+.paginationSlot {
+  composes: paginationSlot from "../../App.module.css";
+}
+
+.pagination {
+  width: 100%;
+}
+
+.paginationHidden {
+  visibility: hidden;
+}

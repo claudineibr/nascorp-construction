@@ -55,6 +55,7 @@ import {
   Layers3,
   ListChecks,
   PackageSearch,
+  Paperclip,
   Pencil,
   Plus,
   RefreshCw,
@@ -92,6 +93,7 @@ import { TerminationTermsEditor, emptyTerminationTerms } from "./features/unitTe
 import { CreditOffsetModal } from "./features/unitTermination/CreditOffsetModal.jsx"
 import { ServiceTemplatesPanel } from "./features/serviceTemplates/ServiceTemplatesPanel.jsx"
 import { ProjectServicesPanel } from "./features/projectServices/ProjectServicesPanel.jsx"
+import { ProjectFilesPanel } from "./features/projectFiles/ProjectFilesPanel.jsx"
 import { SubcontractsCardTitle, SubcontractsPanel } from "./features/subcontracts/SubcontractsPanel.jsx"
 import { SharedPayablesSection } from "./features/sharedPayables/SharedPayablesSection.jsx"
 import { ContractMeasurementFields } from "./features/subcontracts/ContractMeasurementFields.jsx"
@@ -275,6 +277,7 @@ const projectDetailTabs = [
   { id: "purchaseOrders", label: "Compras", icon: ShoppingCart },
   { id: "accountsPayable", label: "Contas a pagar", icon: HandCoins },
   { id: "subcontracts", label: "Empreitada", icon: FileText },
+  { id: "files", label: "Arquivos", icon: Paperclip },
   { id: "reports", label: "Relatórios", icon: BarChart3 },
 ]
 
@@ -4280,6 +4283,15 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                 )
               })}
             </nav>
+
+          {projectDetailTab === "files" ? (
+            <DomainCard
+              title="Arquivos da obra"
+              subtitle="Selecione um ou mais arquivos de até 20 MB cada. Os arquivos ficam armazenados no S3."
+              content={<ProjectFilesPanel key={`${bridge.companyContext?.companyId}-${selectedProject.id}`} bridge={bridge}
+                projectId={selectedProject.id} RowActionsMenu={RowActionsMenu} ConfirmModal={ConfirmModal} />}
+            />
+          ) : null}
 
           {projectDetailTab === "overview" ? (
             <DomainCard
