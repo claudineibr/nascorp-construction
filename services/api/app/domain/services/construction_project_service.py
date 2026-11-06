@@ -1444,6 +1444,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             payload["refund"] = {
                 "first_due_date": request.refund.first_due_date.isoformat(),
                 "installments": request.refund.installments,
+                "payment_method": request.refund.payment_method,
             }
         return payload
 

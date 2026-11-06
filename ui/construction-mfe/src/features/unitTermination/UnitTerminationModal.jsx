@@ -1,10 +1,14 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 
 import appStyles from "../../App.module.css"
 import styles from "./unitTermination.module.css"
 import { formatBRL as money, formatCurrencyInput } from "../../utils/currencyInput.js"
 import { brazilTodayISO, formatBusinessDate as formatDate } from "../../utils/brazilDate.js"
-import { previewConstructionUnitTermination, terminateConstructionUnit } from "../../services/constructionApi.js"
+import {
+  listErpPaymentMethods,
+  previewConstructionUnitTermination,
+  terminateConstructionUnit,
+} from "../../services/constructionApi.js"
 import { UnitBankSlipDialogFrame as DialogFrame } from "../UnitBankSlipsDialog.jsx"
 
 export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestConfirm }) {
@@ -16,7 +20,26 @@ export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestCon
     destination: "credit",
     refundFirstDueDate: "",
     refundInstallments: "1",
+    refundPaymentMethod: "PIX",
   })
+  const [paymentMethods, setPaymentMethods] = useState([])
+  useEffect(() => {
+    let active = true
+    listErpPaymentMethods({ bridge })
+      .then((methods) => {
+        if (active) {
+          setPaymentMethods(methods.filter((method) =>
+            method.credit_only !== "true" && method.settlement_only !== "true",
+          ))
+        }
+      })
+      .catch((error) => {
+        if (active) bridge?.feedback?.error?.(error?.message ?? "Não foi possível carregar as formas de pagamento.")
+      })
+    return () => {
+      active = false
+    }
+  }, [bridge])
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(false)
 
@@ -268,6 +291,19 @@ export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestCon
                   </div>
                   {form.destination === "refund" ? (
                     <div className={appStyles.formGrid}>
+                      <label className={appStyles.filterControl}>
+                        <span>Forma de pagamento*</span>
+                        <select
+                          value={form.refundPaymentMethod}
+                          disabled={loading}
+                          onChange={(event) => change("refundPaymentMethod", event.target.value)}
+                        >
+                          {!paymentMethods.length ? <option value="PIX">PIX</option> : null}
+                          {paymentMethods.map((method) => (
+                            <option key={method.value} value={method.value}>{method.label}</option>
+                          ))}
+                        </select>
+                      </label>
                       <label className={appStyles.filterControl}>
                         <span>1º vencimento*</span>
                         <input

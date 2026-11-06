@@ -1132,6 +1132,7 @@ const toTerminationPayload = (terminationData = {}) => ({
       ? {
           first_due_date: terminationData.refundFirstDueDate,
           installments: Number(terminationData.refundInstallments || 1),
+          payment_method: terminationData.refundPaymentMethod || "PIX",
         }
       : null,
 })

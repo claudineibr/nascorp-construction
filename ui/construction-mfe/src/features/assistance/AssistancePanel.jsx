@@ -1,5 +1,5 @@
 import { getBusinessTimezone } from "../../utils/brazilDate.js"
-import { useCallback, useEffect, useId, useState } from "react"
+import { useCallback, useEffect, useId, useRef, useState } from "react"
 import { Plus, RefreshCw, Printer, Eye, X } from "lucide-react"
 import { subcontractRequest, fetchConstructionAddressByZip } from "../../services/constructionApi"
 import { Pagination as StandalonePagination } from "../../components/Pagination"
@@ -76,7 +76,9 @@ const payload = (row) => ({
   ),
 })
 
-export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
+export function AssistancePanel({
+  bridge, projectId = null, unitId = null, embedded = false, onClose, onChanged,
+}) {
   const formId = useId()
   const can = (method) => bridge?.[method]?.(feature) === true
   const [filters, setFilters] = useState({
@@ -121,12 +123,17 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
     setCreating(false)
     setReopening(false)
     setReason("")
+    if (embedded) onClose?.()
   }
   const readable = can("canRead")
   const editable = draft && (draft.id ? can("canUpdate") && draft.status === "open" : can("canCreate"))
   const dirty = draft?.id && JSON.stringify(payload(draft)) !== savedPayload
   const load = useCallback(async () => {
     if (!bridge.canRead?.(feature)) return
+    if (embedded) {
+      onChanged?.()
+      return
+    }
     setLoading(true)
     setError("")
     try {
@@ -154,10 +161,10 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
     } finally {
       setLoading(false)
     }
-  }, [bridge, filters, page, pageSize])
+  }, [bridge, filters, page, pageSize, embedded, onChanged])
   useEffect(() => {
-    load()
-  }, [load])
+    if (!embedded) load()
+  }, [load, embedded])
   const filter = (key, value) => {
     setPage(1)
     setFilters((old) => ({
@@ -200,6 +207,7 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
       setReason("")
     } catch (err) {
       bridge.feedback?.error?.(err.message)
+      if (embedded) onClose?.()
     }
   }
   const print = async (row) => {
@@ -215,8 +223,18 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
     } catch (err) {
       setBusy(false)
       bridge.feedback?.error?.(err.message)
+      if (embedded) onClose?.()
     }
   }
+  const handledRequest = useRef("")
+  const initialRequest = unitId ? null : bridge.initialAssistanceRequest
+  useEffect(() => {
+    const requestKey = initialRequest ? `${initialRequest.action}:${initialRequest.id}` : ""
+    if (!requestKey || handledRequest.current === requestKey || !readable) return
+    handledRequest.current = requestKey
+    if (initialRequest.action === "print") print({ id: initialRequest.id })
+    else open({ id: initialRequest.id })
+  }, [bridge, initialRequest, readable, open, print])
   const printLoaded = async (frame) => {
     let timeout
     try {
@@ -230,7 +248,10 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
           timeout = setTimeout(() => reject(new Error("O logo da empresa não carregou.")), 15000)
         }),
       ])
-      frame.contentWindow.addEventListener("afterprint", () => setPrinting(null), { once: true })
+      frame.contentWindow.addEventListener("afterprint", () => {
+        setPrinting(null)
+        if (embedded) onClose?.()
+      }, { once: true })
       frame.contentWindow.focus()
       frame.contentWindow.print()
     } catch (err) {
@@ -238,6 +259,7 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
       bridge.feedback?.error?.(
         "Não foi possível carregar o logo ou imprimir a SAT. Confira o logo no cadastro da empresa e tente novamente."
       )
+      if (embedded) onClose?.()
     } finally {
       clearTimeout(timeout)
       setBusy(false)
@@ -278,6 +300,7 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
         body: action === "reopen" ? { justification: reason } : null,
       })
       setDraft(action === "delete" ? null : result)
+      if (embedded && action === "delete") onClose?.()
       setDeleting(false)
       setReopening(false)
       setReason("")
@@ -386,7 +409,8 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
   ) : null
   if (!readable) return <p>Seu perfil não tem permissão para consultar assistência técnica.</p>
   return (
-    <section className={styles.panel}>
+    <section className={embedded ? undefined : styles.panel}>
+      {!embedded ? <>
       {PageHeader && !unitId ? (
         <PageHeader
           actions={pageActions}
@@ -540,6 +564,7 @@ export function AssistancePanel({ bridge, projectId = null, unitId = null }) {
           />
         </div>
       </div>
+      </> : null}
       {printing ? (
         <iframe
           key={printing.id}

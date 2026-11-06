@@ -11,6 +11,7 @@ export default defineConfig({
       filename: "remoteEntry.js",
       exposes: {
         "./ConstructionApp": "./src/App.jsx",
+        "./AssistanceHomeAction": "./src/features/assistance/AssistanceHomeAction.jsx",
       },
       shared: ["react", "react-dom"],
     }),
