@@ -173,6 +173,7 @@ async def create_project(
 async def list_projects(
     search: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    development_type: str | None = Query(default=None, pattern="^(INCORPORATION|CONTRACT_WORK)$"),
     start_date_from: date | None = Query(default=None),
     start_date_to: date | None = Query(default=None),
     buyer_person_id: UUID | None = Query(default=None),
@@ -187,6 +188,7 @@ async def list_projects(
         company_id=ctx.company_id,
         search=search,
         status=status,
+        development_type=development_type,
         start_date_from=start_date_from,
         start_date_to=start_date_to,
         buyer_person_id=buyer_person_id,

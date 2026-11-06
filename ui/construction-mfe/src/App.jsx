@@ -180,6 +180,7 @@ import {
 const defaultFilters = {
   search: "",
   buyerPersonId: "",
+  developmentType: "",
   status: "",
   startDate: "",
   endDate: "",
@@ -1442,6 +1443,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         pageSize: projectPageSize,
         search: filters.search,
         status: filters.status,
+        developmentType: filters.developmentType,
         startDate: filters.startDate,
         endDate: filters.endDate,
         buyerPersonId: filters.buyerPersonId,
@@ -1476,6 +1478,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     bridge,
     filters.search,
     filters.status,
+    filters.developmentType,
     filters.startDate,
     filters.endDate,
     filters.buyerPersonId,
@@ -4282,6 +4285,17 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                       {option.label}
                     </option>
                   ))}
+                </select>
+              </label>
+              <label className={styles.filterControl}>
+                <span>Regime da obra</span>
+                <select
+                  value={filters.developmentType}
+                  onChange={(event) => handleFilterChange("developmentType", event.target.value)}
+                >
+                  <option value="">Todos</option>
+                  <option value="INCORPORATION">Incorporação</option>
+                  <option value="CONTRACT_WORK">Empreitada</option>
                 </select>
               </label>
               <label className={styles.filterControl}>

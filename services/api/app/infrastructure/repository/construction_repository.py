@@ -190,6 +190,7 @@ class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository)
         company_id: UUID,
         search: str | None,
         status: str | None = None,
+        development_type: str | None = None,
         start_date_from: date | None = None,
         start_date_to: date | None = None,
         buyer_person_id: UUID | None = None,
@@ -205,6 +206,8 @@ class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository)
             conditions.append(ConstructionProject.name.ilike(search_pattern) | ConstructionProject.code.ilike(search_pattern))
         if status:
             conditions.append(ConstructionProject.status == status)
+        if development_type:
+            conditions.append(ConstructionProject.development_type == development_type)
         # A tela sempre filtrou por `start_date`, inclusive no campo chamado
         # "Inicio final": e a janela em que a obra COMECOU, nao o fim dela.
         if start_date_from is not None:

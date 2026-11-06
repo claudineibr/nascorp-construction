@@ -344,7 +344,7 @@
   composes: filtersGrid;
   align-items: end;
   box-sizing: border-box;
-  grid-template-columns: minmax(240px, 1.8fr) minmax(220px, 1.5fr) minmax(130px, 0.6fr) repeat(2, minmax(160px, 1fr));
+  grid-template-columns: minmax(240px, 1.8fr) minmax(220px, 1.5fr) minmax(160px, 1fr);
   min-width: 0;
 }
 

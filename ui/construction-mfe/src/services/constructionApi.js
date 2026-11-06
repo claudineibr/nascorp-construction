@@ -747,6 +747,7 @@ export async function listConstructionProjects({
   pageSize = 20,
   search = "",
   status = "",
+  developmentType = "",
   startDate = "",
   endDate = "",
   buyerPersonId = "",
@@ -769,6 +770,10 @@ export async function listConstructionProjects({
   // filtro duas paginas adiante.
   if (status) {
     query.set("status", status)
+  }
+
+  if (developmentType) {
+    query.set("development_type", developmentType)
   }
 
   if (startDate) {
