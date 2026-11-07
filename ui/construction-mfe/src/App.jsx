@@ -8866,26 +8866,106 @@ const QUALIFICATION_WARNINGS = {
 }
 
 const PROJECT_FIELD_HELP = {
-  code: ["Identificador da obra. Use um código único na empresa.", "OBR-025", "Identifica a obra na listagem e na busca."],
-  status: ["Situação da obra no cadastro.", "Rascunho", "Indica a etapa atual e controla as próximas mudanças de situação."],
-  projectType: ["Categoria da construção.", "Residencial vertical", "Classifica a obra pelo tipo de construção."],
-  developmentType: ["Escolha Incorporação ou Empreitada conforme a operação da obra.", "Incorporação", "Define o tratamento dos custos elegíveis no estoque imobiliário."],
-  customer: ["Pessoa cadastrada na empresa que é cliente ou contratante da obra.", "Construtora Horizonte Ltda.", "Registra quem contratou a obra."],
-  cnpjSpe: ["CNPJ da Sociedade de Propósito Específico constituída para a obra. Preencha se a obra tiver uma SPE.", "12.345.678/0001-95", "Identifica a pessoa jurídica vinculada à obra."],
-  startDate: ["Data em que a execução da obra começou.", "02/02/2027", "Registra o início da obra para acompanhar o prazo."],
-  expectedEndDate: ["Data planejada para concluir a obra.", "30/06/2027", "Registra a previsão usada no acompanhamento do prazo."],
-  actualEndDate: ["Data em que a obra foi efetivamente concluída.", "25/06/2027", "Registra quando o trabalho terminou."],
-  contractTemplate: ["Modelo de contrato de venda publicado e ativo na empresa.", "Contrato padrão de compra e venda", "Sugere o modelo ao gerar o contrato de venda da unidade."],
-  lot: ["Identificação do lote onde fica a obra.", "Lote 12 da Quadra B", "Fornece o dado para o contrato de venda da unidade."],
-  registration: ["Matrícula do imóvel no Cartório de Registro de Imóveis.", "12345", "Fornece o dado para o contrato de venda da unidade."],
-  landArea: ["Área do terreno da obra, em metros quadrados.", "1250,50", "Fornece a metragem para o contrato de venda da unidade."],
-  segregatedAssets: ["Marque se a obra estiver submetida ao patrimônio de afetação.", "Marcado para uma obra com patrimônio de afetação", "Permite configurar multa de distrato de até 50% sobre o valor pago."],
-  receipt: ["Modelo de recibo herdado pelas unidades.", "Layout padrão do ERP", "Define o layout dos recibos de parcelas e aditivos de venda."],
-  commissionReceipt: ["Modelo de recibo copiado no lançamento do sinal.", "Layout padrão do ERP", "Define o layout do recibo do sinal da venda."],
-  zipCode: ["Informe os oito dígitos e saia do campo para buscar o endereço.", "01001-000", "Preenche logradouro, bairro, cidade, UF e código IBGE quando disponíveis."],
-  ibge: ["Código de sete dígitos do município. Confira o valor preenchido pela consulta de CEP.", "3550308 para São Paulo (SP)", "Identifica o município do endereço no cadastro da obra."],
-  latitude: ["Posição norte ou sul em graus decimais.", "-23,550520", "Registra a coordenada geográfica da obra."],
-  longitude: ["Posição leste ou oeste em graus decimais.", "-46,633308", "Registra a coordenada geográfica da obra."],
+  code: [
+    "Digite um código curto que ainda não seja usado por outra obra da empresa.",
+    "Para a obra nº 25, use OBR-025.",
+    "Permite localizar a obra pelo código na listagem.",
+  ],
+  status: [
+    "Selecione a situação atual da obra.",
+    "Escolha Rascunho enquanto prepara o cadastro. Quando a obra começar, passe para Ativa.",
+    "Mostra a fase da obra na listagem e define quais mudanças de situação o sistema permite.",
+  ],
+  projectType: [
+    "Selecione a categoria que descreve o que será construído.",
+    "Para uma torre de apartamentos, selecione Residencial vertical.",
+    "Classifica a obra pelo tipo de construção no cadastro.",
+  ],
+  developmentType: [
+    "Escolha Incorporação para construção destinada à venda de unidades ou Empreitada para execução por contrato.",
+    "Para construir apartamentos e vendê-los, escolha Incorporação. Para construir um galpão para um cliente, escolha Empreitada.",
+    "Na Incorporação, os custos elegíveis vão para o estoque imobiliário se a conta padrão estiver configurada. Na Empreitada, a conta do item é mantida.",
+  ],
+  customer: [
+    "Selecione a pessoa ou empresa que contratou a execução da obra.",
+    "A Incorporadora Horizonte contratou a construção. Selecione a Incorporadora Horizonte.",
+    "Registra quem contratou a obra. Se a própria SPE fez a contratação, selecione a SPE aqui.",
+  ],
+  cnpjSpe: [
+    "Informe o CNPJ da Sociedade de Propósito Específico, a empresa constituída para essa obra. Deixe em branco se a obra não tiver SPE.",
+    "Se a SPE é a Residencial Ipê SPE Ltda., informe o CNPJ dela, como 12.345.678/0001-95.",
+    "Identifica a SPE da obra, mesmo quando outra empresa contratou a construção.",
+  ],
+  startDate: [
+    "Informe o dia em que a execução começou. Se ainda não começou, deixe em branco.",
+    "Se os trabalhos começaram em 2 de fevereiro de 2027, informe 02/02/2027.",
+    "Registra o início efetivo da obra e permite localizá-la pelo período de início.",
+  ],
+  expectedEndDate: [
+    "Informe a data estimada para terminar a obra.",
+    "Se o cronograma prevê terminar em 30 de junho de 2027, informe 30/06/2027.",
+    "É a referência para sinalizar atraso e preenche a Entrega prevista nos modelos de contrato de venda que usam esse campo.",
+  ],
+  actualEndDate: [
+    "Informe o dia em que a execução terminou. Deixe em branco enquanto a obra estiver em andamento.",
+    "Se a obra terminou em 25 de junho de 2027, informe 25/06/2027.",
+    "Registra a conclusão efetiva. Com essa data preenchida, a obra sai do indicador de atraso.",
+  ],
+  contractTemplate: [
+    "Busque pelo nome e selecione um modelo de contrato de venda publicado e ativo na empresa.",
+    "Se a empresa publicou o modelo Venda de apartamento, selecione esse modelo.",
+    "Sugere o modelo ao gerar o contrato da unidade. Você pode escolher outro na unidade.",
+  ],
+  lot: [
+    "Informe a identificação do lote e da quadra, quando houver, conforme o documento do imóvel.",
+    "Se o documento identifica o terreno como Lote 12 da Quadra B, informe esse texto.",
+    "Fornece a identificação do lote para o contrato de venda da unidade.",
+  ],
+  registration: [
+    "Informe o número da matrícula do imóvel no Cartório de Registro de Imóveis.",
+    "Se a certidão indica Matrícula nº 12345, informe 12345.",
+    "Fornece a matrícula do imóvel para o contrato de venda da unidade.",
+  ],
+  landArea: [
+    "Informe a área total do terreno da obra em metros quadrados.",
+    "Para um terreno de 1.250,50 m², informe 1250,50.",
+    "Fornece a área do terreno para o contrato de venda da unidade.",
+  ],
+  segregatedAssets: [
+    "Marque se o patrimônio de afetação estiver constituído para a obra.",
+    "Se o patrimônio de afetação consta na matrícula do imóvel, marque a opção.",
+    "Se você configurar uma multa sobre o valor pago no distrato, o limite é de 50% com a opção marcada e de 25% com ela desmarcada.",
+  ],
+  receipt: [
+    "Escolha um modelo ativo da empresa ou mantenha Layout padrão do ERP.",
+    "Se houver um modelo chamado Recibo de mensalidade, selecione-o para usar o layout da empresa.",
+    "Define o modelo de recibo usado na venda da unidade, tanto para parcelas quanto para aditivos.",
+  ],
+  commissionReceipt: [
+    "Escolha um modelo ativo para o recibo do sinal ou mantenha Layout padrão do ERP.",
+    "Se houver um modelo chamado Recibo de sinal, selecione-o antes de lançar o sinal da venda.",
+    "O modelo é copiado para cada novo sinal. Alterar a escolha na obra não muda os sinais já lançados.",
+  ],
+  zipCode: [
+    "Digite os oito dígitos do CEP da obra e saia do campo. Confira os dados retornados e complete o número.",
+    "Para um endereço na Praça da Sé, informe 01001-000.",
+    "Consulta logradouro, bairro, cidade, UF e código IBGE do município quando disponíveis.",
+  ],
+  ibge: [
+    "Confira se o código de sete dígitos corresponde à cidade e à UF. Se precisar, digite o código do município.",
+    "Se a obra fica em São Paulo (SP), informe 3550308.",
+    "Identifica o município de forma padronizada no endereço da obra.",
+  ],
+  latitude: [
+    "Informe a coordenada norte ou sul em graus decimais, entre −90 e 90. Preencha a longitude junto.",
+    "Para um ponto em São Paulo, informe -23,550520.",
+    "Localiza a obra no sentido norte–sul. Valores negativos indicam o hemisfério sul.",
+  ],
+  longitude: [
+    "Informe a coordenada leste ou oeste em graus decimais, entre −180 e 180. Preencha a latitude junto.",
+    "Para o mesmo ponto em São Paulo, informe -46,633308.",
+    "Localiza a obra no sentido leste–oeste. Valores negativos indicam o hemisfério oeste.",
+  ],
 }
 
 function ProjectModal({
@@ -8908,7 +8988,7 @@ function ProjectModal({
   const help = (field, label) => {
     const [description, example, usage] = PROJECT_FIELD_HELP[field]
     if (FieldInfo) return <FieldInfo label={label} description={description} example={example} usage={usage} />
-    return <InfoTip label={`Sobre ${label}`} floating insideLabel>{description} Exemplo: {example}. {usage}</InfoTip>
+    return <InfoTip label={`Sobre ${label}`} floating insideLabel>{description} Exemplo: {example} Para que serve: {usage}</InfoTip>
   }
   const fieldLabel = (field, label, required = false) => (
     <span className={styles.projectFieldLabel}>{label}{required ? " *" : ""}{help(field, label)}</span>
