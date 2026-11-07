@@ -1,6 +1,6 @@
 import logging
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from uuid import UUID, uuid4
 
 import httpx
@@ -159,6 +159,13 @@ class UnitTransferService:
         instant = datetime.now(UTC)
         event_id = uuid4()
         payload['previous_descriptions'] = {'source': source.description, 'target': target.description}
+        if source.sold_at is not None and source.sold_at <= instant:
+            await self._sync_unit_buyer_history(
+                source, source.buyer_person_id, instant, actor_user_id, request.reason,
+            )
+            await self.repository.flush()
+        else:
+            logger.info(f'[unit_transfer] historico_sem_data_valida: company_id={company_id} unit_id={source.id}')
         await self._sync_unit_buyer_history(source, None, instant, actor_user_id, request.reason)
         await self._sync_unit_buyer_history(
             target, source.buyer_person_id, instant, actor_user_id, request.reason,
@@ -225,6 +232,24 @@ class UnitTransferService:
         await self.repository.commit()
         logger.info(f'[unit_transfer] pendente_integracao: event_id={event_id} source={unit_id} target={target.id}')
         return {**payload, 'transfer_id': event_id, 'status': 'pending', 'occurred_at': instant, 'financial': financial}
+
+    async def _confirm_unit_transfer_financial(self, request_event, response_event):
+        try:
+            sale_id = UUID(request_event.payload['source_sale_id'])
+            target_id = UUID(request_event.payload['target_unit_id'])
+            paid_amount = Decimal(str(response_event.payload['paid_amount']))
+        except (KeyError, TypeError, ValueError, InvalidOperation) as error:
+            raise ConstructionInvalidValueError(message='O ERP não confirmou o valor pago da troca de unidade.') from error
+        if (not paid_amount.is_finite() or paid_amount < 0
+                or str(response_event.payload.get('source_unit_id')) != str(request_event.aggregate_id)):
+            raise ConstructionInvalidValueError(message='O ERP não confirmou o financeiro da unidade de origem.')
+        sale = await self.repository.get_unit_sale(company_id=request_event.company_id, sale_id=sale_id, lock=True)
+        if (sale is None or sale.unit_id != request_event.aggregate_id or sale.status != 'TRANSFERRED'
+                or sale.transferred_to_unit_id != target_id):
+            raise ConstructionInvalidValueError(message='A venda de origem não corresponde à troca confirmada.')
+        sale.paid_amount = paid_amount
+        logger.info(f'[unit_transfer] financeiro_confirmado: company_id={request_event.company_id}'
+                    f' event_id={request_event.event_id} sale_id={sale.id} paid_amount={paid_amount}')
 
     async def list_unit_transfers(self, company_id, unit_id):
         await self._get_unit(company_id=company_id, unit_id=unit_id)

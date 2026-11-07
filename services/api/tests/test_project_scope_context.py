@@ -14,6 +14,7 @@ Três coisas que quebram em silêncio, cada uma com um teste:
    bater duas vezes no ERP -- 79 rotas pagando o dobro de latência.
 """
 
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 from fastapi import Depends
@@ -142,7 +143,7 @@ def _app_de_teste(cliente):
     security_module.settings.jwt_secret_key = TEST_SECRET
     app = create_app()
     app.dependency_overrides[get_permission_client] = lambda: cliente
-    app.dependency_overrides[get_session] = lambda: object()
+    app.dependency_overrides[get_session] = lambda: SimpleNamespace(info={})
 
     @app.get("/teste/escopo")
     async def _rota(

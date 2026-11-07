@@ -5917,6 +5917,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             if (response_event.event_type != ErpEventType.UNIT_TRANSFERRED
                     or str(response_event.payload.get("target_unit_id")) != request_event.payload["target_unit_id"]):
                 raise ConstructionInvalidValueError(message="O ERP não confirmou o destino da troca de unidade.")
+            await self._confirm_unit_transfer_financial(request_event, response_event)
         elif request_event.event_type == ConstructionEventType.UNIT_STATUS_CHANGED:
             if response_event.event_type != ErpEventType.UNIT_RECLASSIFIED:
                 raise ConstructionInvalidValueError(message="O ERP não confirmou a reclassificação da unidade.")
