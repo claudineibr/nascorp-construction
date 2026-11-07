@@ -229,12 +229,7 @@ class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository)
         result = await self.session.execute(
             select(ConstructionProject)
             .where(*conditions)
-            # `created_at` NAO desempata: no Postgres o `now()` e o mesmo para a
-            # transacao inteira, e as 77 obras da carga do MFCON entraram com o
-            # timestamp identico -- medido. Ordenar so por ele deixa o banco
-            # livre para devolver qualquer ordem, e com OFFSET a mesma obra
-            # aparece na pagina 1 e some na 2. O `code` e UNIQUE por empresa.
-            .order_by(ConstructionProject.created_at.desc(), ConstructionProject.code.asc())
+            .order_by(func.lower(ConstructionProject.name).asc(), ConstructionProject.code.asc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         )

@@ -1,0 +1,98 @@
+.content, .content *, .footer, .footer * {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: calc(1.25rem * var(--density, 1));
+}
+
+.summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: calc(1rem * var(--density, 1));
+  margin: 0;
+  padding: calc(1rem * var(--density, 1));
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: var(--color-surface-muted);
+}
+
+.summary dt, .amount > span, .document span, .footer > span {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.summary dd {
+  margin: 0.4rem 0 0;
+  font-size: 1rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.sectionHeading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.sectionHeading h4 { margin: 0; font-size: 0.95rem; }
+.sectionHeading > span { color: var(--color-text-muted); font-size: 0.8rem; }
+
+.receipts {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.receipt {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: calc(1.25rem * var(--density, 1));
+  padding: calc(1rem * var(--density, 1));
+  background: var(--color-surface);
+}
+
+.receipt + .receipt { border-top: 1px solid var(--color-border); }
+.document { display: flex; align-items: center; gap: 0.75rem; }
+.document > svg { flex-shrink: 0; color: var(--color-text-muted); }
+.document > div, .amount { display: flex; flex-direction: column; gap: 0.35rem; }
+.document strong { font-size: 0.9rem; overflow-wrap: anywhere; }
+.amount { text-align: right; }
+.amount strong { font-size: 0.95rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+
+.secondaryButton { composes: secondaryButton from "../App.module.css"; }
+.downloadButton { composes: primaryButton from "../App.module.css"; white-space: nowrap; }
+.footer { display: flex; align-items: center; justify-content: space-between; gap: 1rem; width: 100%; }
+.state { display: flex; flex-direction: column; align-items: center; gap: 0.75rem; padding: 1.5rem; }
+.state p { margin: 0; color: var(--color-text-muted); text-align: center; }
+.paginationSlot { composes: paginationSlot from "../App.module.css"; }
+.pagination { width: 100%; }
+.fallbackPagination { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.spinning { animation: receipt-spin 1s linear infinite; }
+
+@keyframes receipt-spin { to { transform: rotate(360deg); } }
+
+@media (width <= 640px) {
+  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .receipt { grid-template-columns: minmax(0, 1fr) auto; gap: 1rem 0.75rem; }
+  .downloadButton { grid-column: 1 / -1; justify-content: center; }
+  .document { gap: 0.5rem; }
+  .document > svg { display: none; }
+  .footer { flex-wrap: wrap; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinning { animation: none; }
+}

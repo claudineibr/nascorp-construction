@@ -1243,6 +1243,9 @@ export async function payConstructionUnitInstallment({
     method: "POST",
     body: {
       receivable_id: toNullableString(receivableId),
+      partial_payment: Boolean(paymentData.partialPayment),
+      idempotency_key: paymentData.idempotencyKey,
+      renegotiation: paymentData.renegotiation,
       payments: paymentData.payments.map((line) => ({
         payment_method: line.paymentMethod,
         cash_register_id: line.paymentMethod === "CASH" ? toNullableString(line.cashRegisterId) : null,
@@ -1316,9 +1319,10 @@ export async function deleteConstructionUnitInstallment({
   bridge,
   unitId,
   installmentNumber,
+  reason,
   receivableId = null,
 }) {
-  const params = new URLSearchParams()
+  const params = new URLSearchParams({ reason })
   if (receivableId) {
     params.set("receivable_id", String(receivableId))
   }
@@ -1401,9 +1405,11 @@ const toReceivableInstallmentView = (installment) => ({
   // Com recibo definitivo emitido a parcela e somente leitura: e o que faz o
   // diálogo abrir travado em vez de deixar o operador digitar e o ERP recusar.
   hasIssuedReceipt: Boolean(installment.has_issued_receipt),
+  partialWithoutCharges: Boolean(installment.partial_without_charges),
   payments: (installment.payments ?? []).map((payment) => ({
     id: payment.id,
     sequenceNumber: payment.sequence_number,
+    settlementId: payment.settlement_id,
     paymentMethod: payment.payment_method ?? "",
     amount: payment.amount ?? null,
     netAmount: payment.net_amount ?? null,
@@ -1642,6 +1648,11 @@ export async function getErpReceiptByInstallment({ bridge, installmentId }) {
   })
   return toReceiptView(payload)
 }
+
+export const listErpInstallmentReceipts = ({ bridge, installmentId, page = 1 }) => requestJson({
+  bridge, baseUrl: erpBaseUrl(bridge),
+  path: `/v1/receipts/search?installment_id=${installmentId}&status=ISSUED&page=${page}&page_size=20`,
+})
 
 export async function generateErpReceiptForInstallment({ bridge, installmentId }) {
   const payload = await requestJson({

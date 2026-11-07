@@ -484,11 +484,12 @@ class ErpConstructionClient:
         construction_unit_id: UUID,
         receivable_id: UUID,
         installment_number: int,
+        reason,
     ) -> None:
         if not settings.erp_service_key:
             raise RuntimeError("ERP service key is not configured for Construction payment plan integration.")
 
-        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=httpx.Timeout(300, connect=10)) as client:
             response = await client.delete(
                 "/v1/internal/construction/unit-installment",
                 headers=self._service_headers(company_id=company_id, user_id=user_id),
@@ -496,6 +497,7 @@ class ErpConstructionClient:
                     "construction_unit_id": str(construction_unit_id),
                     "receivable_id": str(receivable_id),
                     "installment_number": installment_number,
+                    "reason": reason,
                 },
             )
             response.raise_for_status()

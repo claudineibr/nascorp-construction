@@ -1,0 +1,35 @@
+.form, .field, .footer, .field input, .field textarea, .primaryButton, .secondaryButton {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.form { display: grid; gap: 1rem; }
+.field { display: grid; gap: 0.4rem; color: var(--color-text); }
+.field input, .field textarea {
+  width: 100%;
+  padding: 0.65rem;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+.field textarea { resize: vertical; }
+.footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.65rem; }
+.primaryButton, .secondaryButton {
+  min-height: 40px;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  font: inherit;
+  cursor: pointer;
+}
+.primaryButton {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-inverse-text);
+}
+.secondaryButton { background: var(--color-surface-muted); color: var(--color-text); }
+.primaryButton:hover:not(:disabled) { background: var(--color-primary-strong); }
+.secondaryButton:hover:not(:disabled) { border-color: var(--color-primary); }
+.primaryButton:disabled, .secondaryButton:disabled { opacity: 0.65; cursor: not-allowed; }

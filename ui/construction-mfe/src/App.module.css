@@ -184,6 +184,11 @@
   color: var(--color-warning-text);
 }
 
+.projectActiveMetric { border-color: color-mix(in srgb, var(--color-info-text) 35%, var(--color-border)); }
+.projectActiveMetric .metricIconWrap { background: var(--color-info-bg); color: var(--color-info-text); }
+.projectDelayedMetric { border-color: color-mix(in srgb, var(--color-error-text) 35%, var(--color-border)); }
+.projectDelayedMetric .metricIconWrap { background: var(--color-error-bg); color: var(--color-error-text); }
+
 .muted {
   border-color: var(--color-border);
 }
@@ -344,7 +349,7 @@
   composes: filtersGrid;
   align-items: end;
   box-sizing: border-box;
-  grid-template-columns: minmax(240px, 1.8fr) minmax(220px, 1.5fr) minmax(160px, 1fr);
+  grid-template-columns: minmax(160px, 1.15fr) minmax(220px, 1.8fr) minmax(120px, 0.7fr) minmax(150px, 0.85fr);
   min-width: 0;
 }
 
@@ -360,7 +365,7 @@
   width: 100%;
 }
 
-@media (max-width: 1280px) {
+@media (max-width: 1000px) {
   .projectFiltersGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -481,7 +486,7 @@
   border-radius: var(--radius-xl);
   display: grid;
   gap: 1rem;
-  grid-template-columns: minmax(260px, 1.2fr) minmax(320px, 1.8fr) auto;
+  grid-template-columns: minmax(260px, 1.2fr) minmax(320px, 1.8fr);
   padding: 1.1rem;
 }
 
@@ -967,6 +972,16 @@
   font-size: max(11px, 0.75rem);
 }
 
+.projectActive {
+  background: var(--color-info-bg);
+  color: var(--color-info-text);
+}
+
+.projectDelayed {
+  background: var(--color-error-bg);
+  color: var(--color-error-text);
+}
+
 .statusdraft {
   background: var(--status-open-bg);
   color: var(--status-open-text);
@@ -1174,6 +1189,7 @@
 
 .modalFooter {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.6rem;
   justify-content: flex-end;
 }
@@ -1768,4 +1784,210 @@
   .measurementSupplierField {
     grid-column: 1 / -1;
   }
+}
+
+.installmentBalanceHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.installmentBalanceSummary, .installmentClosingSummary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--color-surface);
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.installmentClosingSummary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.installmentBalanceSummary > div, .installmentClosingSummary > div {
+  padding: calc(1rem * var(--density, 1));
+  box-sizing: border-box;
+  min-width: 0;
+}
+.installmentBalanceSummary dt, .installmentClosingSummary dt {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+.installmentBalanceSummary dd, .installmentClosingSummary dd {
+  margin: 0.5rem 0 0;
+  color: var(--color-text);
+  font-size: 1.15rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.pendingBalance { background: var(--color-surface-muted); border-left: 3px solid var(--color-primary); }
+.pendingBalance dd { color: var(--color-primary); font-size: 1.3rem; }
+.partialPaymentLabel { color: var(--color-primary); font-size: 0.8rem; font-weight: 600; }
+.partialInstallmentAmount { display: flex; flex-direction: column; gap: 0.35rem; }
+.partialInstallmentAmount > strong { color: var(--color-primary); font-size: 1rem; }
+
+@media (width <= 640px) {
+  .installmentBalanceSummary, .installmentClosingSummary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .installmentClosingSummary .pendingBalance { grid-column: 1 / -1; }
+}
+
+@media (width <= 640px) {
+  .projectListWrapper {
+    box-sizing: border-box;
+    min-width: 0;
+    max-width: 100%;
+    padding: 0.5rem;
+  }
+
+  .projectListTable {
+    display: block;
+    box-sizing: border-box;
+    min-width: 0;
+    width: 100%;
+    background: transparent;
+  }
+
+  .projectListTable thead {
+    display: none;
+  }
+
+  .projectListTable tbody {
+    display: grid;
+    gap: 0.65rem;
+    min-width: 0;
+  }
+
+  .projectListTable tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "code actions" "name name" "status status" "units units";
+    align-items: start;
+    gap: 0.65rem;
+    box-sizing: border-box;
+    min-width: 0;
+    padding: 0.75rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    background: var(--color-surface);
+  }
+
+  .projectListTable tbody tr:nth-child(even) {
+    background: var(--color-surface);
+  }
+
+  .projectListTable tbody td {
+    box-sizing: border-box;
+    min-width: 0;
+    width: auto;
+    padding: 0;
+    border: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .projectListTable td[data-label]::before {
+    display: block;
+    margin-bottom: 0.25rem;
+    color: var(--color-text-muted);
+    font-size: max(11px, 0.7rem);
+    font-weight: 600;
+    content: attr(data-label);
+  }
+
+  .projectCodeCell { grid-area: code; }
+  .projectNameCell { grid-area: name; }
+  .projectStatusCell { grid-area: status; }
+  .projectUnitsCell { grid-area: units; }
+  .projectActionsCell { grid-area: actions; justify-self: end; }
+
+  .projectActionsCell button {
+    min-height: 40px;
+  }
+
+  .projectUnitsCell .buyerUnitLink {
+    min-height: 40px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+.projectMetrics .metricCard {
+  box-sizing: border-box;
+  min-width: 0;
+  gap: 0.6rem;
+  padding: 0.6rem 0.8rem;
+}
+
+.projectMetrics .metricIconWrap {
+  width: 30px;
+  height: 30px;
+}
+
+.projectMetrics .metricContent {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.projectMetrics .metricLabel {
+  font-size: max(11px, 0.75rem);
+  letter-spacing: 0.04em;
+  overflow-wrap: anywhere;
+}
+
+.projectMetrics .metricValue {
+  font-size: 1.15rem;
+  white-space: nowrap;
+}
+
+.unitDetailHeader {
+  align-items: center;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.unitDetailHeader .scopeMeta {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.unitDetailHeader h2 { overflow-wrap: anywhere; }
+
+.unitDetailActions {
+  box-sizing: border-box;
+  justify-content: flex-start;
+  margin-left: auto;
+  flex-wrap: nowrap;
+  flex: 0 1 auto;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+}
+
+.unitDetailActions button {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.8rem;
+  gap: 0.35rem;
+  white-space: nowrap;
+  width: auto;
+}
+
+@media (width <= 768px) {
+  .unitDetailHeader { flex-direction: column; align-items: stretch; }
+  .unitDetailHeader .scopeMeta { flex: none; }
+  .unitDetailActions { justify-content: flex-start; width: 100%; }
 }

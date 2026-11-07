@@ -42,7 +42,7 @@ export function InfoTip({ label, children, floating = false }) {
   </span>
 
   return (
-    <button type="button" ref={triggerRef} className={styles.infoButton} title={label} aria-label={label}
+    <button type="button" ref={triggerRef} className={styles.infoButton} aria-label={label}
       aria-describedby={!floating || open ? tooltipId : undefined}
       onMouseEnter={() => { if (floating) setOpen(true) }}
       onMouseLeave={() => { if (floating) setOpen(false) }}

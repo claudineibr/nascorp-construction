@@ -28,6 +28,16 @@ export const observationEditHint = (installment, canUpdate) => installment.hasIs
   ? RECEIPT_ISSUED_HINT
   : canUpdate ? "" : "Seu perfil não pode alterar unidades."
 
+export const installmentDeletionReason = (installment) => {
+  if (!["OPEN", "OVERDUE"].includes(installment.status) || installmentOutstanding(installment) <= 0) {
+    return "Só é possível excluir parcelas com saldo em aberto."
+  }
+  if (installment.hasIssuedReceipt || Number(installment.paidAmount ?? 0) > 0 || installment.payments?.length) {
+    return "Parcela com recebimentos ou recibo definitivo não pode ser excluída."
+  }
+  return ""
+}
+
 export function buildInstallmentRows(paymentPlan = {}) {
   const adjustments = paymentPlan.adjustments ?? []
   return [
@@ -53,6 +63,7 @@ export function buildInstallmentActions({
   adjustment,
   onReverseInstallment,
   onPayInstallment,
+  onChangeDueDate,
   onDeleteInstallment,
   onDeleteAdjustment,
   onInstallmentReceipt,
@@ -66,12 +77,15 @@ export function buildInstallmentActions({
   onDownloadBankSlip,
   onViewBankSlips,
   onOffsetCredit,
+  creditAvailable = false,
   canUpdate = false,
+  canDelete = false,
   icons = {},
 }) {
   const isPaid = installment.status === "PAID"
   const hasPayments = (installment.payments?.length ?? 0) > 0
-  const receiptIssued = Boolean(installment.hasIssuedReceipt)
+  const groupedReceipt = installment.payments?.some((payment) => payment.settlementId)
+  const receiptIssued = Boolean(installment.hasIssuedReceipt || groupedReceipt)
   const actions = []
   if (onGenerateBankSlip) actions.push({ key: "generate-bank-slip", label: "Gerar boleto", icon: icons.FileText,
     disabled: Boolean(generationReason), title: generationReason || undefined, onSelect: onGenerateBankSlip })
@@ -97,7 +111,7 @@ export function buildInstallmentActions({
   if (onInstallmentReceipt) {
     actions.push({
       key: "receipt",
-      label: receiptIssued ? "Baixar recibo" : "Gerar recibo",
+      label: groupedReceipt ? "Ver recibos" : receiptIssued ? "Baixar recibo" : "Gerar recibo",
       icon: icons.FileText,
       disabled: receiptBusy || (!isPaid && !receiptIssued),
       title:
@@ -115,10 +129,15 @@ export function buildInstallmentActions({
       icon: icons.CheckCircle,
       onSelect: () => onPayInstallment(installment),
     })
+    if (onChangeDueDate) actions.push({ key: "renegotiate", label: "Alterar vencimento", icon: icons.Pencil,
+      disabled: Boolean(installment.hasIssuedReceipt) || !canUpdate,
+      onSelect: () => onChangeDueDate(installment) })
     if (onOffsetCredit) {
       actions.push({
         key: "credit-offset",
         label: "Abater saldo credor",
+        disabled: !creditAvailable,
+        title: creditAvailable ? undefined : "Sem saldo credor disponível ou consulta em andamento.",
         icon: icons.CheckCircle,
         onSelect: () => onOffsetCredit(installment),
       })
@@ -128,8 +147,8 @@ export function buildInstallmentActions({
       label: "Excluir parcela",
       icon: icons.Trash2,
       danger: true,
-      disabled: receiptIssued,
-      title: receiptIssued ? RECEIPT_ISSUED_HINT : undefined,
+      disabled: !canDelete || Boolean(installmentDeletionReason(installment)),
+      title: !canDelete ? "Seu perfil não pode excluir parcelas." : installmentDeletionReason(installment) || undefined,
       onSelect: () => onDeleteInstallment(installment),
     })
   }

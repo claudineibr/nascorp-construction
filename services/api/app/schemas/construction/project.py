@@ -411,6 +411,13 @@ class ConstructionUnitSaleListResponse(BaseModel):
     total_pages: int
 
 
+class ConstructionDueDateRenegotiationRequest(BaseModel):
+    due_date: date
+    expected_due_date: date
+    expected_outstanding_amount: Decimal = Field(gt=0, decimal_places=2)
+    reason: str = Field(min_length=3, max_length=1000)
+
+
 class ConstructionUnitInstallmentUpdateRequest(BaseModel):
     """O que a tela da unidade pode alterar numa parcela ja gerada.
 
@@ -425,6 +432,7 @@ class ConstructionUnitInstallmentUpdateRequest(BaseModel):
     observation: str | None = None
     chart_account_id: UUID | None = None
     cost_center_id: UUID | None = None
+    renegotiation: ConstructionDueDateRenegotiationRequest | None = None
 
 
 class ConstructionUnitInstallmentCreateRequest(BaseModel):
@@ -475,6 +483,9 @@ class ConstructionUnitInstallmentPaymentRequest(BaseModel):
     fine: Decimal | None = Field(default=None, ge=0)
     discount: Decimal | None = Field(default=None, ge=0)
     observation: str | None = None
+    partial_payment: bool = False
+    idempotency_key: UUID | None = None
+    renegotiation: ConstructionDueDateRenegotiationRequest | None = None
 
 
 class ConstructionUnitInstallmentReversalRequest(BaseModel):

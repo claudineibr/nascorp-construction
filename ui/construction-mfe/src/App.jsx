@@ -7,12 +7,16 @@ import {
   retryableBankSlip,
 } from "./features/UnitBankSlipOperations.jsx"
 import { CashRegisterPicker } from "./components/CashRegisterPicker.jsx"
+import { DeleteInstallmentsDialog } from "./features/DeleteInstallmentsDialog.jsx"
+import { InstallmentDueDateDialog } from "./features/InstallmentDueDateDialog.jsx"
+import { InstallmentReceiptsDialog } from "./features/InstallmentReceiptsDialog.jsx"
 import { UnitBankSlipDialogFrame, UnitBankSlipsDialog } from "./features/UnitBankSlipsDialog.jsx"
 import {
   useUnitBankSlips,
   UnitBankSlipDialogs,
   bankSlipStatusLabel,
   SelectPageCheckbox,
+  toggleSelectionPage,
   BANK_SLIP_BATCH_STATUS_LABELS,
 } from "./features/UnitBankSlips.jsx"
 import {
@@ -20,6 +24,7 @@ import {
   buildInstallmentActions,
   hasObservation,
   installmentOutstanding,
+  installmentDeletionReason,
   observationEditHint,
   INSTALLMENT_COLUMNS,
   bankSlipSelectionMode,
@@ -125,7 +130,6 @@ import {
   createConstructionUnitCommissions,
   createConstructionUnitInstallments,
   deleteConstructionUnitAdjustment,
-  deleteConstructionUnitInstallment,
   deleteConstructionBlock,
   deleteConstructionMeasurement,
   deleteConstructionMeasurementInspection,
@@ -157,6 +161,7 @@ import {
   listConstructionUnits,
   listErpReceiptTemplates,
   payConstructionUnitInstallment,
+  listConstructionUnitBuyerCredits,
   rejectConstructionMeasurement,
   releaseConstructionUnitReservation,
   reserveConstructionUnit,
@@ -189,7 +194,10 @@ const defaultFilters = {
 // O teto e 100 porque e o `le=100` do `page_size` na rota; oferecer 200 aqui
 // devolveria 422 do servidor.
 const projectPageSizeOptions = [10, 20, 50, 100]
-const defaultProjectPageSize = 20
+const defaultProjectPageSize = 100
+
+const isProjectDelayed = (project) => Boolean(project.expectedEndDate && !project.actualEndDate
+  && project.expectedEndDate < brazilTodayISO())
 
 const statusLabel = {
   draft: "Rascunho",
@@ -453,6 +461,9 @@ const defaultCreateInstallmentForm = {
 // "Editar parcela" tinha (numero do documento e observacao).
 const defaultPayInstallmentForm = {
   lines: [],
+  newDueDate: "",
+  renegotiationReason: "",
+  idempotencyKey: "",
   interest: "",
   fine: "",
   discount: "",
@@ -479,14 +490,12 @@ const installmentClosing = (installment, form) => {
     (total, line) => total + parseCurrencyToNumber(line.amount),
     0,
   )
-  const due = Math.max(
-    0,
-    installmentOutstanding(installment)
-      + parseCurrencyToNumber(form.interest)
-      + parseCurrencyToNumber(form.fine)
-      - parseCurrencyToNumber(form.discount),
-  )
-  return { posted, due, missing: due - posted, closes: Math.abs(due - posted) < 0.005 }
+  const withoutCharges = installment?.partialWithoutCharges || (posted > 0
+    && posted < installmentOutstanding(installment) - parseCurrencyToNumber(form.discount) - 0.005)
+  const due = Math.max(0, installmentOutstanding(installment)
+    + (withoutCharges ? 0 : parseCurrencyToNumber(form.interest) + parseCurrencyToNumber(form.fine))
+    - parseCurrencyToNumber(form.discount))
+  return { posted, due, missing: due - posted, closes: Math.abs(due - posted) < 0.005, withoutCharges }
 }
 
 const defaultSaleUnitForm = {
@@ -1389,6 +1398,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [receiptTemplates, setReceiptTemplates] = useState([])
   const [receiptTemplatesError, setReceiptTemplatesError] = useState(null)
   const [payingInstallment, setPayingInstallment] = useState(null)
+  const [unitDeletionRequest, setUnitDeletionRequest] = useState(null)
+  const [settlementReceipt, setSettlementReceipt] = useState(null)
+  const [downloadingSettlementReceipt, setDownloadingSettlementReceipt] = useState(false)
   const [payInstallmentForm, setPayInstallmentForm] = useState(defaultPayInstallmentForm)
   const [submittingInstallmentPayment, setSubmittingInstallmentPayment] = useState(false)
   const [isCreateInstallmentOpen, setIsCreateInstallmentOpen] = useState(false)
@@ -1424,6 +1436,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   // Qual parcela esta gerando/baixando recibo. Um por vez: o PDF nasce no
   // servidor e dois cliques seguidos na mesma linha pediriam duas vezes.
   const [receiptBusyId, setReceiptBusyId] = useState(null)
+  const [receiptInstallment, setReceiptInstallment] = useState(null)
   // A lista vista de dentro do callback, sem ele depender dela: com
   // `personSummaries` na dependencia, cada pessoa acrescentada recriava o
   // callback e o efeito disparava de novo.
@@ -1551,42 +1564,36 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
   const summaryItems = useMemo(() => {
     const activeProjects = projects.filter((project) => project.status === "active").length
-    const pendingCostCenters = projects.filter((project) => !project.analyticCostCenterId).length
+    const delayedProjects = projects.filter(isProjectDelayed).length
+    const completedProjects = projects.filter((project) => project.status === "completed").length
 
-    // `activeProjects` e `pendingCostCenters` contam o que veio na PAGINA, nao a
-    // empresa inteira -- os cartoes dizem isso na dica, porque somar tudo exigiria
-    // uma consulta de agregacao que a rota nao tem.
     return [
       {
         label: "Obras",
         value: totalProjects,
-        hint: hasActiveFilters ? "no filtro atual" : "cadastrados",
         icon: Building2,
         tone: "muted",
       },
       {
         label: "Ativas",
         value: activeProjects,
-        hint: "em andamento nesta página",
+        icon: CheckCircle,
+        tone: "projectActiveMetric",
+      },
+      {
+        label: "Obras em atraso",
+        value: delayedProjects,
+        icon: Clock,
+        tone: "projectDelayedMetric",
+      },
+      {
+        label: "Concluídas",
+        value: completedProjects,
         icon: CheckCircle,
         tone: "success",
       },
-      {
-        label: "Centros pendentes",
-        value: pendingCostCenters,
-        hint: "sem vínculo analítico nesta página",
-        icon: Clock,
-        tone: "warning",
-      },
-      {
-        label: "Página",
-        value: projectTotalPages ? `${projectPage} / ${projectTotalPages}` : "-",
-        hint: `${projects.length} obras exibidas`,
-        icon: Layers3,
-        tone: "muted",
-      },
     ]
-  }, [hasActiveFilters, projects, projectPage, projectTotalPages, totalProjects])
+  }, [projects, totalProjects])
 
   const scheduleProgress = useMemo(() => {
     if (!schedulePhases.length) {
@@ -2782,6 +2789,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     const outstanding = installmentOutstanding(installment) + agreedExtras
     setPayInstallmentForm({
       ...defaultPayInstallmentForm,
+      idempotencyKey: crypto.randomUUID(),
       // Uma linha ja semeada com o saldo: a baixa de uma forma so fica a um
       // clique, e quem recebeu em duas divide a partir dai.
       lines:
@@ -2858,7 +2866,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     }
 
     if (!Object.keys(changes).length) {
-      bridge?.feedback?.warning?.("Nenhuma alteração para salvar nesta parcela.")
+      bridge?.feedback?.warning?.(
+        "Documento e observação não foram alterados. Para registrar o valor recebido, use Registrar recebimento parcial ou Baixar parcela.",
+      )
       return
     }
 
@@ -2923,15 +2933,57 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     setPayInstallmentForm((current) => ({ ...current, [field]: value }))
   }
 
+  const installmentRenegotiation = () => payInstallmentForm.newDueDate ? {
+    due_date: payInstallmentForm.newDueDate,
+    expected_due_date: payingInstallment.dueDate,
+    expected_outstanding_amount: installmentOutstanding(payingInstallment),
+    reason: payInstallmentForm.renegotiationReason.trim(),
+  } : undefined
+
+  const handleRenegotiateInstallment = () => {
+    const renegotiation = installmentRenegotiation()
+    if (!renegotiation) return
+    setConfirmRequest({ title: "Alterar vencimento",
+      message: `Alterar o vencimento do saldo de ${formatMoney(installmentOutstanding(payingInstallment))} para ${formatDate(renegotiation.due_date)}?`,
+      confirmLabel: "Alterar vencimento",
+      run: async () => {
+        setSubmittingInstallmentPayment(true)
+        try {
+          await updateConstructionUnitInstallment({ bridge, unitId: selectedUnit.id,
+            installmentNumber: payingInstallment.installmentNumber,
+            receivableId: payingInstallment.receivableId, changes: { renegotiation } })
+          bridge?.feedback?.success?.("Vencimento renegociado.")
+          setPayingInstallment(null)
+          await loadUnitPaymentPlan(selectedUnit.id)
+        } catch (error) { bridge?.feedback?.error?.(error.message) }
+        finally { setSubmittingInstallmentPayment(false) }
+      },
+    })
+  }
+
   const handleSubmitPayInstallment = async (event) => {
     event.preventDefault()
+    const partial = event.nativeEvent.submitter?.value === "partial"
+    const { posted, missing, closes } = installmentClosing(payingInstallment, payInstallmentForm)
+    if (partial && posted > 0 && missing > 0.005
+      && posted < installmentOutstanding(payingInstallment)
+        - parseCurrencyToNumber(payInstallmentForm.discount) - 0.005) {
+      setConfirmRequest({ title: "Registrar recebimento parcial",
+        message: `Receber ${formatMoney(posted)} e manter ${formatMoney(missing)} em aberto? Sem juros ou multa.${payInstallmentForm.newDueDate ? ` Novo vencimento: ${formatDate(payInstallmentForm.newDueDate)}.` : ""}`,
+        confirmLabel: "Registrar recebimento parcial", run: () => submitPayInstallment(true) })
+    } else if (!partial && closes) {
+      await submitPayInstallment(false)
+    }
+  }
+
+  const submitPayInstallment = async (partialPayment) => {
 
     if (!payingInstallment || !selectedUnit) {
       return
     }
 
     const { closes } = installmentClosing(payingInstallment, payInstallmentForm)
-    if (!closes) {
+    if (!partialPayment && !closes) {
       bridge?.feedback?.warning?.(
         "A soma das formas de recebimento precisa fechar o valor a receber.",
       )
@@ -2940,13 +2992,17 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
     setSubmittingInstallmentPayment(true)
     try {
-      await payConstructionUnitInstallment({
+      const paidInstallment = await payConstructionUnitInstallment({
         bridge,
         unitId: selectedUnit.id,
         installmentNumber: payingInstallment.installmentNumber,
         receivableId: payingInstallment.receivableId ?? null,
         paymentData: {
           ...payInstallmentForm,
+          partialPayment,
+          interest: partialPayment || payingInstallment.partialWithoutCharges ? "0" : payInstallmentForm.interest,
+          fine: partialPayment || payingInstallment.partialWithoutCharges ? "0" : payInstallmentForm.fine,
+          renegotiation: installmentRenegotiation(),
           payments: payInstallmentForm.lines.map((line) => ({
             paymentMethod: line.paymentMethod,
             amount: line.amount,
@@ -2957,15 +3013,38 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           })),
         },
       })
-      bridge?.feedback?.success?.("Parcela baixada.")
+      if (!paidInstallment.receipt_id || !bridge?.canRead?.("receipt")) {
+        bridge?.feedback?.success?.(partialPayment ? "Recebimento parcial registrado. O saldo continua em aberto." : "Parcela baixada.")
+      }
       setPayingInstallment(null)
       setPayInstallmentForm(defaultPayInstallmentForm)
       await loadUnitPaymentPlan(selectedUnit.id)
+      if (paidInstallment.receipt_id && bridge?.canRead?.("receipt")) {
+        setSettlementReceipt({ id: paidInstallment.receipt_id, installmentNumber: payingInstallment.installmentNumber })
+      }
     } catch (requestError) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível baixar a parcela.")
     } finally {
       setSubmittingInstallmentPayment(false)
     }
+  }
+
+  const downloadSettlementReceipt = async () => {
+    if (!settlementReceipt || downloadingSettlementReceipt) return
+    setDownloadingSettlementReceipt(true)
+    try {
+      const blob = await downloadErpReceiptPdf({ bridge, receiptId: settlementReceipt.id })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = `recibo-parcela-${settlementReceipt.installmentNumber}.pdf`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+      setSettlementReceipt(null)
+    } catch (error) { bridge?.feedback?.error?.(error.message ?? "Não foi possível baixar o recibo.") }
+    finally { setDownloadingSettlementReceipt(false) }
   }
 
   const runConfirmedAction = async () => {
@@ -2982,35 +3061,12 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     }
   }
 
-  const handleDeleteInstallment = (installment) => {
-    if (!selectedUnit) {
-      return
-    }
-
-    setConfirmRequest({
-      title: `Excluir parcela ${installment.installmentNumber} ${
-        installment.adjustment ? "do aditivo" : "da venda"
-      }`,
-      message:
-        "A parcela é cancelada e os lançamentos contábeis dela são desfeitos. As outras parcelas "
-        + "continuam como estão.",
-      confirmLabel: "Excluir parcela",
-      run: async () => {
-        try {
-          await deleteConstructionUnitInstallment({
-            bridge,
-            unitId: selectedUnit.id,
-            installmentNumber: installment.installmentNumber,
-            receivableId: installment.receivableId ?? null,
-          })
-          bridge?.feedback?.success?.("Parcela excluída.")
-          await loadUnitPaymentPlan(selectedUnit.id)
-        } catch (requestError) {
-          bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível excluir a parcela.")
-        }
-      },
-    })
+  const handleDeleteInstallments = (installments) => {
+    if (!selectedUnit || !installments.length) return
+    setUnitDeletionRequest({ unitId: selectedUnit.id, installments })
   }
+
+  const handleDeleteInstallment = (installment) => handleDeleteInstallments([installment])
 
   // Recibo da parcela.
   //
@@ -3041,6 +3097,10 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }
 
   const handleInstallmentReceipt = async (installment) => {
+    if (installment.payments?.some((payment) => payment.settlementId)) {
+      setReceiptInstallment(installment)
+      return
+    }
     if (receiptBusyId) {
       return
     }
@@ -4194,7 +4254,6 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                 </span>
               ) : null}
             </nav>
-            <h1 className={styles.title}>{viewMode === "serviceTemplates" ? "Catálogo de serviços" : "Obras"}</h1>
           </div>
           {viewMode === "projects" ? (
             <div className={styles.heroActions}>
@@ -4217,6 +4276,22 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
               </button>
             </div>
           ) : null}
+          {viewMode === "projectDetail" && selectedProject ? (
+            <div className={styles.heroActions}>
+              <button type="button" className={styles.secondaryButton} onClick={closeProjectDetail}>
+                <ChevronLeft size={16} aria-hidden="true" />
+                Voltar para obras
+              </button>
+              <button type="button" className={styles.secondaryButton} onClick={() => openEditProject(selectedProject)}>
+                <Pencil size={16} aria-hidden="true" />
+                Editar obra
+              </button>
+              <button type="button" className={styles.secondaryButton} onClick={reloadProjectDetail} disabled={loading}>
+                <RefreshCw size={16} className={loading ? styles.spinIcon : undefined} aria-hidden="true" />
+                Recarregar
+              </button>
+            </div>
+          ) : null}
           {viewMode === "serviceTemplates" ? (
             <div className={styles.heroActions}>
               <button type="button" className={styles.secondaryButton} onClick={() => setViewMode("projects")}>
@@ -4227,8 +4302,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           ) : null}
         </div>
 
-        {viewMode === "serviceTemplates" ? null : (
-          <div className={styles.metricsGrid}>
+        {viewMode === "projects" ? (
+          <div className={`${styles.metricsGrid} ${styles.projectMetrics}`}>
             {summaryItems.map((item) => {
               const Icon = item.icon
               return (
@@ -4239,13 +4314,12 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                   <div className={styles.metricContent}>
                     <p className={styles.metricLabel}>{item.label}</p>
                     <p className={styles.metricValue}>{item.value}</p>
-                    <p className={styles.metricHint}>{item.hint}</p>
                   </div>
                 </article>
               )
             })}
           </div>
-        )}
+        ) : null}
       </section>
 
       {viewMode === "serviceTemplates" ? (
@@ -4298,22 +4372,6 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                   <option value="CONTRACT_WORK">Empreitada</option>
                 </select>
               </label>
-              <label className={styles.filterControl}>
-                <span>Inicio inicial</span>
-                <input
-                  type="date"
-                  value={filters.startDate}
-                  onChange={(event) => handleFilterChange("startDate", event.target.value)}
-                />
-              </label>
-              <label className={styles.filterControl}>
-                <span>Inicio final</span>
-                <input
-                  type="date"
-                  value={filters.endDate}
-                  onChange={(event) => handleFilterChange("endDate", event.target.value)}
-                />
-              </label>
             </div>
             {hasActiveFilters ? (
               <div className={styles.filtersFooter}>
@@ -4357,10 +4415,6 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
             project={selectedProject}
             units={units}
             schedulePhases={schedulePhases}
-            onBack={closeProjectDetail}
-            onEdit={openEditProject}
-            onRefresh={reloadProjectDetail}
-            loading={loading}
           />
 
           <section className={styles.projectTabCard}>
@@ -4440,16 +4494,11 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
               title={selectedUnit ? `Unidade ${selectedUnit.code}` : "Unidades"}
               subtitle={
                 selectedUnit
-                  ? "Detalhe operacional e financeiro da unidade selecionada."
+                  ? null
                   : "Inventário comercial com reserva, liberação, medições e venda por unidade."
               }
               action={
-                selectedUnit ? (
-                  <button type="button" className={styles.secondaryButton} onClick={closeUnitDetail}>
-                    <ChevronLeft size={16} />
-                    Voltar para unidades
-                  </button>
-                ) : (
+                selectedUnit ? null : (
                   <button type="button" className={styles.primaryButton} onClick={openCreateUnit}>
                     <Plus size={16} />
                     Nova unidade
@@ -4459,6 +4508,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
               content={
                 selectedUnit ? (
                   <UnitDetailPanel
+                    onBack={closeUnitDetail}
                     bridge={bridge}
                     unit={selectedUnit}
                     blocks={blocks}
@@ -4491,6 +4541,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                     onReverseInstallment={handleReverseInstallment}
                     onPayInstallment={handleOpenPayInstallment}
                     onDeleteInstallment={handleDeleteInstallment}
+                    onDeleteInstallments={handleDeleteInstallments}
                     onDeleteAdjustment={handleOpenDeleteAdjustment}
                     onCommissionReceipt={bridge?.canRead?.("receipt") ? handleCommissionReceipt : null}
                     onInstallmentReceipt={handleInstallmentReceipt}
@@ -4766,6 +4817,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         />
       ) : null}
 
+      {receiptInstallment && <InstallmentReceiptsDialog bridge={bridge} installment={receiptInstallment}
+        onClose={() => setReceiptInstallment(null)} />}
+
       {payingInstallment ? (
         <PayInstallmentModal
           bridge={bridge}
@@ -4779,6 +4833,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           onAddLine={handleAddPayInstallmentLine}
           onRemoveLine={handleRemovePayInstallmentLine}
           onSaveData={handleSaveInstallmentData}
+          onRenegotiate={handleRenegotiateInstallment}
           onSubmit={handleSubmitPayInstallment}
           loading={submittingInstallmentPayment}
         />
@@ -4804,6 +4859,16 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         />
       ) : null}
 
+      {unitDeletionRequest && selectedUnit?.id === unitDeletionRequest.unitId && <DeleteInstallmentsDialog
+        key={unitDeletionRequest.unitId} bridge={bridge} unitId={unitDeletionRequest.unitId}
+        installments={unitDeletionRequest.installments} onClose={() => setUnitDeletionRequest(null)}
+        onDone={() => loadUnitPaymentPlan(unitDeletionRequest.unitId)} />}
+      {settlementReceipt && !confirmRequest && <ConfirmModal bridge={bridge}
+        title="Baixar recibo do recebimento?"
+        message="O recibo já foi gerado. Deseja baixar o PDF agora?"
+        confirmLabel="Sim, baixar recibo" cancelLabel="Não, só gerar" danger={false}
+        loading={downloadingSettlementReceipt} onConfirm={downloadSettlementReceipt}
+        onCancel={() => { if (!downloadingSettlementReceipt) setSettlementReceipt(null) }} />}
       {confirmRequest ? (
         <ConfirmModal
           bridge={bridge}
@@ -5318,7 +5383,7 @@ function ReportsPanel({ units, schedulePhases, measurements }) {
   )
 }
 
-function ProjectDetailHeader({ project, units, schedulePhases, onBack, onEdit, onRefresh, loading }) {
+function ProjectDetailHeader({ project, units, schedulePhases }) {
   const unitList = units ?? []
   const soldUnits = unitList.filter((unit) => ["sold", "delivered"].includes(unit.status)).length
   const availableUnits = unitList.filter((unit) => unit.status === "available").length
@@ -5346,10 +5411,6 @@ function ProjectDetailHeader({ project, units, schedulePhases, onBack, onEdit, o
   return (
     <section className={styles.detailHeader}>
       <div className={styles.detailHeaderMain}>
-        <button type="button" className={styles.secondaryButton} onClick={onBack}>
-          <ChevronLeft size={16} />
-          Obras
-        </button>
         <div className={styles.detailTitleBlock}>
           <div className={styles.detailTitleRow}>
             <h2>{project.name}</h2>
@@ -5385,16 +5446,7 @@ function ProjectDetailHeader({ project, units, schedulePhases, onBack, onEdit, o
           />
         ) : null}
       </div>
-      <div className={styles.detailActions}>
-        <button type="button" className={styles.secondaryButton} onClick={() => onEdit(project)}>
-          <Pencil size={16} />
-          Editar obra
-        </button>
-        <button type="button" className={styles.secondaryButton} onClick={onRefresh} disabled={loading}>
-          <RefreshCw size={16} className={loading ? styles.spinIcon : undefined} />
-          Recarregar
-        </button>
-      </div>
+
     </section>
   )
 }
@@ -5414,7 +5466,7 @@ function ProjectList({
 }) {
   if (loading) {
     return (
-      <div className={styles.tableWrapper} aria-busy="true">
+      <div className={`${styles.tableWrapper} ${styles.projectListWrapper}`} aria-busy="true">
         <div className={styles.empty}>
           <RefreshCw className={styles.spinIcon} size={16} />
           Carregando obras...
@@ -5425,7 +5477,7 @@ function ProjectList({
 
   if (error) {
     return (
-      <div className={styles.tableWrapper}>
+      <div className={`${styles.tableWrapper} ${styles.projectListWrapper}`}>
         <div className={styles.empty}>
           <span>{error}</span>
           <button type="button" className={styles.secondaryButton} onClick={onRetry}>
@@ -5439,99 +5491,94 @@ function ProjectList({
 
   if (!projects.length) {
     return (
-      <div className={styles.tableWrapper}>
+      <div className={`${styles.tableWrapper} ${styles.projectListWrapper}`}>
         <div className={styles.empty}>Nenhuma obra encontrada.</div>
       </div>
     )
   }
 
   return (
-    <div className={styles.tableWrapper}>
-      <table className={styles.table}>
+    <div className={`${styles.tableWrapper} ${styles.projectListWrapper}`}>
+      <table className={`${styles.table} ${styles.projectListTable}`}>
         <thead>
           <tr>
             <th>Código</th>
             <th>Obra</th>
             {showBuyerUnits ? <th>Unidades do comprador</th> : null}
-            <th>Tipo</th>
             <th>Status</th>
-            <th>Inicio</th>
-            <th>Centro analítico</th>
             <th>Ações</th>
           </tr>
         </thead>
         <tbody>
-          {projects.map((project) => (
-            <tr key={project.id}>
-              <td>{project.code}</td>
-              <td>
-                <strong>{project.name}</strong>
-                <div className={styles.rowSecondaryText}>{project.cnpjSpe || "-"}</div>
-              </td>
-              {showBuyerUnits ? (
-                <td>
-                  <div className={styles.buyerUnitsList}>
-                    {project.buyerUnits.map((unit) => (
-                      <div key={unit.unitId}>
-                        <div className={styles.buyerUnitRow}>
-                          {onOpenBuyerUnit ? (
-                            <button type="button" className={styles.buyerUnitLink}
-                              title={`Abrir detalhes da unidade ${unit.code}`}
-                              onClick={() => onOpenBuyerUnit(unit.unitId, project)}>
-                              {unit.code}
-                            </button>
-                          ) : <strong>{unit.code}</strong>}
-                          <span className={`${styles.buyerUnitStatus} ${styles[`status${unit.status}`] || ""}`}>
-                            {unitStatusLabel[unit.status] ?? unit.status}
-                          </span>
-                          {unit.isSecondaryBuyer && <span className={styles.buyerUnitRole}>2º comprador</span>}
-                        </div>
-                        {unit.blockName && <div className={styles.rowSecondaryText}>Bloco: {unit.blockName}</div>}
-                      </div>
-                    ))}
-                  </div>
+          {projects.map((project) => {
+            const isDelayed = isProjectDelayed(project)
+            const projectStatusClass = isDelayed ? styles.projectDelayed
+              : project.status === "active" ? styles.projectActive : styles[`status${project.status}`] || ""
+            return (
+              <tr key={project.id}>
+                <td className={styles.projectCodeCell} data-label="Código">{project.code}</td>
+                <td className={styles.projectNameCell} data-label="Obra">
+                  <strong>{project.name}</strong>
+                  <div className={styles.rowSecondaryText}>{project.cnpjSpe || "-"}</div>
                 </td>
-              ) : null}
-              <td>{projectTypeLabel[project.projectType] ?? project.projectType ?? "-"}</td>
-              <td>
-                <span className={`${styles.statusPill} ${styles[`status${project.status}`] || ""}`}>
-                  {statusLabel[project.status] ?? project.status}
-                </span>
-              </td>
-              <td>{formatDate(project.startDate)}</td>
-              <td>
-                <span className={project.analyticCostCenterId ? styles.badgeSuccess : styles.badgeMuted}>
-                  {project.analyticCostCenterId ? "Vinculado" : "Pendente"}
-                </span>
-              </td>
-              <td>
-                <RowActionsMenu
-                  actions={[
-                    {
-                      key: "details",
-                      label: "Detalhes",
-                      icon: Building2,
-                      onSelect: () => onOpenDetails(project),
-                    },
-                    {
-                      key: "edit",
-                      label: "Editar",
-                      icon: Pencil,
-                      onSelect: () => onEdit(project),
-                    },
-                    {
-                      key: "delete",
-                      label: "Excluir",
-                      icon: Trash2,
-                      danger: true,
-                      dividerBefore: true,
-                      onSelect: () => onDelete(project),
-                    },
-                  ]}
-                />
-              </td>
-            </tr>
-          ))}
+                {showBuyerUnits ? (
+                  <td className={styles.projectUnitsCell} data-label="Unidades do comprador">
+                    <div className={styles.buyerUnitsList}>
+                      {project.buyerUnits.map((unit) => (
+                        <div key={unit.unitId}>
+                          <div className={styles.buyerUnitRow}>
+                            {onOpenBuyerUnit ? (
+                              <button type="button" className={styles.buyerUnitLink}
+                                title={`Abrir detalhes da unidade ${unit.code}`}
+                                onClick={() => onOpenBuyerUnit(unit.unitId, project)}>
+                                {unit.code}
+                              </button>
+                            ) : <strong>{unit.code}</strong>}
+                            <span className={`${styles.buyerUnitStatus} ${styles[`status${unit.status}`] || ""}`}>
+                              {unitStatusLabel[unit.status] ?? unit.status}
+                            </span>
+                            {unit.isSecondaryBuyer && <span className={styles.buyerUnitRole}>2º comprador</span>}
+                          </div>
+                          {unit.blockName && <div className={styles.rowSecondaryText}>Bloco: {unit.blockName}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  </td>
+                ) : null}
+                <td className={styles.projectStatusCell} data-label="Status">
+                  <span className={`${styles.statusPill} ${projectStatusClass}`}>
+                    {isDelayed ? "Atrasada" : statusLabel[project.status] ?? project.status}
+                  </span>
+                </td>
+                <td className={styles.projectActionsCell}>
+                  <RowActionsMenu
+                    actions={[
+                      {
+                        key: "details",
+                        label: "Detalhes",
+                        icon: Building2,
+                        onSelect: () => onOpenDetails(project),
+                      },
+                      {
+                        key: "edit",
+                        label: "Editar",
+                        icon: Pencil,
+                        onSelect: () => onEdit(project),
+                      },
+                      {
+                        key: "delete",
+                        label: "Excluir",
+                        icon: Trash2,
+                        danger: true,
+                        dividerBefore: true,
+                        onSelect: () => onDelete(project),
+                      },
+                    ]}
+                  />
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>
@@ -5625,6 +5672,7 @@ function BlocksList({ blocks, loading, error, onRetry, onEdit, onDelete }) {
 
 function UnitDetailPanel({
   bridge,
+  onBack,
   unit,
   blocks,
   measurements,
@@ -5656,6 +5704,7 @@ function UnitDetailPanel({
   onReverseInstallment,
   onPayInstallment,
   onDeleteInstallment,
+  onDeleteInstallments,
   onDeleteAdjustment,
   onInstallmentReceipt,
   receiptBusyId,
@@ -5682,6 +5731,7 @@ function UnitDetailPanel({
   ).length
   const linkedPayables = measurements.filter((measurement) => measurement.externalAccountsPayableId).length
   const estimatedMargin = Number(unit.salePrice ?? 0) - measuredCost
+  const buyerName = (people ?? []).find((person) => person.id === unit.buyerPersonId)?.name?.trim() || "-"
   const canReserve = unit.status === "available"
   const canRelease = unit.status === "reserved"
   const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
@@ -5689,17 +5739,20 @@ function UnitDetailPanel({
 
   return (
     <div className={styles.integrationPanel}>
-      <div className={styles.scopeHeader}>
+      <div className={`${styles.scopeHeader} ${styles.unitDetailHeader}`}>
         <div className={styles.scopeMeta}>
           <div className={styles.detailTitleRow}>
-            <h2>{unit.code}{unit.description ? ` — ${unit.description}` : ""}</h2>
+            <h2>{buyerName}</h2>
             <span className={`${styles.statusPill} ${styles[`status${unit.status}`] || ""}`}>
               {unitStatusLabel[unit.status] ?? unit.status}
             </span>
           </div>
-          <p className={styles.textMuted}>{formatUnitType(unit.unitType)}{unit.typology ? ` - ${unit.typology}` : ""}</p>
         </div>
-        <div className={styles.tableHeaderActions}>
+        <div className={`${styles.tableHeaderActions} ${styles.unitDetailActions}`}>
+          <button type="button" className={styles.secondaryButton} onClick={onBack}>
+            <ChevronLeft size={16} aria-hidden="true" />
+            Voltar para unidades
+          </button>
           <button type="button" className={styles.primaryButton} onClick={() => onEdit(unit)}>
             <Pencil size={16} />
             Editar unidade
@@ -5862,6 +5915,7 @@ function UnitDetailPanel({
           onReverseInstallment={onReverseInstallment}
           onPayInstallment={onPayInstallment}
           onDeleteInstallment={onDeleteInstallment}
+          onDeleteInstallments={onDeleteInstallments}
           onCreateAdjustment={onCreateAdjustment}
           onDeleteAdjustment={onDeleteAdjustment}
           onInstallmentReceipt={onInstallmentReceipt}
@@ -6041,6 +6095,7 @@ function UnitInstallmentsPanel({
   onReverseInstallment,
   onPayInstallment,
   onDeleteInstallment,
+  onDeleteInstallments,
   onCreateAdjustment,
   onDeleteAdjustment,
   onInstallmentReceipt,
@@ -6052,18 +6107,37 @@ function UnitInstallmentsPanel({
   const bankSlips = useUnitBankSlips(bridge, unit.id)
   const bankSlipOperations = useUnitBankSlipOperations(bridge, unit.id, onRetry)
   const [batchAction, setBatchAction] = useState("GENERATE")
+  const [deletionSelected, setDeletionSelected] = useState(new Map())
+  useEffect(() => { setDeletionSelected(new Map()) }, [plan, unit.id])
   const [allBankSlipsOpen, setAllBankSlipsOpen] = useState(false)
   useEffect(() => {
     setAllBankSlipsOpen(false)
     setBatchAction("GENERATE")
   }, [unit.id, bridge?.companyContext?.companyId])
   const changeBatchAction = (value) => {
+    setDeletionSelected(new Map())
     bankSlips.clearSelection()
     bankSlipOperations.clearSelection()
     setBatchAction(value)
   }
   const canUpdate = Boolean(bridge?.canUpdate?.("construction_units"))
+  const canDelete = Boolean(bridge?.canDelete?.("construction_units") && bridge?.canDelete?.("receivable"))
   const canOffsetCredit = Boolean(bridge?.canUpdate?.("customer_credit") && bridge?.canUpdate?.("receivable"))
+  const [buyerCredit, setBuyerCredit] = useState(null)
+  useEffect(() => {
+    let active = true
+    setBuyerCredit(null)
+    if (!canUpdate || !canOffsetCredit || !unit.buyerPersonId) return undefined
+    listConstructionUnitBuyerCredits({ bridge, unitId: unit.id })
+      .then((data) => {
+        if (active) setBuyerCredit({ unitId: unit.id, buyerId: unit.buyerPersonId, amount: Number(data.open_total) })
+      })
+      .catch((error) => { if (active) bridge?.feedback?.error?.(error.message ?? "Não foi possível consultar o saldo credor.") })
+    return () => { active = false }
+  }, [bridge, unit.id, unit.buyerPersonId, canUpdate, canOffsetCredit, plan])
+  const creditAvailable = buyerCredit?.unitId === unit.id && buyerCredit?.buyerId === unit.buyerPersonId
+    && buyerCredit.amount > 0
+  const [dueDateRow, setDueDateRow] = useState(null)
   const [offsetRow, setOffsetRow] = useState(null)
   const [observationRow, setObservationRow] = useState(null)
   const [editingObservation, setEditingObservation] = useState(false)
@@ -6126,8 +6200,25 @@ function UnitInstallmentsPanel({
   const canCreateAdjustment = Boolean(paymentPlan.contractId)
   const rows = buildInstallmentRows(paymentPlan)
   const hasBankSlips = rows.some((row) => row.bankSlips?.length)
-  const generationMode = bankSlipSelectionMode(batchAction, bankSlipOperations.canCreate, hasBankSlips) === "GENERATE"
-  const selection = generationMode ? bankSlipOperations : bankSlips
+  const hasOpenInstallments = installments.some((row) => ["OPEN", "OVERDUE"].includes(row.status)
+    && installmentOutstanding(row) > 0)
+  const eligibleForGeneration = rows.filter((row) => !bankSlipGenerationReason(row))
+  const selectedForGeneration = eligibleForGeneration.filter((row) => bankSlipOperations.selected.has(row.id))
+  const rowsToGenerate = selectedForGeneration.length ? selectedForGeneration : eligibleForGeneration
+  const deletionMode = canDelete && (batchAction === "DELETE" || !bankSlips.allowed
+    || (!bankSlipOperations.canCreate && !hasBankSlips))
+  const generationMode = !deletionMode && bankSlipSelectionMode(batchAction, bankSlipOperations.canCreate, hasBankSlips) === "GENERATE"
+  const deletionSelection = {
+    selected: deletionSelected, busy: false,
+    entries: (items) => items.filter((row) => !installmentDeletionReason(row)).map((row) => [row.id, row]),
+    selectPage: (entries) => setDeletionSelected((current) => toggleSelectionPage(current, entries)),
+    toggle: (row) => setDeletionSelected((current) => toggleSelectionPage(current, [[row.id, row]])),
+  }
+  const selection = deletionMode ? deletionSelection : generationMode ? bankSlipOperations : bankSlips
+  const selectionId = (row) => deletionMode || generationMode ? row.id : row.bankSlips?.[0]?.id
+  const selectionReason = (row) => deletionMode ? installmentDeletionReason(row)
+    : generationMode ? bankSlipGenerationReason(row) : row.bankSlips?.length ? "" : "Esta parcela não possui boleto para imprimir."
+  const selectionPurpose = deletionMode ? "excluir parcela" : generationMode ? "gerar boleto" : "imprimir boleto"
   const selectionEntries = selection.entries(rows)
 
   return (
@@ -6180,41 +6271,49 @@ function UnitInstallmentsPanel({
 
       <div className={styles.card}>
         <div className={installmentStyles.header}>
-          <div>
+          <div className={installmentStyles.heading}>
             <strong>Contas a receber da unidade</strong>
-            <p className={styles.metricHint}>
-              <strong>Parcela</strong> é o parcelamento da
-              venda e <strong>Aditivo</strong> é a cobrança extra de quando o financiamento sai abaixo
-              do previsto. Cada tipo tem a sua própria numeração, e o aditivo é um documento separado
-              no contas a receber - editar a venda não mexe nele.
-            </p>
+            <InfoTip floating label="Sobre contas a receber da unidade">
+              <span><strong>Parcela</strong> é o parcelamento da venda e <strong>Aditivo</strong> é a cobrança
+                extra de quando o financiamento sai abaixo do previsto. Cada tipo tem a sua própria numeração,
+                e o aditivo é um documento separado no contas a receber - editar a venda não mexe nele.</span>
+              {(bankSlips.allowed || canDelete) && <span>
+                {deletionMode ? "Selecione parcelas em aberto e sem recebimentos para excluir. Excluir selecionadas pede motivo e confirmação; havendo boleto, a exclusão depende da baixa confirmada pelo banco."
+                  : generationMode ? "Selecione parcelas em aberto e sem boleto ativo para gerar boletos. Sem seleção, Gerar boletos considera todas as parcelas elegíveis da unidade."
+                  : "Selecione parcelas com boleto para imprimir. A impressão não gera novas cobranças."}
+              </span>}
+            </InfoTip>
           </div>
           <div className={installmentStyles.toolbar}>
             <div className={installmentStyles.managementActions}>
             {canEditSale ? (
-              <button type="button" className={styles.primaryButton} onClick={() => onRebuildPlan(unit)}>
+              <button type="button" className={`${installmentStyles.actionButton} ${installmentStyles.rebuildAction}`}
+                disabled={!hasOpenInstallments}
+                title={hasOpenInstallments ? undefined : "Não há parcelas da venda em aberto para refazer o plano."}
+                onClick={() => onRebuildPlan(unit)}>
                 <ShoppingCart size={16} />
                 Refazer plano de pagamento
               </button>
             ) : null}
-            {paymentPlan.receivableId ? (
-              <span title={hasBalanceToCharge ? undefined : NOTHING_LEFT_TO_CHARGE}>
-                <button
-                  type="button"
-                  className={styles.primaryButton}
-                  disabled={!hasBalanceToCharge}
-                  onClick={() => onCreateInstallment({ receivableId: null, installments })}
-                >
-                  <Plus size={16} />
-                  Incluir parcela
-                </button>
-              </span>
-            ) : null}
+            {bankSlips.allowed && bankSlipOperations.canCreate && <button type="button"
+              className={`${installmentStyles.actionButton} ${installmentStyles.slipAction}`}
+              disabled={!eligibleForGeneration.length || bankSlipOperations.busy || bankSlips.busy}
+              title={eligibleForGeneration.length ? undefined : "Não há parcelas elegíveis para gerar boletos."}
+              onClick={() => bankSlipOperations.setIssueRows(rowsToGenerate)}>
+              Gerar boletos ({rowsToGenerate.length})
+            </button>}
+            {bankSlips.allowed && <button type="button"
+              className={`${installmentStyles.actionButton} ${installmentStyles.viewAction}`}
+              disabled={!hasBankSlips}
+              title={hasBankSlips ? undefined : "Esta unidade ainda não possui boletos."}
+              onClick={() => {
+                bankSlips.setHistory(null); bankSlips.setFailed([]); setAllBankSlipsOpen(true)
+              }}>Ver boletos</button>}
             {canCreateAdjustment ? (
               <span title={hasBalanceToCharge ? undefined : NOTHING_LEFT_TO_CHARGE}>
                 <button
                   type="button"
-                  className={styles.primaryButton}
+                  className={`${installmentStyles.actionButton} ${installmentStyles.adjustmentAction}`}
                   disabled={!hasBalanceToCharge}
                   onClick={onCreateAdjustment}
                 >
@@ -6223,18 +6322,38 @@ function UnitInstallmentsPanel({
                 </button>
               </span>
             ) : null}
+            {paymentPlan.receivableId ? (
+              <span title={hasBalanceToCharge ? undefined : NOTHING_LEFT_TO_CHARGE}>
+                <button
+                  type="button"
+                  className={`${installmentStyles.actionButton} ${installmentStyles.installmentAction}`}
+                  disabled={!hasBalanceToCharge}
+                  onClick={() => onCreateInstallment({ receivableId: null, installments })}
+                >
+                  <Plus size={16} />
+                  Incluir parcela
+                </button>
+              </span>
+            ) : null}
+            {canDelete && <button type="button"
+              className={`${styles.secondaryButton} ${styles.dangerButton}`}
+              disabled={!deletionMode || !deletionSelected.size}
+              title={deletionMode ? undefined : "Escolha Excluir parcelas em Ação em lote e selecione as parcelas."}
+              onClick={() => onDeleteInstallments([...deletionSelected.values()])}>
+              <Trash2 size={16} aria-hidden="true" /> Excluir selecionadas ({deletionSelected.size})
+            </button>}
             </div>
-            <div className={installmentStyles.batchActions}>
-            {bankSlips.allowed ? <>
-              {hasBankSlips && <label className={installmentStyles.field}>Ação em lote
-                <select value={generationMode ? "GENERATE" : "PRINT"}
+            {((bankSlips.allowed && hasBankSlips) || canDelete) && <div className={installmentStyles.batchActions}>
+              {(hasBankSlips || canDelete) && <label className={installmentStyles.field}>Ação em lote
+                <select value={deletionMode ? "DELETE" : generationMode ? "GENERATE" : "PRINT"}
                   disabled={bankSlips.busy || bankSlipOperations.busy}
                   onChange={(event) => changeBatchAction(event.target.value)}>
-                  <option value="PRINT">Imprimir boletos existentes</option>
-                  {bankSlipOperations.canCreate && <option value="GENERATE">Gerar boletos</option>}
+                  {bankSlips.allowed && hasBankSlips && <option value="PRINT">Imprimir boletos existentes</option>}
+                  {bankSlips.allowed && bankSlipOperations.canCreate && <option value="GENERATE">Gerar boletos</option>}
+                  {canDelete && <option value="DELETE">Excluir parcelas</option>}
                 </select>
               </label>}
-              {!generationMode && hasBankSlips && <label className={installmentStyles.field}>
+              {!deletionMode && !generationMode && hasBankSlips && <label className={installmentStyles.field}>
                 Formato de impressão
                 <select value={bankSlips.printLayout} disabled={bankSlips.busy}
                   onChange={(event) => bankSlips.setPrintLayout(event.target.value)}>
@@ -6242,27 +6361,15 @@ function UnitInstallmentsPanel({
                   <option value="CARNET">Carnê - três por folha A4</option>
                 </select>
               </label>}
-              {!generationMode && hasBankSlips && <button type="button" className={styles.secondaryButton}
+              {!deletionMode && !generationMode && hasBankSlips && <button type="button" className={`${installmentStyles.actionButton} ${installmentStyles.slipAction}`}
                 disabled={!bankSlips.selected.size || bankSlips.busy}
                 onClick={bankSlips.requestPrint}>
                 {bankSlips.printLayout === "CARNET" ? "Imprimir carnê" : "Imprimir boletos"} ({bankSlips.selected.size})
               </button>
               }
-              {generationMode && <button type="button" className={styles.primaryButton}
-                disabled={!bankSlipOperations.selected.size || bankSlipOperations.busy}
-                onClick={() => bankSlipOperations.setIssueRows([...bankSlipOperations.selected.values()])}>
-                Gerar boletos ({bankSlipOperations.selected.size})</button>}
-              <button type="button" className={styles.secondaryButton} onClick={() => {
-                bankSlips.setHistory(null); bankSlips.setFailed([]); setAllBankSlipsOpen(true)
-              }}>Ver todos os boletos</button>
-            </> : null}
-            </div>
+            </div>}
           </div>
         </div>
-        {bankSlips.allowed && <p className={styles.metricHint}>
-          {generationMode ? "Selecione parcelas em aberto e sem boleto ativo para gerar boletos."
-            : "Selecione parcelas com boleto para imprimir. A impressão não gera novas cobranças."}
-        </p>}
         {paymentPlan.erpUnavailableReason ? (
           <p className={styles.metricHint}>
             Não foi possível consultar o ERP agora: {paymentPlan.erpUnavailableReason}
@@ -6279,10 +6386,10 @@ function UnitInstallmentsPanel({
             <table className={`${styles.table} ${installmentStyles.table}`}>
               <thead>
                 <tr>
-                  {bankSlips.allowed ? <th className={installmentStyles.selectionCell}>
+                  {(bankSlips.allowed || canDelete) ? <th className={installmentStyles.selectionCell}>
                     <SelectPageCheckbox ids={selectionEntries.map(([id]) => id)} selected={selection.selected}
                       disabled={selection.busy}
-                      label={generationMode ? "Selecionar todas as parcelas sem boleto"
+                      label={deletionMode ? "Selecionar todas as parcelas elegíveis para exclusão" : generationMode ? "Selecionar todas as parcelas sem boleto"
                         : "Selecionar todas as parcelas com boleto"}
                       onToggle={() => selection.selectPage(selectionEntries)} />
                   </th> : null}
@@ -6294,21 +6401,19 @@ function UnitInstallmentsPanel({
               </thead>
               <tbody>
                 {rows.map((row) => (
-                  <tr key={row.id} className={bankSlips.allowed
-                    && selection.selected.has(generationMode ? row.id : row.bankSlips?.[0]?.id)
+                  <tr key={row.id} className={(bankSlips.allowed || canDelete)
+                    && selection.selected.has(selectionId(row))
                     ? installmentStyles.selectedRow : undefined}>
-                    {bankSlips.allowed ? <td className={installmentStyles.selectionCell}>
+                    {(bankSlips.allowed || canDelete) ? <td className={installmentStyles.selectionCell}>
                       <input type="checkbox"
-                        checked={selection.selected.has(generationMode ? row.id : row.bankSlips?.[0]?.id)}
-                        disabled={(generationMode ? Boolean(bankSlipGenerationReason(row)) : !row.bankSlips?.length)
+                        checked={selection.selected.has(selectionId(row))}
+                        disabled={Boolean(selectionReason(row))
                           || selection.busy
-                          || (!selection.selected.has(generationMode ? row.id : row.bankSlips?.[0]?.id)
+                          || (!selection.selected.has(selectionId(row))
                             && selection.selected.size >= 200)}
-                        title={generationMode ? bankSlipGenerationReason(row) || "Selecionar para gerar boleto"
-                          : row.bankSlips?.length ? "Selecionar para imprimir boleto"
-                            : "Esta parcela não possui boleto para imprimir."}
+                        title={selectionReason(row) || `Selecionar para ${selectionPurpose}`}
                         aria-label={`Selecionar parcela ${row.installmentNumber}/${row.totalInstallments} para ${
-                          generationMode ? "gerar boleto" : "imprimir boleto"}`}
+                          selectionPurpose}`}
                         onChange={() => selection.toggle(row)} />
                     </td> : null}
                     <td>
@@ -6331,7 +6436,13 @@ function UnitInstallmentsPanel({
                       ) : null}
                     </td>
                     <td>{formatDate(row.dueDate)}</td>
-                    <td>{formatMoney(row.amount)}</td>
+                    <td>{Number(row.paidAmount) > 0 && installmentOutstanding(row) > 0 ? (
+                      <div className={styles.partialInstallmentAmount}>
+                        <span className={styles.rowSecondaryText}>Original {formatMoney(row.amount)}</span>
+                        <strong>Saldo {formatMoney(installmentOutstanding(row))}</strong>
+                        <span className={styles.partialPaymentLabel}>Recebida parcialmente</span>
+                      </div>
+                    ) : formatMoney(row.amount)}</td>
                     {bankSlips.allowed ? <td>
                       {row.bankSlips?.length ? <>
                         <strong>{row.bankSlips[0].our_number}</strong>
@@ -6366,11 +6477,14 @@ function UnitInstallmentsPanel({
                             ? () => bankSlips.setHistory(row) : null,
                           onEditObservation: (item) => openObservation(item, true),
                           onOffsetCredit: canUpdate && canOffsetCredit && unit.buyerPersonId ? setOffsetRow : null,
+                          creditAvailable,
                           canUpdate,
+                          canDelete,
                           icons: { FileText, CheckCircle, Trash2, RotateCcw, Pencil },
                           adjustment: row.adjustment,
                           onReverseInstallment,
                           onPayInstallment,
+                          onChangeDueDate: setDueDateRow,
                           onDeleteInstallment,
                           onDeleteAdjustment,
                           onInstallmentReceipt,
@@ -6410,6 +6524,8 @@ function UnitInstallmentsPanel({
         onClose={() => { setAllBankSlipsOpen(false); bankSlips.setWarning(false); bankSlips.setFailed([]) }} />}
       <UnitBankSlipOperationDialogs state={bankSlipOperations} />
       {!allBankSlipsOpen && <UnitBankSlipDialogs state={bankSlips} />}
+      {dueDateRow && <InstallmentDueDateDialog key={dueDateRow.id} bridge={bridge} unitId={unit.id}
+        installment={dueDateRow} onClose={() => setDueDateRow(null)} onSaved={onRetry} />}
       {offsetRow ? (
         <CreditOffsetModal
           bridge={bridge}
@@ -6674,19 +6790,26 @@ function PayInstallmentModal({
   onAddLine,
   onRemoveLine,
   onSaveData,
+  onRenegotiate,
   onSubmit,
   loading,
 }) {
   const CashRegisterSelector = bridge?.components?.CashRegisterCombobox ?? CashRegisterPicker
-  const { posted, due, missing, closes } = installmentClosing(installment, form)
+  const { posted, due, missing, closes, withoutCharges } = installmentClosing(installment, form)
+  const negotiationValid = !form.newDueDate
+    || (form.newDueDate !== installment.dueDate && form.renegotiationReason.trim().length >= 3)
   const everyLineIsFilled = form.lines.every(
     (line) =>
       line.paymentMethod
       && parseCurrencyToNumber(line.amount) > 0
       && (line.paymentMethod !== "CASH" || line.cashRegisterId),
   )
-  const locked = Boolean(installment?.hasIssuedReceipt)
+  const canReceive = Boolean(bridge?.canUpdate?.("construction_units") && bridge?.canUpdate?.("receivable"))
+  const locked = Boolean(installment?.hasIssuedReceipt) || !canReceive
   const existingPayments = installment?.payments ?? []
+  const dataLocked = locked || existingPayments.some((payment) => payment.settlementId)
+  const hasDataChanges = form.documentNumber !== (installment?.documentNumber ?? "")
+    || form.observation !== (installment?.observation ?? "")
   const labelOfMethod = (value) =>
     paymentMethods.find((option) => option.value === value)?.label ?? value ?? ""
 
@@ -6708,16 +6831,21 @@ function PayInstallmentModal({
           </button>
         </header>
         <form className={styles.modalBody} onSubmit={onSubmit}>
-          <p className={styles.metricHint}>
-            Vencimento {formatDate(installment?.dueDate)} - valor da parcela{" "}
-            {formatMoney(installment?.amount)}
-            {Number(installment?.paidAmount) > 0
-              ? `, ja recebido ${formatMoney(installment.paidAmount)}, saldo ${formatMoney(
-                  installmentOutstanding(installment),
-                )}`
-              : ""}
-            . A baixa só é aceita quando a soma das formas fecha o valor a receber.
-          </p>
+          <div className={styles.installmentBalanceHeader}>
+            <span>Vencimento atual: <strong>{formatDate(installment?.dueDate)}</strong></span>
+            {Number(installment?.paidAmount) > 0 && installmentOutstanding(installment) > 0
+              && <strong className={styles.partialPaymentLabel}>Recebida parcialmente</strong>}
+          </div>
+          <dl className={styles.installmentBalanceSummary}>
+            <div><dt>Valor original da parcela</dt><dd>{formatMoney(installment?.amount)}</dd></div>
+            <div><dt>Principal abatido</dt><dd>{formatMoney(installment?.paidAmount || 0)}</dd></div>
+            <div><dt>Total recebido</dt><dd>{formatMoney(existingPayments.reduce(
+              (sum, payment) => sum + Number(payment.netAmount ?? payment.amount ?? 0), 0,
+            ))}</dd></div>
+            <div className={styles.pendingBalance}><dt>Saldo pendente</dt>
+              <dd>{formatMoney(installmentOutstanding(installment))}</dd>
+            </div>
+          </dl>
 
           {existingPayments.length ? (
             <div className={styles.formGrid}>
@@ -6738,9 +6866,8 @@ function PayInstallmentModal({
 
           {locked ? (
             <p className={styles.metricHint}>
-              A parcela já tem recibo definitivo emitido - o número saiu do talão e o documento
-              existe. A baixa é definitiva: não aceita alteração, estorno nem exclusão. Qualquer
-              acerto tem que virar um lançamento novo.
+              {canReceive ? "A parcela tem recibo legado definitivo: não aceita alteração, estorno nem exclusão."
+                : "Seu perfil precisa de permissão para alterar Unidades de Obra e Contas a Receber."}
             </p>
           ) : (
             <>
@@ -6842,7 +6969,8 @@ function PayInstallmentModal({
                   <input
                     type="text"
                     inputMode="decimal"
-                    value={form.interest}
+                    disabled={withoutCharges}
+                    value={withoutCharges ? "" : form.interest}
                     onChange={(event) => onChange("interest", formatCurrencyInput(event.target.value))}
                     placeholder="0,00"
                   />
@@ -6852,7 +6980,8 @@ function PayInstallmentModal({
                   <input
                     type="text"
                     inputMode="decimal"
-                    value={form.fine}
+                    disabled={withoutCharges}
+                    value={withoutCharges ? "" : form.fine}
                     onChange={(event) => onChange("fine", formatCurrencyInput(event.target.value))}
                     placeholder="0,00"
                   />
@@ -6872,6 +7001,7 @@ function PayInstallmentModal({
                   <input
                     type="text"
                     maxLength={100}
+                    disabled={dataLocked}
                     value={form.documentNumber}
                     onChange={(event) => onChange("documentNumber", event.target.value)}
                   />
@@ -6880,17 +7010,54 @@ function PayInstallmentModal({
                   <span>Observação</span>
                   <textarea
                     className={styles.textarea}
+                    disabled={dataLocked}
                     value={form.observation}
                     onChange={(event) => onChange("observation", event.target.value)}
                   />
                 </label>
               </div>
 
-              <p className={styles.metricHint} data-testid="installment-closing">
-                Lançado {formatMoney(posted)} · A receber {formatMoney(due)} · Falta{" "}
-                {formatMoney(Math.abs(missing))}
-                {missing < -0.005 ? " a mais" : ""}
+              <div className={styles.formGrid}>
+                <label className={styles.filterControl}>
+                  <span>Novo vencimento do saldo (opcional)
+                    <InfoTip floating label="Sobre o vencimento negociado">
+                      Preencha somente se combinou outra data com o cliente para pagar o restante.
+                      Exemplo: de uma parcela de R$ 500, recebeu R$ 300 e negociou os R$ 200 para outra data.
+                      Exige motivo e mantém os recibos anteriores. Sem negociação, deixe em branco.
+                    </InfoTip>
+                  </span>
+                  <input type="date" value={form.newDueDate} disabled={loading}
+                    onChange={(event) => onChange("newDueDate", event.target.value)} />
+                </label>
+                {form.newDueDate && <label className={styles.filterControl}>
+                  <span>Motivo da renegociação *</span>
+                  <input value={form.renegotiationReason} maxLength={1000} disabled={loading}
+                    onChange={(event) => onChange("renegotiationReason", event.target.value)} />
+                </label>}
+              </div>
+              <p className={styles.metricHint}>
+                Combinou outra data com o cliente para pagar o restante? Informe acima.
+                Se o prazo continua o mesmo, deixe em branco. Os recibos anteriores são preservados.
               </p>
+              {withoutCharges && <p className={styles.metricHint}>
+                Este recebimento e o saldo posterior não têm juros ou multa.</p>}
+              <p className={styles.metricHint}>
+                Para registrar o dinheiro informado, use Registrar recebimento parcial ou Baixar parcela.
+                Salvar documento e observação altera somente esses dois campos.
+              </p>
+              {form.lines.length > 0 && !everyLineIsFilled && <p className={styles.metricHint}>
+                Preencha a forma e um valor maior que zero em cada linha,
+                ou use Remover forma na linha que não será usada.
+                Para Dinheiro, selecione também o Caixa físico.
+              </p>}
+              <dl className={styles.installmentClosingSummary} data-testid="installment-closing">
+                <div><dt>Receber agora</dt><dd>{formatMoney(posted)}</dd></div>
+                <div><dt>Total a receber</dt><dd>{formatMoney(due)}</dd></div>
+                <div className={styles.pendingBalance}>
+                  <dt>{missing < -0.005 ? "Valor excedente" : "Saldo após este recebimento"}</dt>
+                  <dd>{formatMoney(Math.abs(missing))}</dd>
+                </div>
+              </dl>
             </>
           )}
 
@@ -6902,14 +7069,24 @@ function PayInstallmentModal({
               type="button"
               className={styles.secondaryButton}
               onClick={onSaveData}
-              disabled={loading || locked}
+              disabled={loading || dataLocked || !hasDataChanges}
+              title="Salva somente o número do documento e a observação. Para registrar valores, use os botões de recebimento."
             >
-              Salvar dados da parcela
+              Salvar documento e observação
+            </button>
+            {form.newDueDate && <button type="button" className={styles.secondaryButton}
+              disabled={loading || locked || !negotiationValid} onClick={onRenegotiate}>Alterar vencimento</button>}
+            <button type="submit" name="paymentMode" value="partial" className={styles.secondaryButton}
+              disabled={loading || locked || posted <= 0 || missing <= 0.005
+                || posted >= installmentOutstanding(installment) - parseCurrencyToNumber(form.discount) - 0.005
+                || !everyLineIsFilled || !form.lines.length || !negotiationValid}>
+              Registrar recebimento parcial
             </button>
             <button
               type="submit"
               className={styles.primaryButton}
-              disabled={loading || locked || !closes || !everyLineIsFilled || !form.lines.length}
+              disabled={loading || locked || !closes || !everyLineIsFilled
+                || !form.lines.length || !negotiationValid || Boolean(form.newDueDate)}
               title={closes ? undefined : "A soma das formas precisa fechar o valor a receber."}
             >
               {loading ? "Baixando..." : "Baixar parcela"}
@@ -6921,7 +7098,7 @@ function PayInstallmentModal({
   )
 }
 
-function ConfirmModal({ bridge, title, message, confirmLabel, danger, onCancel, onConfirm, loading }) {
+function ConfirmModal({ bridge, title, message, confirmLabel, cancelLabel = "Cancelar", danger, onCancel, onConfirm, loading }) {
   const ConfirmDialog = bridge?.components?.ConfirmDialog
   if (ConfirmDialog) {
     return (
@@ -6930,6 +7107,7 @@ function ConfirmModal({ bridge, title, message, confirmLabel, danger, onCancel, 
         title={title}
         message={message}
         confirmLabel={confirmLabel}
+        cancelLabel={cancelLabel}
         variant={danger ? "danger" : "default"}
         loading={loading}
         onCancel={() => { if (!loading) onCancel() }}
@@ -6956,7 +7134,7 @@ function ConfirmModal({ bridge, title, message, confirmLabel, danger, onCancel, 
           <p className={styles.metricHint}>{message}</p>
           <footer className={styles.modalFooter}>
             <button type="button" className={styles.secondaryButton} onClick={onCancel} disabled={loading}>
-              Cancelar
+              {cancelLabel}
             </button>
             <button
               type="button"

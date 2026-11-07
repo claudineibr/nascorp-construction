@@ -5320,6 +5320,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         company_id: UUID,
         unit_id: UUID,
         installment_number: int,
+        reason,
         receivable_id: UUID | None = None,
         user_id: UUID | None = None,
     ) -> None:
@@ -5336,6 +5337,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                 construction_unit_id=unit.id,
                 receivable_id=target_receivable_id,
                 installment_number=installment_number,
+                reason=reason,
             )
         except httpx.HTTPStatusError as request_error:
             raise self._erp_domain_error(
