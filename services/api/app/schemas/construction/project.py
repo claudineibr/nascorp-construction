@@ -1,9 +1,11 @@
+import re
 from datetime import date, datetime
+from math import isfinite
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.constants import (
     ConstructionBlockStatus,
@@ -28,7 +30,57 @@ class ConstructionTerminationTerms(BaseModel):
     refund_deadline_days: int = Field(default=0, ge=0, le=3650)
 
 
-class ConstructionProjectCreate(BaseModel):
+class ConstructionProjectGeocodingRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    street: str = Field(min_length=1, max_length=255)
+    number: str | None = Field(default=None, min_length=1, max_length=40)
+    district: str | None = Field(default=None, max_length=120)
+    city: str = Field(min_length=1, max_length=120)
+    state: str = Field(pattern=r"^[A-Z]{2}$")
+    zip_code: str | None = Field(default=None, pattern=r"^[0-9]{8}$")
+
+
+class ConstructionProjectCoordinates(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
+class ConstructionProjectAddressInput(BaseModel):
+    address_json: dict[str, Any] | None = None
+
+    @field_validator("address_json")
+    @classmethod
+    def validate_address(cls, value):
+        if value is None:
+            return value
+
+        address = value.copy()
+        ibge = address.get("ibge")
+        if ibge is not None and not re.fullmatch(r"[0-9]{7}", str(ibge)):
+            raise ValueError("Informe um código IBGE com 7 dígitos.")
+        if ibge is not None:
+            address["ibge"] = str(ibge)
+
+        latitude, longitude = address.get("latitude"), address.get("longitude")
+        if latitude is None and longitude is None:
+            return address
+        if latitude is None or longitude is None:
+            raise ValueError("Informe Latitude e Longitude juntas.")
+
+        for field, label, limit in (("latitude", "Latitude", 90), ("longitude", "Longitude", 180)):
+            try:
+                coordinate = float(str(address[field]).replace(",", "."))
+            except (ValueError, OverflowError):
+                coordinate = float("nan")
+            if not isfinite(coordinate) or abs(coordinate) > limit:
+                raise ValueError(f"Informe {label} em graus decimais entre {-limit} e {limit}.")
+            address[field] = coordinate
+
+        return address
+
+
+class ConstructionProjectCreate(ConstructionProjectAddressInput):
     code: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
@@ -37,7 +89,6 @@ class ConstructionProjectCreate(BaseModel):
     project_type: str = ConstructionProjectType.RESIDENTIAL_VERTICAL
     customer_person_id: UUID | None = None
     cnpj_spe: str | None = Field(default=None, max_length=18)
-    address_json: dict[str, Any] | None = None
     start_date: date | None = None
     expected_end_date: date | None = None
     actual_end_date: date | None = None
@@ -51,7 +102,7 @@ class ConstructionProjectCreate(BaseModel):
     has_segregated_assets: bool = False
 
 
-class ConstructionProjectUpdate(BaseModel):
+class ConstructionProjectUpdate(ConstructionProjectAddressInput):
     code: str | None = Field(default=None, min_length=1, max_length=50)
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
@@ -60,7 +111,6 @@ class ConstructionProjectUpdate(BaseModel):
     project_type: str | None = None
     customer_person_id: UUID | None = None
     cnpj_spe: str | None = Field(default=None, max_length=18)
-    address_json: dict[str, Any] | None = None
     start_date: date | None = None
     expected_end_date: date | None = None
     actual_end_date: date | None = None

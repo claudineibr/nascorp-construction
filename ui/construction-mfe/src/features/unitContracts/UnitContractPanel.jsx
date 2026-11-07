@@ -8,7 +8,7 @@ import styles from "./UnitContractPanel.module.css";
 
 const origin = { generation: "Geração", regeneration: "Regeração", legacy: "Legado", initial: "Inicial", manual: "Manual", adjustment: "Reajuste", signature: "Assinatura" };
 const status = { draft: "Minuta", signed: "Assinado", sent: "Enviado", active: "Ativo", canceled: "Cancelado" };
-const labels = { primary: "Comprador principal", secondary: "Segundo comprador", metragem: "Metragem do empreendimento",
+const labels = { primary: "Comprador principal", secondary: "Segundo comprador", empreendimento: "Nome da obra", metragem: "M² Obra",
   lote: "Lote", matricula: "Matrícula", creci: "CRECI", corretor: "Corretor", dataentrega: "Entrega prevista",
   vendedor: "Razão social do vendedor", vendedor_documento: "CNPJ do vendedor", vendedor_endereco: "Endereço do vendedor",
   representante: "Representante", representante_estado_civil: "Estado civil do representante",

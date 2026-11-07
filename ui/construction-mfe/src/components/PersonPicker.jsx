@@ -19,6 +19,7 @@ const PAGE_SIZE = 20
 export function PersonPicker({
   bridge: bridgeFromProps = null,
   label,
+  labelHelp,
   value,
   onChange,
   disabled = false,
@@ -219,7 +220,7 @@ export function PersonPicker({
 
   return (
     <div className={styles.field} ref={wrapperRef}>
-      <span className={styles.label}>{required ? `${label}*` : label}</span>
+      <span className={styles.label}>{required ? `${label}*` : label}{labelHelp}</span>
       {value ? (
         <div className={styles.chosen}>
           <span className={styles.name} title={nomeSelecionado}>

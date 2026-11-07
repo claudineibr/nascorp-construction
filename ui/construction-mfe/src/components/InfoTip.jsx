@@ -4,7 +4,7 @@ import { HelpCircle } from "lucide-react"
 
 import styles from "./InfoTip.module.css"
 
-export function InfoTip({ label, children, floating = false }) {
+export function InfoTip({ label, children, floating = false, insideLabel = false }) {
   const tooltipId = useId()
   const triggerRef = useRef(null)
   const tooltipRef = useRef(null)
@@ -41,14 +41,25 @@ export function InfoTip({ label, children, floating = false }) {
     {children}
   </span>
 
+  const Trigger = insideLabel ? "span" : "button"
+  const triggerProps = insideLabel ? { role: "button", tabIndex: 0 } : { type: "button" }
+
   return (
-    <button type="button" ref={triggerRef} className={styles.infoButton} aria-label={label}
+    <Trigger {...triggerProps} ref={triggerRef} className={styles.infoButton} aria-label={label}
       aria-describedby={!floating || open ? tooltipId : undefined}
       onMouseEnter={() => { if (floating) setOpen(true) }}
       onMouseLeave={() => { if (floating) setOpen(false) }}
       onFocus={() => { if (floating) setOpen(true) }}
       onBlur={() => { if (floating) setOpen(false) }}
+      onClick={insideLabel ? (event) => {
+        event.preventDefault()
+        if (floating) setOpen(true)
+      } : undefined}
       onKeyDown={(event) => {
+        if (insideLabel && floating && (event.key === "Enter" || event.key === " ")) {
+          event.preventDefault()
+          setOpen(true)
+        }
         if (floating && event.key === "Escape") {
           event.stopPropagation()
           setOpen(false)
@@ -57,6 +68,6 @@ export function InfoTip({ label, children, floating = false }) {
       }}>
       <HelpCircle size={12} aria-hidden="true" />
       {floating ? open && createPortal(tooltip, document.body) : tooltip}
-    </button>
+    </Trigger>
   )
 }

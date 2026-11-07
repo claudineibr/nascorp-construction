@@ -14,6 +14,9 @@
 }
 
 .label {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.35rem;
   color: inherit;
 }
 

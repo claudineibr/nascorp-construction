@@ -28,6 +28,8 @@ from app.infrastructure.repository.event_repository import EventRepository
 from app.schemas.construction.project import (
     ConstructionMeasurementPayableLink,
     ConstructionProjectBuyerUnit,
+    ConstructionProjectCoordinates,
+    ConstructionProjectGeocodingRequest,
     ConstructionProjectServiceLinkRequest,
     ConstructionProjectServiceReplaceRequest,
     ConstructionSharedPayableMeasurementsRequest,
@@ -244,6 +246,33 @@ async def list_person_summaries(
             construction_project_id=construction_project_id,
         )
         return ConstructionPersonSummaryListResponse.model_validate(payload)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/projects/geocode", response_model=ConstructionProjectCoordinates | None)
+async def geocode_new_project_address(
+    address: ConstructionProjectGeocodingRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.CREATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+):
+    try:
+        return await service.lookup_project_coordinates(company_id=ctx.company_id, actor_user_id=ctx.user_id, address=address)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.post("/projects/{project_id}/geocode", response_model=ConstructionProjectCoordinates | None)
+async def geocode_existing_project_address(
+    project_id: UUID,
+    address: ConstructionProjectGeocodingRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.UPDATE)),
+    service: ConstructionProjectService = Depends(get_project_service),
+):
+    try:
+        return await service.lookup_project_coordinates(
+            company_id=ctx.company_id, actor_user_id=ctx.user_id, address=address, project_id=project_id,
+        )
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 

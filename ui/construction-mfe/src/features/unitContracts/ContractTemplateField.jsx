@@ -2,7 +2,7 @@ import { useEffect, useState, useId } from "react";
 import { unitContractRequest } from "../../services/unitContracts.js";
 import styles from "./UnitContractPanel.module.css";
 
-export function ContractTemplateField({ bridge, value, onChange, disabled }) {
+export function ContractTemplateField({ bridge, value, onChange, disabled, labelHelp }) {
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -26,7 +26,7 @@ export function ContractTemplateField({ bridge, value, onChange, disabled }) {
     return () => { active = false; };
   }, [bridge, value]);
   return <label className={styles.field}>
-    <span>Template de contrato</span>
+    {labelHelp ?? <span>Template de contrato</span>}
     <input list={id} value={search} disabled={disabled || !bridge?.canRead?.("contract")}
       placeholder={loading ? "Carregando modelos..." : "Buscar template publicado"}
       onChange={(event) => {

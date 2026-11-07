@@ -2,6 +2,7 @@ import calendar
 import hashlib
 import json
 import logging
+import re
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, ClassVar, Protocol
@@ -249,6 +250,23 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         self.erp_client = erp_client
         self.integration_dispatcher = integration_dispatcher
 
+    async def lookup_project_coordinates(self, *, company_id, actor_user_id, address, project_id=None):
+        if project_id is not None:
+            await self.get_project(company_id=company_id, project_id=project_id)
+        return await self.erp_client.geocode_address(
+            address, company_id=company_id, actor_user_id=actor_user_id, project_id=project_id,
+        )
+
+    @staticmethod
+    def _validated_spe_cnpj(value):
+        cnpj = (value or "").strip()
+        if cnpj and not re.fullmatch(
+            r"(?:[A-Za-z0-9]{12}|[A-Za-z0-9]{2}\.[A-Za-z0-9]{3}\.[A-Za-z0-9]{3}/[A-Za-z0-9]{4}-)[0-9]{2}",
+            cnpj,
+        ):
+            raise ConstructionInvalidValueError(message="Informe o CNPJ SPE completo, com os dois dígitos verificadores.")
+        return cnpj or None
+
     async def create_project(
         self,
         *,
@@ -258,6 +276,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
     ) -> ConstructionProject:
         self._ensure_known_value(value=request.status, allowed_values=PROJECT_STATUSES, field_name="status")
         self._ensure_known_value(value=request.project_type, allowed_values=PROJECT_TYPES, field_name="project_type")
+        cnpj_spe = self._validated_spe_cnpj(request.cnpj_spe)
         await self._validate_contract_template(company_id, request.contract_template_id)
         await self._validate_receipt_template(company_id, request.receipt_template_id)
         await self._validate_receipt_template(company_id, request.commission_receipt_template_id)
@@ -280,7 +299,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             project_type=request.project_type,
             development_type=request.development_type,
             customer_person_id=request.customer_person_id,
-            cnpj_spe=request.cnpj_spe.strip() if request.cnpj_spe else None,
+            cnpj_spe=cnpj_spe,
             address_json=request.address_json,
             start_date=request.start_date,
             expected_end_date=request.expected_end_date,
@@ -609,6 +628,11 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
     ) -> ConstructionProject:
         project = await self.get_project(company_id=company_id, project_id=project_id)
         updates = request.model_dump(exclude_unset=True)
+        if "cnpj_spe" in updates:
+            if (updates["cnpj_spe"] or "").strip() == (project.cnpj_spe or "").strip():
+                updates.pop("cnpj_spe")
+            else:
+                updates["cnpj_spe"] = self._validated_spe_cnpj(updates["cnpj_spe"])
         await self._validate_contract_template(company_id, updates.get("contract_template_id"))
         for field_name in ("receipt_template_id", "commission_receipt_template_id"):
             if updates.get(field_name) != getattr(project, field_name):

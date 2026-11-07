@@ -108,6 +108,7 @@ import { UnitTermPanel } from "./features/unitContracts/UnitTermPanel.jsx"
 import { ContractTemplateField } from "./features/unitContracts/ContractTemplateField.jsx"
 import { ContractMeasureItems } from "./features/subcontracts/ContractMeasureItems.jsx"
 import { MeasurementFinancialPanel } from "./features/subcontracts/MeasurementFinancialPanel.jsx"
+import { useProjectGeocoding } from "./features/useProjectGeocoding.js"
 import { resolveConstructionBridge } from "./bridge/constructionBridge.js"
 import {
   approveConstructionMeasurement,
@@ -364,6 +365,28 @@ const maskZip = (value) => {
 
 const normalizeZip = (value) => stripNonDigits(value).slice(0, 8)
 
+const maskSpeCnpj = (value) => {
+  const characters = value.toUpperCase().replace(/[^A-Z0-9]/g, "")
+  const base = characters.slice(0, 12)
+  const checkDigits = stripNonDigits(characters.slice(12)).slice(0, 2)
+  return [base.slice(0, 2), base.slice(2, 5), base.slice(5, 8)]
+    .filter(Boolean).join(".") + (base.length > 8 ? `/${base.slice(8)}` : "") + (checkDigits ? `-${checkDigits}` : "")
+}
+
+const projectAddressFields = new Set([
+  "addressZipCode", "addressStreet", "addressNumber", "addressDistrict", "addressCity", "addressState",
+])
+
+const matchesPostalMunicipality = (address, city, state) =>
+  city.trim().localeCompare(address.city.trim(), "pt-BR", { sensitivity: "base" }) === 0
+    && state.trim().toUpperCase() === address.state.trim().toUpperCase()
+
+const parseProjectCoordinate = (value) => {
+  const normalized = value.trim().replace(",", ".")
+  if (!normalized) return null
+  return /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(normalized) ? Number(normalized) : NaN
+}
+
 const defaultProjectForm = {
   code: "",
   name: "",
@@ -373,6 +396,7 @@ const defaultProjectForm = {
   developmentType: "INCORPORATION",
   customerPersonId: "",
   cnpjSpe: "",
+  originalCnpjSpe: "",
   startDate: "",
   expectedEndDate: "",
   actualEndDate: "",
@@ -382,6 +406,10 @@ const defaultProjectForm = {
   addressCity: "",
   addressState: "",
   addressZipCode: "",
+  addressIbge: "",
+  addressLatitude: "",
+  addressLongitude: "",
+  originalAddress: null,
   receiptTemplateId: "",
   commissionReceiptTemplateId: "",
   contractTemplateId: "",
@@ -783,6 +811,7 @@ function toFormProject(project) {
     developmentType: project.developmentType ?? "",
     customerPersonId: project.customerPersonId ?? "",
     cnpjSpe: project.cnpjSpe ?? "",
+    originalCnpjSpe: project.cnpjSpe ?? "",
     startDate: project.startDate ? String(project.startDate).slice(0, 10) : "",
     expectedEndDate: project.expectedEndDate ? String(project.expectedEndDate).slice(0, 10) : "",
     actualEndDate: project.actualEndDate ? String(project.actualEndDate).slice(0, 10) : "",
@@ -792,6 +821,10 @@ function toFormProject(project) {
     addressCity: project.address?.city ?? "",
     addressState: project.address?.state ?? "",
     addressZipCode: maskZip(project.address?.zip_code ?? ""),
+    addressIbge: String(project.address?.ibge ?? ""),
+    addressLatitude: String(project.address?.latitude ?? ""),
+    addressLongitude: String(project.address?.longitude ?? ""),
+    originalAddress: project.address,
     receiptTemplateId: project.receiptTemplateId ?? "",
     commissionReceiptTemplateId: project.commissionReceiptTemplateId ?? "",
     contractTemplateId: project.contractTemplateId ?? "",
@@ -894,12 +927,16 @@ function toApiProject(formProject) {
     expectedEndDate: formProject.expectedEndDate,
     actualEndDate: formProject.actualEndDate,
     address: {
+      ...formProject.originalAddress,
       street: formProject.addressStreet,
       number: formProject.addressNumber,
       district: formProject.addressDistrict,
       city: formProject.addressCity,
       state: formProject.addressState,
       zip_code: normalizeZip(formProject.addressZipCode),
+      ibge: formProject.addressIbge,
+      latitude: parseProjectCoordinate(formProject.addressLatitude),
+      longitude: parseProjectCoordinate(formProject.addressLongitude),
     },
     receiptTemplateId: formProject.receiptTemplateId,
     commissionReceiptTemplateId: formProject.commissionReceiptTemplateId,
@@ -950,6 +987,17 @@ function requiredProjectFieldError(formProject) {
   if (!formProject.projectType) {
     return "Selecione o tipo da obra."
   }
+
+  const { cnpjSpe, originalCnpjSpe, addressIbge, addressLatitude, addressLongitude } = formProject
+  if (cnpjSpe && cnpjSpe !== originalCnpjSpe && !/^[A-Z0-9]{2}\.[A-Z0-9]{3}\.[A-Z0-9]{3}\/[A-Z0-9]{4}-\d{2}$/.test(cnpjSpe)) {
+    return "Informe o CNPJ SPE completo, com os dois dígitos verificadores."
+  }
+  if (addressIbge && !/^\d{7}$/.test(addressIbge)) return "Informe um código IBGE com 7 dígitos."
+  const latitude = parseProjectCoordinate(addressLatitude)
+  const longitude = parseProjectCoordinate(addressLongitude)
+  if ((latitude === null) !== (longitude === null)) return "Informe Latitude e Longitude juntas."
+  if (latitude !== null && !(Math.abs(latitude) <= 90)) return "Informe Latitude em graus decimais entre -90 e 90."
+  if (longitude !== null && !(Math.abs(longitude) <= 180)) return "Informe Longitude em graus decimais entre -180 e 180."
 
   return null
 }
@@ -1305,8 +1353,10 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [projectModalMode, setProjectModalMode] = useState("create")
   const [editingProjectId, setEditingProjectId] = useState(null)
   const [projectForm, setProjectForm] = useState(defaultProjectForm)
+  const projectZipRequest = useRef(0)
   const [submittingProject, setSubmittingProject] = useState(false)
   const [projectZipLookup, setProjectZipLookup] = useState({ loading: false, error: null })
+  const lookupProjectCoordinates = useProjectGeocoding({ bridge, projectId: editingProjectId })
 
   const [blocks, setBlocks] = useState([])
   const [loadingBlocks, setLoadingBlocks] = useState(false)
@@ -1989,6 +2039,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     void loadReceiptTemplates()
     setProjectModalMode("create")
     setEditingProjectId(null)
+    projectZipRequest.current += 1
     setProjectForm(defaultProjectForm)
     setProjectZipLookup({ loading: false, error: null })
     setIsProjectModalOpen(true)
@@ -2002,6 +2053,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     void loadReceiptTemplates()
     setProjectModalMode("edit")
     setEditingProjectId(project.id)
+    projectZipRequest.current += 1
     setProjectForm(toFormProject(project))
     setProjectZipLookup({ loading: false, error: null })
     setIsProjectModalOpen(true)
@@ -2014,21 +2066,44 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
     setIsProjectModalOpen(false)
     setEditingProjectId(null)
+    projectZipRequest.current += 1
     setProjectForm(defaultProjectForm)
     setProjectZipLookup({ loading: false, error: null })
   }
 
   const handleProjectFieldChange = (field, value) => {
-    const nextValue = field === "addressZipCode" ? maskZip(value) : value
-    setProjectForm((currentProjectForm) => ({ ...currentProjectForm, [field]: nextValue }))
+    let nextValue = value
+    if (field === "addressZipCode") nextValue = maskZip(value)
+    if (field === "addressIbge") nextValue = stripNonDigits(value).slice(0, 7)
+    if (field === "cnpjSpe") nextValue = maskSpeCnpj(value)
+    if (projectForm[field] === nextValue) return
 
     if (field === "addressZipCode") {
+      projectZipRequest.current += 1
       setProjectZipLookup({ loading: false, error: null })
     }
+
+    setProjectForm((current) => {
+      const next = { ...current, [field]: nextValue }
+      if (field === "addressZipCode") next.addressIbge = ""
+      if (field === "addressCity" || field === "addressState") {
+        const postalAddress = projectZipLookup.address
+        const matchesLookup = postalAddress && projectZipLookup.zipCode === normalizeZip(next.addressZipCode)
+          && matchesPostalMunicipality(postalAddress, next.addressCity, next.addressState)
+        next.addressIbge = matchesLookup ? postalAddress.ibge : ""
+      }""
+      if (projectAddressFields.has(field)) {
+        next.addressLatitude = ""
+        next.addressLongitude = ""
+      }
+      return next
+    })
   }
 
   const handleProjectZipLookup = async () => {
+    if (projectForm.addressIbge || projectZipLookup.loading) return null
     const normalizedZip = normalizeZip(projectForm.addressZipCode)
+    if (normalizedZip === projectZipLookup.zipCode) return null
     if (!normalizedZip) {
       setProjectZipLookup({ loading: false, error: null })
       return
@@ -2039,28 +2114,57 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       return
     }
 
+    const requestId = ++projectZipRequest.current
     setProjectZipLookup({ loading: true, error: null })
     try {
       const address = await fetchConstructionAddressByZip({ bridge, zipCode: normalizedZip })
-      setProjectForm((currentProjectForm) => ({
-        ...currentProjectForm,
-        addressZipCode: maskZip(address.zipCode || normalizedZip),
-        addressStreet: address.street || currentProjectForm.addressStreet,
-        addressDistrict: address.district || currentProjectForm.addressDistrict,
-        addressCity: address.city || currentProjectForm.addressCity,
-        addressState: address.state || currentProjectForm.addressState,
-      }))
-      setProjectZipLookup({ loading: false, error: null })
-    } catch (requestError) {
+      if (requestId !== projectZipRequest.current) return null
+
+      const samePostalCode = normalizeZip(projectForm.originalAddress?.zip_code) === normalizedZip
+      const postalIbge = /^\d{7}$/.test(address.ibge) ? String(address.ibge) : ""
+      const addressChanges = (current) => {
+        const valueFor = (field, fromZip) => {
+          const value = current[field]
+          if (value !== projectForm[field] || (samePostalCode && value)) return value
+          return fromZip || value
+        }
+        const addressCity = valueFor("addressCity", address.city)
+        const addressState = valueFor("addressState", address.state)
+        if (!matchesPostalMunicipality(address, addressCity, addressState)) return null
+
+        return {
+          addressStreet: valueFor("addressStreet", address.street),
+          addressDistrict: valueFor("addressDistrict", address.district),
+          addressCity,
+          addressState,
+          addressIbge: current.addressIbge || postalIbge,
+        }
+      }
+
+      setProjectForm((current) => normalizeZip(current.addressZipCode) === normalizedZip
+        ? { ...current, ...addressChanges(current) }
+        : current)
       setProjectZipLookup({
         loading: false,
-        error: requestError?.message ?? "Não foi possível buscar o CEP.",
+        error: null,
+        zipCode: normalizedZip,
+        address: { ...address, ibge: postalIbge },
       })
+      return addressChanges(projectForm)
+    } catch (requestError) {
+      if (requestId === projectZipRequest.current) {
+        setProjectZipLookup({
+          loading: false,
+          error: requestError?.message ?? "Não foi possível buscar o CEP.",
+        })
+      }
+      return null
     }
   }
 
   const handleProjectSubmit = async (event) => {
     event.preventDefault()
+    if (submittingProject || projectZipLookup.loading) return
 
     const validationError = requiredProjectFieldError(projectForm) ?? terminationTermsError(projectForm.terminationDefaults)
     if (validationError) {
@@ -2070,7 +2174,14 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
     setSubmittingProject(true)
     try {
-      const projectData = toApiProject(projectForm)
+      const zipCode = normalizeZip(projectForm.addressZipCode)
+      const lookup = zipCode.length === 8 && zipCode !== projectZipLookup.zipCode && !projectZipLookup.error
+        ? await handleProjectZipLookup()
+        : null
+      const formWithAddress = { ...projectForm, ...lookup }
+      const geocoding = await lookupProjectCoordinates(formWithAddress)
+      const projectData = toApiProject({ ...formWithAddress, ...geocoding?.fields })
+      const coordinateNotice = geocoding?.notice ? ` ${geocoding.notice}` : ""
       if (projectModalMode === "create") {
         const createdProject = await createConstructionProject({ bridge, projectData })
         setProjects((currentProjects) => [
@@ -2080,20 +2191,22 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         setActiveProjectId(createdProject.id)
         setProjectDetailTab("overview")
         setViewMode("projectDetail")
-        bridge?.feedback?.success?.("Obra criada com sucesso.")
+        bridge?.feedback?.success?.(`Obra criada com sucesso.${coordinateNotice}`)
       } else if (editingProjectId) {
         await updateConstructionProject({
           bridge,
           projectId: editingProjectId,
           projectData,
         })
-        bridge?.feedback?.success?.("Obra atualizada com sucesso.")
+        bridge?.feedback?.success?.(`Obra atualizada com sucesso.${coordinateNotice}`)
       }
 
       closeProjectModal()
       await loadProjects()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível salvar a obra.")
+      if (requestError?.name !== "AbortError") {
+        bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível salvar a obra.")
+      }
     } finally {
       setSubmittingProject(false)
     }
@@ -4339,7 +4452,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                   type="text"
                   value={filters.search}
                   onChange={(event) => handleFilterChange("search", event.target.value)}
-                  placeholder="Código, nome ou CNPJ"
+                  placeholder="Código ou nome"
                 />
               </label>
               <PersonPicker
@@ -8752,6 +8865,29 @@ const QUALIFICATION_WARNINGS = {
   rejected: "Este fornecedor foi REPROVADO na qualificacao. Confirme com o responsavel antes de seguir.",
 }
 
+const PROJECT_FIELD_HELP = {
+  code: ["Identificador da obra. Use um código único na empresa.", "OBR-025", "Identifica a obra na listagem e na busca."],
+  status: ["Situação da obra no cadastro.", "Rascunho", "Indica a etapa atual e controla as próximas mudanças de situação."],
+  projectType: ["Categoria da construção.", "Residencial vertical", "Classifica a obra pelo tipo de construção."],
+  developmentType: ["Escolha Incorporação ou Empreitada conforme a operação da obra.", "Incorporação", "Define o tratamento dos custos elegíveis no estoque imobiliário."],
+  customer: ["Pessoa cadastrada na empresa que é cliente ou contratante da obra.", "Construtora Horizonte Ltda.", "Registra quem contratou a obra."],
+  cnpjSpe: ["CNPJ da Sociedade de Propósito Específico constituída para a obra. Preencha se a obra tiver uma SPE.", "12.345.678/0001-95", "Identifica a pessoa jurídica vinculada à obra."],
+  startDate: ["Data em que a execução da obra começou.", "02/02/2027", "Registra o início da obra para acompanhar o prazo."],
+  expectedEndDate: ["Data planejada para concluir a obra.", "30/06/2027", "Registra a previsão usada no acompanhamento do prazo."],
+  actualEndDate: ["Data em que a obra foi efetivamente concluída.", "25/06/2027", "Registra quando o trabalho terminou."],
+  contractTemplate: ["Modelo de contrato de venda publicado e ativo na empresa.", "Contrato padrão de compra e venda", "Sugere o modelo ao gerar o contrato de venda da unidade."],
+  lot: ["Identificação do lote onde fica a obra.", "Lote 12 da Quadra B", "Fornece o dado para o contrato de venda da unidade."],
+  registration: ["Matrícula do imóvel no Cartório de Registro de Imóveis.", "12345", "Fornece o dado para o contrato de venda da unidade."],
+  landArea: ["Área do terreno da obra, em metros quadrados.", "1250,50", "Fornece a metragem para o contrato de venda da unidade."],
+  segregatedAssets: ["Marque se a obra estiver submetida ao patrimônio de afetação.", "Marcado para uma obra com patrimônio de afetação", "Permite configurar multa de distrato de até 50% sobre o valor pago."],
+  receipt: ["Modelo de recibo herdado pelas unidades.", "Layout padrão do ERP", "Define o layout dos recibos de parcelas e aditivos de venda."],
+  commissionReceipt: ["Modelo de recibo copiado no lançamento do sinal.", "Layout padrão do ERP", "Define o layout do recibo do sinal da venda."],
+  zipCode: ["Informe os oito dígitos e saia do campo para buscar o endereço.", "01001-000", "Preenche logradouro, bairro, cidade, UF e código IBGE quando disponíveis."],
+  ibge: ["Código de sete dígitos do município. Confira o valor preenchido pela consulta de CEP.", "3550308 para São Paulo (SP)", "Identifica o município do endereço no cadastro da obra."],
+  latitude: ["Posição norte ou sul em graus decimais.", "-23,550520", "Registra a coordenada geográfica da obra."],
+  longitude: ["Posição leste ou oeste em graus decimais.", "-46,633308", "Registra a coordenada geográfica da obra."],
+}
+
 function ProjectModal({
   bridge,
   mode,
@@ -8767,25 +8903,36 @@ function ProjectModal({
   onSubmit,
   loading,
 }) {
+  const formId = useId()
+  const FieldInfo = bridge?.components?.FieldInfo
+  const help = (field, label) => {
+    const [description, example, usage] = PROJECT_FIELD_HELP[field]
+    if (FieldInfo) return <FieldInfo label={label} description={description} example={example} usage={usage} />
+    return <InfoTip label={`Sobre ${label}`} floating insideLabel>{description} Exemplo: {example}. {usage}</InfoTip>
+  }
+  const fieldLabel = (field, label, required = false) => (
+    <span className={styles.projectFieldLabel}>{label}{required ? " *" : ""}{help(field, label)}</span>
+  )
+  const footer = (
+    <div className={styles.projectFormActions}>
+      <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+        Cancelar
+      </button>
+      <button type="submit" form={formId} className={styles.primaryButton} disabled={loading || zipLookup?.loading}>
+        {loading ? "Salvando..." : mode === "create" ? "Criar obra" : "Salvar alterações"}
+      </button>
+    </div>
+  )
+  const cnpjSpe = projectForm.cnpjSpe
+  const displayedCnpj = /^[A-Z0-9]{12}\d{2}$/i.test(cnpjSpe) ? maskSpeCnpj(cnpjSpe) : cnpjSpe
+
   return (
-    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
-      <section
-        className={styles.modalCard}
-        role="dialog"
-        aria-modal="true"
-        aria-label={mode === "create" ? "Nova obra" : "Editar obra"}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header className={styles.modalHeader}>
-          <h3>{mode === "create" ? "Nova obra" : "Editar obra"}</h3>
-          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
-            Fechar
-          </button>
-        </header>
-        <form className={styles.modalBody} onSubmit={onSubmit}>
-          <div className={styles.formGrid}>
+    <UnitBankSlipDialogFrame bridge={bridge} title={mode === "create" ? "Nova obra" : "Editar obra"} onClose={onClose} footer={footer}>
+      <form id={formId} onSubmit={onSubmit}>
+        <fieldset className={styles.projectForm} disabled={loading}>
+          <div className={`${styles.formGrid} ${styles.projectIdentityGrid}`}>
             <label className={styles.filterControl}>
-              <span>Código*</span>
+              {fieldLabel("code", "Código", true)}
               <input
                 type="text"
                 value={projectForm.code}
@@ -8793,8 +8940,8 @@ function ProjectModal({
                 required
               />
             </label>
-            <label className={styles.filterControl}>
-              <span>Nome*</span>
+            <label className={`${styles.filterControl} ${styles.projectWideField}`}>
+              <span>Nome da obra *</span>
               <input
                 type="text"
                 value={projectForm.name}
@@ -8803,7 +8950,7 @@ function ProjectModal({
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Status*</span>
+              {fieldLabel("status", "Status", true)}
               <select value={projectForm.status} onChange={(event) => onChange("status", event.target.value)} required>
                 {statusOptions.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -8813,7 +8960,7 @@ function ProjectModal({
               </select>
             </label>
             <label className={styles.filterControl}>
-              <span>Tipo*</span>
+              {fieldLabel("projectType", "Tipo", true)}
               <select
                 value={projectForm.projectType}
                 onChange={(event) => onChange("projectType", event.target.value)}
@@ -8827,32 +8974,37 @@ function ProjectModal({
               </select>
             </label>
             <label className={styles.filterControl}>
-              <span>Regime da obra</span>
+              {fieldLabel("developmentType", "Regime da obra")}
               <select value={projectForm.developmentType} onChange={(event) => onChange("developmentType", event.target.value)}>
                 <option value="">Selecione</option>
                 <option value="INCORPORATION">Incorporação</option>
                 <option value="CONTRACT_WORK">Empreitada</option>
               </select>
             </label>
-            <PersonPicker
-              label="Cliente/Contratante ERP"
-              value={projectForm.customerPersonId}
-              onChange={(value) => onChange("customerPersonId", value)}
-              knownPeople={people}
-              error={personLookupError}
-              emptyLabel="Buscar cliente pelo nome"
-            />
+            <div className={styles.projectWideField}>
+              <PersonPicker
+                label="Cliente/Contratante"
+                labelHelp={help("customer", "Cliente/Contratante")}
+                value={projectForm.customerPersonId}
+                onChange={(value) => onChange("customerPersonId", value)}
+                knownPeople={people}
+                error={personLookupError}
+                emptyLabel="Buscar cliente pelo nome"
+                disabled={loading}
+              />
+            </div>
             <label className={styles.filterControl}>
-              <span>CNPJ SPE</span>
+              {fieldLabel("cnpjSpe", "CNPJ SPE")}
               <input
                 type="text"
-                value={projectForm.cnpjSpe}
+                value={displayedCnpj}
                 onChange={(event) => onChange("cnpjSpe", event.target.value)}
                 placeholder="00.000.000/0000-00"
+                autoCapitalize="characters"
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Data de inicio</span>
+              {fieldLabel("startDate", "Data de início")}
               <input
                 type="date"
                 value={projectForm.startDate}
@@ -8860,7 +9012,7 @@ function ProjectModal({
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Data prevista de fim</span>
+              {fieldLabel("expectedEndDate", "Data prevista de fim")}
               <input
                 type="date"
                 value={projectForm.expectedEndDate}
@@ -8868,7 +9020,7 @@ function ProjectModal({
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Data real de fim</span>
+              {fieldLabel("actualEndDate", "Data real de fim")}
               <input
                 type="date"
                 value={projectForm.actualEndDate}
@@ -8887,10 +9039,16 @@ function ProjectModal({
 
           <h4 className={styles.sectionTitle}>Contrato de venda</h4>
           <div className={styles.formGrid}>
-            <ContractTemplateField bridge={bridge} value={projectForm.contractTemplateId} onChange={(value) => onChange("contractTemplateId", value)} disabled={loading} />
-            <label className={styles.filterControl}><span>Lote</span><input value={projectForm.lot} maxLength={120} onChange={(event) => onChange("lot", event.target.value)} /></label>
-            <label className={styles.filterControl}><span>Matrícula</span><input value={projectForm.registration} maxLength={120} onChange={(event) => onChange("registration", event.target.value)} /></label>
-            <label className={styles.filterControl}><span>Metragem do empreendimento (m²)</span><input type="number" min="0.01" step="0.01" value={projectForm.landArea} onChange={(event) => onChange("landArea", event.target.value)} /></label>
+            <ContractTemplateField
+              bridge={bridge}
+              value={projectForm.contractTemplateId}
+              onChange={(value) => onChange("contractTemplateId", value)}
+              disabled={loading}
+              labelHelp={fieldLabel("contractTemplate", "Template de contrato")}
+            />
+            <label className={styles.filterControl}>{fieldLabel("lot", "Lote")}<input value={projectForm.lot} maxLength={120} onChange={(event) => onChange("lot", event.target.value)} /></label>
+            <label className={styles.filterControl}>{fieldLabel("registration", "Matrícula")}<input value={projectForm.registration} maxLength={120} onChange={(event) => onChange("registration", event.target.value)} /></label>
+            <label className={styles.filterControl}>{fieldLabel("landArea", "M² Obra")}<input type="number" min="0.01" step="0.01" value={projectForm.landArea} onChange={(event) => onChange("landArea", event.target.value)} /></label>
           </div>
           <h4 className={styles.sectionTitle}>Configurações de distrato</h4>
           <p className={styles.metricHint}>
@@ -8904,7 +9062,7 @@ function ProjectModal({
               disabled={loading}
               onChange={(event) => onChange("hasSegregatedAssets", event.target.checked)}
             />
-            <span>Obra com patrimônio de afetação (multa sobre o pago até 50%)</span>
+            {fieldLabel("segregatedAssets", "Obra com patrimônio de afetação (multa sobre o pago até 50%)")}
           </label>
           <TerminationTermsEditor
             terms={projectForm.terminationDefaults}
@@ -8920,7 +9078,7 @@ function ProjectModal({
           </p>
           <div className={styles.formGrid}>
             <label className={styles.filterControl}>
-              <span>Recibo de parcela e aditivo</span>
+              {fieldLabel("receipt", "Recibo de parcela e aditivo")}
               <select
                 value={projectForm.receiptTemplateId}
                 onChange={(event) => onChange("receiptTemplateId", event.target.value)}
@@ -8934,7 +9092,7 @@ function ProjectModal({
               </select>
             </label>
             <label className={styles.filterControl}>
-              <span>Recibo do sinal</span>
+              {fieldLabel("commissionReceipt", "Recibo do sinal")}
               <select
                 value={projectForm.commissionReceiptTemplateId}
                 onChange={(event) => onChange("commissionReceiptTemplateId", event.target.value)}
@@ -8955,7 +9113,7 @@ function ProjectModal({
           <h4 className={styles.sectionTitle}>Endereço</h4>
           <div className={styles.formGrid}>
             <label className={styles.filterControl}>
-              <span>CEP</span>
+              {fieldLabel("zipCode", "CEP")}
               <input
                 type="text"
                 value={projectForm.addressZipCode}
@@ -9007,19 +9165,25 @@ function ProjectModal({
                 onChange={(event) => onChange("addressState", event.target.value)}
               />
             </label>
+            <label className={styles.filterControl}>
+              {fieldLabel("ibge", "Código IBGE do município")}
+              <input value={projectForm.addressIbge} onChange={(event) => onChange("addressIbge", event.target.value)}
+                inputMode="numeric" maxLength={7} placeholder="0000000" />
+            </label>
+            <label className={styles.filterControl}>
+              {fieldLabel("latitude", "Latitude")}
+              <input value={projectForm.addressLatitude} onChange={(event) => onChange("addressLatitude", event.target.value)}
+                placeholder="-23,550520" />
+            </label>
+            <label className={styles.filterControl}>
+              {fieldLabel("longitude", "Longitude")}
+              <input value={projectForm.addressLongitude} onChange={(event) => onChange("addressLongitude", event.target.value)}
+                placeholder="-46,633308" />
+            </label>
           </div>
-
-          <footer className={styles.modalFooter}>
-            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
-              Cancelar
-            </button>
-            <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Salvando..." : mode === "create" ? "Criar obra" : "Salvar alterações"}
-            </button>
-          </footer>
-        </form>
-      </section>
-    </div>
+        </fieldset>
+      </form>
+    </UnitBankSlipDialogFrame>
   )
 }
 

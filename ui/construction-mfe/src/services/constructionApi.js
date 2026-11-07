@@ -432,6 +432,7 @@ const toAddressView = (address) => ({
   district: address.neighborhood ?? "",
   city: address.city ?? "",
   state: address.state ?? "",
+  ibge: address.ibge ?? "",
 })
 
 const toNullableString = (value) => {
@@ -724,6 +725,17 @@ async function requestJson({ bridge, path, method = "GET", body = null, baseUrl 
 
 export const subcontractRequest = ({ bridge, path, method = "GET", body = null }) =>
   requestJson({ bridge, path: `/v1/construction${path}`, method, body })
+
+export function fetchProjectCoordinates({ bridge, projectId, address, signal }) {
+  const projectPath = projectId ? `/${encodeURIComponent(projectId)}` : ""
+  return requestJson({
+    bridge,
+    path: `/v1/construction/projects${projectPath}/geocode`,
+    method: "POST",
+    body: address,
+    signal,
+  })
+}
 
 export async function fetchConstructionAddressByZip({ bridge, zipCode }) {
   const normalizedZip = stripNonDigits(zipCode).slice(0, 8)

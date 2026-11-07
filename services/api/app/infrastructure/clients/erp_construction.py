@@ -1,15 +1,16 @@
 import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 
 from app.core.config import settings
-from app.domain.exceptions import ConstructionPersonOutsideCompanyError
+from app.domain.exceptions import ConstructionDomainError, ConstructionPersonOutsideCompanyError
 from app.domain.events.constants import ConstructionAggregateType, ConstructionEventType, ErpEventType, EventProducer
 from app.domain.events.contracts import EventEnvelope
 from app.infrastructure.events.json_event_serializer import JsonEventSerializer
+from app.schemas.construction.project import ConstructionProjectCoordinates
 
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,37 @@ class ErpConstructionClient:
 
     def __init__(self) -> None:
         self.serializer = JsonEventSerializer()
+
+    async def geocode_address(self, address, *, company_id, actor_user_id, project_id=None):
+        trace_id = uuid4().hex
+        context = f"trace_id={trace_id} company_id={company_id} actor_user_id={actor_user_id} project_id={project_id}"
+        logger.info(f"[project-geocoding] requesting_address_hub: {context}")
+        headers = {
+            "X-Service-Key": settings.erp_service_key or "",
+            "X-Company-ID": str(company_id),
+            "X-User-ID": str(actor_user_id),
+            "X-Trace-Id": trace_id,
+        }
+        try:
+            async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=14) as client:
+                response = await client.post(
+                    "/v1/internal/construction/geocode-address",
+                    headers=headers,
+                    json={**address.model_dump(mode="json"), "is_update": project_id is not None},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                result = ConstructionProjectCoordinates.model_validate(payload) if payload is not None else None
+        except (httpx.HTTPError, ValueError) as exc:
+            status_code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            logger.warning(f"[project-geocoding] address_hub_failed: {context} upstream_status={status_code} error={type(exc).__name__}")
+            raise ConstructionDomainError(
+                message="A busca de coordenadas está indisponível. Você pode informar Latitude e Longitude manualmente.",
+                status_code=503,
+                error_code="CONSTRUCTION_GEOCODING_UNAVAILABLE",
+            ) from exc
+        logger.info(f"[project-geocoding] address_hub_completed: {context} matched={result is not None}")
+        return result
 
     async def list_person_summaries(
         self,
