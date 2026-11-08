@@ -8903,6 +8903,11 @@ const PROJECT_FIELD_HELP = {
     "A Incorporadora Horizonte contratou a construção. Selecione a Incorporadora Horizonte.",
     "Registra quem contratou a obra. Se a própria SPE fez a contratação, selecione a SPE aqui.",
   ],
+  fiscalWorkCode: [
+    "Cadastro Nacional de Obras. Informe o número da obra com ou sem pontuação, se disponível.",
+    "Se a nota informar 00.123.45678/90, use esse número.",
+    "Ajuda a identificar as NFS-e emitidas para esta obra pelo código informado na nota.",
+  ],
   cnpjSpe: [
     "Informe o CNPJ da Sociedade de Propósito Específico, a empresa constituída para essa obra. Deixe em branco se a obra não tiver SPE.",
     "Se a SPE é a Residencial Ipê SPE Ltda., informe o CNPJ dela, como 12.345.678/0001-95.",
@@ -9086,7 +9091,7 @@ function ProjectModal({
               />
             </div>
             <label className={styles.filterControl}>
-              <span>Código fiscal da obra</span>
+              {fieldLabel("fiscalWorkCode", "CNO")}
               <input
                 type="text"
                 value={projectForm.fiscalWorkCode}
