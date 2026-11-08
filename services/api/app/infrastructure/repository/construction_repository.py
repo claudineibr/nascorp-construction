@@ -179,13 +179,13 @@ class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository)
         return result.scalars().first()
 
     async def flush_project_fiscal_code(self, project):
+        code = project.fiscal_work_code
         try:
             await self.session.flush()
         except IntegrityError as exc:
             cause = getattr(exc.orig, "__cause__", None)
             if getattr(cause, "constraint_name", None) != "uq_construction_projects_fiscal_work_code":
                 raise
-            code = project.fiscal_work_code
             await self.rollback()
             raise ConstructionDuplicateCodeError(resource_name="o código fiscal da obra", code=code) from exc
 
