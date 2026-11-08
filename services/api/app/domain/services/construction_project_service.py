@@ -293,6 +293,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             id=uuid4(),
             company_id=company_id,
             code=request.code.strip(),
+            fiscal_work_code=request.fiscal_work_code,
             name=request.name.strip(),
             description=request.description,
             status=request.status,
@@ -321,12 +322,16 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             ),
         )
         await self.repository.add(project)
+        if project.fiscal_work_code is not None:
+            await self.repository.flush_project_fiscal_code(project)
         project_created_event = self._build_project_created_event(project=project, actor_user_id=actor_user_id)
         dispatch_result = await self._dispatch_integration_event(event=project_created_event)
         if dispatch_result is not None and dispatch_result.response_event is not None:
             self._apply_cost_center_snapshot_from_event(project=project, event=dispatch_result.response_event)
 
         await self.repository.commit()
+        if project.fiscal_work_code is not None:
+            _logger.info(f"[project_fiscal_code] created: company_id={company_id} project_id={project.id}")
         await self.repository.refresh(project)
         return project
 
@@ -672,7 +677,11 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                 )
 
         self._apply_updates(entity=project, updates=updates)
+        if "fiscal_work_code" in updates:
+            await self.repository.flush_project_fiscal_code(project)
         await self.repository.commit()
+        if "fiscal_work_code" in updates:
+            _logger.info(f"[project_fiscal_code] updated: company_id={company_id} project_id={project.id}")
         await self.repository.refresh(project)
         return project
 

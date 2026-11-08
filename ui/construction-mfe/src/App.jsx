@@ -389,6 +389,7 @@ const parseProjectCoordinate = (value) => {
 
 const defaultProjectForm = {
   code: "",
+  fiscalWorkCode: "",
   name: "",
   description: "",
   status: "draft",
@@ -804,6 +805,7 @@ const defaultProcurementForm = {
 function toFormProject(project) {
   return {
     code: project.code ?? "",
+    fiscalWorkCode: project.fiscalWorkCode ?? "",
     name: project.name ?? "",
     description: project.description ?? "",
     status: project.status ?? "draft",
@@ -916,6 +918,7 @@ function buildUnitCreateForms(formUnit, currentUnits) {
 function toApiProject(formProject) {
   return {
     code: formProject.code,
+    fiscalWorkCode: formProject.fiscalWorkCode,
     name: formProject.name,
     description: formProject.description,
     status: formProject.status,
@@ -9073,6 +9076,15 @@ function ProjectModal({
                 disabled={loading}
               />
             </div>
+            <label className={styles.filterControl}>
+              <span>Código fiscal da obra</span>
+              <input
+                type="text"
+                value={projectForm.fiscalWorkCode}
+                onChange={(event) => onChange("fiscalWorkCode", event.target.value)}
+                maxLength={64}
+              />
+            </label>
             <label className={styles.filterControl}>
               {fieldLabel("cnpjSpe", "CNPJ SPE")}
               <input

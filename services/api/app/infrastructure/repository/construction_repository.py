@@ -8,9 +8,11 @@ from decimal import Decimal
 
 from sqlalchemy import Integer, and_, cast, delete, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.domain.exceptions import ConstructionDuplicateCodeError
 from app.domain.constants import (
     ConstructionInspectionStatus,
     ConstructionMeasurementStatus,
@@ -174,6 +176,17 @@ class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository)
             )
         )
         return result.scalars().first()
+
+    async def flush_project_fiscal_code(self, project):
+        try:
+            await self.session.flush()
+        except IntegrityError as exc:
+            cause = getattr(exc.orig, "__cause__", None)
+            if getattr(cause, "constraint_name", None) != "uq_construction_projects_fiscal_work_code":
+                raise
+            code = project.fiscal_work_code
+            await self.rollback()
+            raise ConstructionDuplicateCodeError(resource_name="o código fiscal da obra", code=code) from exc
 
     async def get_project_by_code(self, *, company_id: UUID, code: str) -> ConstructionProject | None:
         result = await self.session.execute(

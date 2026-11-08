@@ -2,10 +2,10 @@ import re
 from datetime import date, datetime
 from math import isfinite
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.constants import (
     ConstructionBlockStatus,
@@ -80,6 +80,21 @@ class ConstructionProjectAddressInput(BaseModel):
         return address
 
 
+def normalize_fiscal_work_code(value):
+    if value is None or not isinstance(value, str):
+        return value
+    value = value.strip()
+    if not value:
+        return None
+    normalized = re.sub(r"[./ -]", "", value)
+    if not re.fullmatch(r"[A-Za-z0-9]{1,50}", normalized):
+        raise ValueError("Informe um código fiscal da obra válido.")
+    return normalized.upper()
+
+
+FiscalWorkCode = Annotated[str | None, BeforeValidator(normalize_fiscal_work_code)]
+
+
 class ConstructionProjectCreate(ConstructionProjectAddressInput):
     code: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=1, max_length=255)
@@ -88,6 +103,7 @@ class ConstructionProjectCreate(ConstructionProjectAddressInput):
     development_type: Literal["INCORPORATION", "CONTRACT_WORK"] | None = None
     project_type: str = ConstructionProjectType.RESIDENTIAL_VERTICAL
     customer_person_id: UUID | None = None
+    fiscal_work_code: FiscalWorkCode = None
     cnpj_spe: str | None = Field(default=None, max_length=18)
     start_date: date | None = None
     expected_end_date: date | None = None
@@ -110,6 +126,7 @@ class ConstructionProjectUpdate(ConstructionProjectAddressInput):
     development_type: Literal["INCORPORATION", "CONTRACT_WORK"] | None = None
     project_type: str | None = None
     customer_person_id: UUID | None = None
+    fiscal_work_code: FiscalWorkCode = None
     cnpj_spe: str | None = Field(default=None, max_length=18)
     start_date: date | None = None
     expected_end_date: date | None = None
@@ -146,6 +163,7 @@ class ConstructionProjectResponse(BaseModel):
     project_type: str
     development_type: str | None = None
     customer_person_id: UUID | None = None
+    fiscal_work_code: str | None = None
     cnpj_spe: str | None = None
     address_json: dict[str, Any] | None = None
     start_date: date | None = None
