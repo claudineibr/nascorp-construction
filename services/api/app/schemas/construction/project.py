@@ -88,7 +88,7 @@ def normalize_fiscal_work_code(value):
         return None
     normalized = re.sub(r"[./ -]", "", value)
     if not re.fullmatch(r"[A-Za-z0-9]{1,50}", normalized):
-        raise ValueError("Informe um código fiscal da obra válido.")
+        raise ValueError("Informe um CNO válido.")
     return normalized.upper()
 
 

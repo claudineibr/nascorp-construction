@@ -187,7 +187,7 @@ class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository)
             if getattr(cause, "constraint_name", None) != "uq_construction_projects_fiscal_work_code":
                 raise
             await self.rollback()
-            raise ConstructionDuplicateCodeError(resource_name="o código fiscal da obra", code=code) from exc
+            raise ConstructionDuplicateCodeError(resource_name="outra obra", code=code, code_label="CNO") from exc
 
     async def list_fiscal_projects(self, company_id, project_id, page, page_size):
         conditions = [ConstructionProject.company_id == company_id, ConstructionProject.deleted_at.is_(None)]
