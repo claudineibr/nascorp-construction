@@ -168,17 +168,18 @@ export function SubcontractsCardTitle() {
   );
 }
 
-export function SubcontractsPanel({ bridge, projectId }) {
+export function SubcontractsPanel({ bridge, projectId, renderActions }) {
   return (
     <SubcontractsWorkspace
       key={`${bridge.companyContext?.companyId}:${projectId}:${bridge.token}`}
       bridge={bridge}
       projectId={projectId}
+      renderActions={renderActions}
     />
   );
 }
 
-function SubcontractsWorkspace({ bridge, projectId }) {
+function SubcontractsWorkspace({ bridge, projectId, renderActions }) {
   const canCreate = Boolean(bridge?.canCreate?.("construction_measurements"));
   const canUpdate = Boolean(bridge?.canUpdate?.("construction_measurements"));
   const [rows, setRows] = useState([]);
@@ -352,7 +353,7 @@ function SubcontractsWorkspace({ bridge, projectId }) {
       : "";
   return (
     <section className={styles.panel}>
-      <div className={styles.toolbar}>
+      {renderActions(<>
         {canCreate && (
           <button
             type="button"
@@ -378,7 +379,7 @@ function SubcontractsWorkspace({ bridge, projectId }) {
         >
           <RefreshCw size={16} aria-hidden="true" />
         </button>
-      </div>
+      </>)}
       {error && (
         <p role="alert" className={styles.alertText}>
           {error}

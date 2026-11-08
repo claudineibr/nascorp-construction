@@ -42,6 +42,7 @@ import {
 } from "./features/measurementActions.js"
 import { MeasurementPayableLinkModal } from "./features/measurementPayable/MeasurementPayableLinkModal.jsx"
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
+import { createPortal } from "react-dom"
 import {
   BarChart3,
   Building2,
@@ -101,7 +102,7 @@ import { ServiceTemplatesPanel } from "./features/serviceTemplates/ServiceTempla
 import { ProjectServicesPanel } from "./features/projectServices/ProjectServicesPanel.jsx"
 import { ProjectFilesPanel } from "./features/projectFiles/ProjectFilesPanel.jsx"
 import { SubcontractsCardTitle, SubcontractsPanel } from "./features/subcontracts/SubcontractsPanel.jsx"
-import { SharedPayablesSection } from "./features/sharedPayables/SharedPayablesSection.jsx"
+import { SharedPayablesCardTitle, SharedPayablesSection } from "./features/sharedPayables/SharedPayablesSection.jsx"
 import { ContractMeasurementFields } from "./features/subcontracts/ContractMeasurementFields.jsx"
 import { UnitContractPanel } from "./features/unitContracts/UnitContractPanel.jsx"
 import { UnitTermPanel } from "./features/unitContracts/UnitTermPanel.jsx"
@@ -288,6 +289,7 @@ const projectDetailTabs = [
   { id: "procurement", label: "Requisições", icon: PackageSearch },
   { id: "purchaseOrders", label: "Compras", icon: ShoppingCart },
   { id: "accountsPayable", label: "Contas a pagar", icon: HandCoins },
+  { id: "accountsReceivable", label: "Contas a receber", icon: HandCoins },
   { id: "subcontracts", label: "Empreitada", icon: FileText },
   { id: "files", label: "Arquivos", icon: Paperclip },
   { id: "serviceInvoices", label: "Notas fiscais", icon: FileText },
@@ -1320,6 +1322,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const ProjectPurchaseOrders = bridge.canRead?.("purchase_orders") ? bridge.components?.ProjectPurchaseOrders ?? null : null
   const ProjectServiceInvoices = bridge.canRead?.("fiscal_documents") ? bridge.components?.ProjectServiceInvoices : null
   const ProjectAccountsPayable = bridge.canRead?.("accounts_payable") && bridge.canRead?.("construction_projects") ? bridge.components?.ProjectAccountsPayable ?? null : null
+  const ProjectAccountsReceivable = bridge.canRead?.("receivable") && bridge.canRead?.("construction_projects") ? bridge.components?.ProjectAccountsReceivable ?? null : null
   const [restoredProject, setRestoredProject] = useState(null)
   useEffect(() => {
     if (!bridge.initialProjectId) return
@@ -1329,16 +1332,14 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       setRestoredProject(project)
       setActiveProjectId(project.id)
       setViewMode("projectDetail")
-      setProjectDetailTab(
-        bridge.initialProjectTab === "accountsPayable" && ProjectAccountsPayable
-          ? "accountsPayable"
-          : bridge.initialProjectTab === "units"
-            ? "units"
-            : "overview",
-      )
+      const requestedTab = bridge.initialProjectTab
+      const canRestoreTab = requestedTab === "units" ||
+        (requestedTab === "accountsPayable" && ProjectAccountsPayable) ||
+        (requestedTab === "accountsReceivable" && ProjectAccountsReceivable)
+      setProjectDetailTab(canRestoreTab ? requestedTab : "overview")
     }).catch((error) => { if (active) bridge.feedback?.error?.(error.message) })
     return () => { active = false }
-  }, [bridge, ProjectAccountsPayable])
+  }, [bridge, ProjectAccountsPayable, ProjectAccountsReceivable])
   const [viewMode, setViewMode] = useState("projects")
   const [projectDetailTab, setProjectDetailTab] = useState("overview")
   const [activeProjectId, setActiveProjectId] = useState(null)
@@ -1360,7 +1361,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false)
   const [projectModalMode, setProjectModalMode] = useState("create")
-  const [projectInvoicesRevision, setProjectInvoicesRevision] = useState(0)
+  const [projectDetailRevision, setProjectDetailRevision] = useState(0)
   const [editingProjectId, setEditingProjectId] = useState(null)
   const [projectForm, setProjectForm] = useState(defaultProjectForm)
   const projectZipRequest = useRef(0)
@@ -2032,7 +2033,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }
 
   const reloadProjectDetail = async () => {
-    setProjectInvoicesRevision((value) => value + 1)
+    setProjectDetailRevision((value) => value + 1)
     await Promise.all([
       loadProjects(),
       loadBlocks(),
@@ -4548,6 +4549,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           <section className={styles.projectTabCard}>
             <nav className={styles.projectTabList} aria-label="Abas da obra">
               {projectDetailTabs.filter((tab) => (tab.id !== "purchaseOrders" || ProjectPurchaseOrders) && (tab.id !== "accountsPayable" || ProjectAccountsPayable) &&
+                (tab.id !== "accountsReceivable" || ProjectAccountsReceivable) &&
                 (tab.id !== "serviceInvoices" || ProjectServiceInvoices)).map((tab) => {
                 const Icon = tab.icon
                 return (
@@ -4569,15 +4571,16 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           {projectDetailTab === "serviceInvoices" && ProjectServiceInvoices ? (
             <DomainCard title="Notas fiscais da obra"
               content={<ProjectServiceInvoices key={[bridge.companyContext?.companyId, selectedProject.id].join(":")}
-                projectId={selectedProject.id} reloadRevision={projectInvoicesRevision} />} />
+                projectId={selectedProject.id} reloadRevision={projectDetailRevision} />} />
           ) : null}
 
           {projectDetailTab === "files" ? (
             <DomainCard
               title="Arquivos da obra"
-              subtitle="Selecione um ou mais arquivos de até 20 MB cada. Os arquivos ficam armazenados no S3."
-              content={<ProjectFilesPanel key={`${bridge.companyContext?.companyId}-${selectedProject.id}`} bridge={bridge}
-                projectId={selectedProject.id} RowActionsMenu={RowActionsMenu} ConfirmModal={ConfirmModal} />}
+              subtitle="Envie um ou mais arquivos de até 20 MB cada."
+              renderContent={(renderActions) => <ProjectFilesPanel key={`${bridge.companyContext?.companyId}-${selectedProject.id}`}
+                bridge={bridge} projectId={selectedProject.id} RowActionsMenu={RowActionsMenu}
+                ConfirmModal={ConfirmModal} renderActions={renderActions} />}
             />
           ) : null}
 
@@ -4760,7 +4763,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
             <DomainCard
               title="Serviços da obra"
               subtitle="Serviços que esta obra vai executar. Com lista, as medições só oferecem estes serviços; sem lista, o catálogo inteiro."
-              content={<ProjectServicesPanel bridge={bridge} projectId={activeProjectId} />}
+              renderContent={(renderActions) => <ProjectServicesPanel bridge={bridge}
+                projectId={activeProjectId} renderActions={renderActions} />}
             />
           ) : null}
 
@@ -4803,24 +4807,36 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                   </InfoTip>
                 </>
               }
-              content={<ProjectPurchaseOrders projectId={activeProjectId} />}
+              renderContent={(renderActions) => <ProjectPurchaseOrders projectId={activeProjectId}
+                renderActions={renderActions} />}
             />
           ) : null}
 
           {projectDetailTab === "accountsPayable" && ProjectAccountsPayable ? (
             <DomainCard title="Contas a pagar"
               subtitle="Parcelas da obra e das unidades, incluindo títulos vinculados aos pedidos de compra."
-              content={<ProjectAccountsPayable projectId={activeProjectId} defaultCostCenterId={selectedProject?.analyticCostCenterId} />} />
+              renderContent={(renderActions) => <ProjectAccountsPayable projectId={activeProjectId}
+                defaultCostCenterId={selectedProject?.analyticCostCenterId} renderActions={renderActions} />} />
+          ) : null}
+
+          {projectDetailTab === "accountsReceivable" && ProjectAccountsReceivable ? (
+            <DomainCard title="Contas a receber"
+              subtitle="Parcelas vinculadas aos centros de custo da obra e das unidades."
+              renderContent={(renderActions) => <ProjectAccountsReceivable projectId={activeProjectId}
+                projectCostCenterId={selectedProject.syntheticCostCenterId || selectedProject.analyticCostCenterId}
+                reloadRevision={projectDetailRevision} renderActions={renderActions} />} />
           ) : null}
 
           {projectDetailTab === "subcontracts" ? <DomainCard title={<SubcontractsCardTitle />}
             subtitle="Planilha liberada, medições por quantidade e saldo contratado."
-            content={<SubcontractsPanel bridge={bridge} projectId={activeProjectId} />} /> : null}
+            renderContent={(renderActions) => <SubcontractsPanel bridge={bridge}
+              projectId={activeProjectId} renderActions={renderActions} />} /> : null}
 
           {projectDetailTab === "subcontracts" ? (
             <DomainCard
-              title="Títulos da empreitada"
-              content={<SharedPayablesSection bridge={bridge} projectId={activeProjectId} />}
+              title={<SharedPayablesCardTitle />}
+              renderContent={(renderActions) => <SharedPayablesSection bridge={bridge}
+                projectId={activeProjectId} renderActions={renderActions} />}
             />
           ) : null}
 
@@ -5156,7 +5172,10 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   )
 }
 
-function DomainCard({ title, subtitle, content, footer = null, action = null }) {
+function DomainCard({ title, subtitle, content, renderContent, footer = null, action = null }) {
+  const [actionTarget, setActionTarget] = useState(null)
+  const renderActions = (actions) => actionTarget ? createPortal(actions, actionTarget) : null
+
   return (
     <div className={`${styles.card} ${styles.tableCard}`}>
       <div className={styles.tableHeaderRow}>
@@ -5164,9 +5183,10 @@ function DomainCard({ title, subtitle, content, footer = null, action = null }) 
           {title ? <h2>{title}</h2> : null}
           {subtitle ? <p className={styles.textMuted}>{subtitle}</p> : null}
         </div>
-        {action ? <div className={styles.tableHeaderActions}>{action}</div> : null}
+        {action || renderContent ? <div ref={renderContent ? setActionTarget : undefined}
+          className={styles.tableHeaderActions}>{action}</div> : null}
       </div>
-      {content}
+      {renderContent ? renderContent(renderActions) : content}
       {footer ? <div className={styles.paginationSlot}>{footer}</div> : null}
     </div>
   )

@@ -137,7 +137,19 @@ function SharedPayableOrdersModal({ bridge, projectId, payable, canUpdate, onClo
   )
 }
 
-export function SharedPayablesSection({ bridge, projectId }) {
+export function SharedPayablesCardTitle() {
+  return <>
+    Títulos da empreitada
+    <InfoTip floating label="Sobre os documentos da empreitada e as OS cobertas">
+      Esta lista reúne os títulos que pagam as OS da obra, incluindo notas fiscais e documentos não fiscais.
+      Vincular OS preserva o tipo e o número cadastrados em Contas a Pagar. A coluna Documento mostra o número
+      e o tipo original. Número não informado indica que o título está sem número no cadastro.
+      Os títulos das medições são vinculados no próprio contrato e também aparecem aqui.
+    </InfoTip>
+  </>
+}
+
+export function SharedPayablesSection({ bridge, projectId, renderActions }) {
   const canUpdate = Boolean(bridge?.canUpdate?.("construction_measurements"))
   const canReadPayable = Boolean(bridge?.canRead?.("accounts_payable"))
   const [rows, setRows] = useState([])
@@ -164,32 +176,24 @@ export function SharedPayablesSection({ bridge, projectId }) {
 
   return (
     <section className={styles.section}>
-      <div className={styles.toolbar}>
-        <InfoTip floating label="Sobre os documentos da empreitada e as OS cobertas">
-          Esta lista reúne os títulos que pagam as OS da obra, incluindo notas fiscais e documentos não fiscais.
-          Vincular OS não altera o tipo nem o número cadastrado no Contas a Pagar. A coluna Documento mostra o número
-          e o tipo original; Número não informado indica que o título está sem número no cadastro.
-          Os títulos das medições de contrato são vinculados no próprio contrato e também aparecem aqui.
-        </InfoTip>
-        <div className={styles.toolbarActions}>
-          <button
-            type="button"
-            className={styles.iconButton}
-            onClick={load}
-            disabled={loading}
-            title="Atualizar lista"
-            aria-label="Atualizar lista"
-          >
-            <RefreshCw size={16} aria-hidden="true" />
+      {renderActions(<>
+        <button
+          type="button"
+          className={styles.iconButton}
+          onClick={load}
+          disabled={loading}
+          title="Atualizar lista"
+          aria-label="Atualizar lista"
+        >
+          <RefreshCw size={16} aria-hidden="true" />
+        </button>
+        {canUpdate ? (
+          <button type="button" className={appStyles.primaryButton} onClick={() => setLinkTarget({ payable: null })}>
+            <Link2 size={16} aria-hidden="true" />
+            Vincular OS sem valor
           </button>
-          {canUpdate ? (
-            <button type="button" className={appStyles.primaryButton} onClick={() => setLinkTarget({ payable: null })}>
-              <Link2 size={16} aria-hidden="true" />
-              Vincular OS sem valor
-            </button>
-          ) : null}
-        </div>
-      </div>
+        ) : null}
+      </>)}
       {error ? (
         <p role="alert" className={styles.error}>
           {error}

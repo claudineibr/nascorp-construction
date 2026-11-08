@@ -10,16 +10,18 @@ const formatFileSize = (bytes) => bytes < 1024 * 1024
   ? `${sizeFormat.format(Math.max(bytes / 1024, 0.01))} KB`
   : `${sizeFormat.format(bytes / 1024 / 1024)} MB`
 
-export function ProjectFilesPanel({ bridge, projectId, RowActionsMenu, ConfirmModal }) {
+export function ProjectFilesPanel({ bridge, projectId, RowActionsMenu, ConfirmModal, renderActions }) {
   const [result, setResult] = useState({ items: [], total: 0, total_pages: 0 })
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [loading, setLoading] = useState(true)
   const [failed, setFailed] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState(null)
   const [deleting, setDeleting] = useState(null)
   const [revision, setRevision] = useState(0)
   const input = useRef(null)
+  const activeUpload = useRef(null)
   const canRead = bridge?.canRead?.("construction_projects") === true
   const canCreate = bridge?.canCreate?.("construction_projects") === true
   const canDelete = bridge?.canDelete?.("construction_projects") === true
@@ -27,6 +29,8 @@ export function ProjectFilesPanel({ bridge, projectId, RowActionsMenu, ConfirmMo
   const Actions = bridge.components?.RowActionsMenu ?? RowActionsMenu
   const report = useCallback((error) => bridge.feedback?.error?.(error.message), [bridge])
   const refresh = () => setRevision((value) => value + 1)
+
+  useEffect(() => () => activeUpload.current?.abort(), [])
 
   useEffect(() => {
     if (!canRead) return undefined
@@ -46,18 +50,36 @@ export function ProjectFilesPanel({ bridge, projectId, RowActionsMenu, ConfirmMo
   const upload = async (event) => {
     const files = Array.from(event.target.files ?? [])
     event.target.value = ""
-    if (!files.length || busy) return
+    if (!files.length || activeUpload.current) return
     if (files.some((file) => !file.size || file.size > 20 * 1024 * 1024)) {
       report(new Error("Selecione arquivos não vazios de até 20 MB cada."))
       return
     }
-    setBusy(true)
+    const controller = new AbortController()
+    activeUpload.current = controller
     let sent = 0
     try {
-      for (const file of files) { await uploadProjectFile(bridge, projectId, file); sent += 1 }
-      bridge.feedback?.success?.(`${sent} arquivo(s) enviado(s).`)
-    } catch (error) { report(new Error(`${sent} de ${files.length} arquivo(s) enviado(s). ${error.message}`)) }
-    finally { setBusy(false); setPage(1); refresh() }
+      for (const file of files) {
+        await uploadProjectFile(bridge, projectId, file, {
+          signal: controller.signal,
+          onProgress: (percent) => {
+            if (!controller.signal.aborted) setUploadStatus({ name: file.name, index: sent + 1, total: files.length, percent })
+          },
+        })
+        sent += 1
+      }
+      if (!controller.signal.aborted) bridge.feedback?.success?.(`${sent} arquivo(s) enviado(s).`)
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        report(new Error(`${sent} de ${files.length} arquivo(s) enviado(s). ${error.message}`))
+      }
+    } finally {
+      activeUpload.current = null
+      if (!controller.signal.aborted) {
+        setUploadStatus(null)
+        refresh()
+      }
+    }
   }
 
   const download = async (file) => {
@@ -81,16 +103,25 @@ export function ProjectFilesPanel({ bridge, projectId, RowActionsMenu, ConfirmMo
 
   if (!canRead) return <p>Você não tem permissão para consultar arquivos desta obra.</p>
   return <section className={styles.panel}>
-    <div className={styles.actions}>
+    {renderActions(<>
       <button type="button" className={styles.secondaryButton} disabled={busy || loading} onClick={refresh}>
         <RefreshCcw size={16} aria-hidden="true" />{failed ? "Tentar novamente" : "Atualizar"}
       </button>
-      {canCreate && <button type="button" className={styles.primaryButton} disabled={busy} onClick={() => input.current?.click()}>
-        <Upload size={16} aria-hidden="true" />{busy ? "Aguarde..." : "Enviar arquivos"}
+      {canCreate && <button type="button" className={styles.primaryButton} disabled={Boolean(uploadStatus)}
+        onClick={() => input.current?.click()}>
+        <Upload size={16} aria-hidden="true" />{uploadStatus ? "Enviando arquivos…" : "Enviar arquivos"}
       </button>}
-      {canCreate && <input ref={input} className={styles.fileInput} type="file" multiple
-        aria-label="Selecionar arquivos da obra" onChange={upload} disabled={busy} />}
-    </div>
+    </>)}
+    {canCreate && <input ref={input} className={styles.fileInput} type="file" multiple
+      aria-label="Selecionar arquivos da obra" onChange={upload} disabled={Boolean(uploadStatus)} />}
+    {uploadStatus && <div className={styles.uploadStatus}>
+      <div role="status">
+        <strong>{uploadStatus.percent === 100 ? "Confirmando envio" : "Enviando arquivo"} {uploadStatus.index} de {uploadStatus.total}</strong>
+        <span>{uploadStatus.name}</span>
+      </div>
+      <progress max={100} value={uploadStatus.percent ?? undefined} aria-label="Progresso do envio" />
+      <small>Mantenha esta aba aberta até a confirmação.</small>
+    </div>}
     <div className={styles.tableWrapper} aria-busy={loading}>
       <table className={styles.table}>
         <thead><tr><th>Nome</th><th>Tamanho</th><th>Enviado em</th><th>Ações</th></tr></thead>
@@ -114,7 +145,7 @@ export function ProjectFilesPanel({ bridge, projectId, RowActionsMenu, ConfirmMo
         onPageChange={setPage} onPageSizeChange={setPageSize} />
     </div>
     {deleting && <ConfirmModal bridge={bridge} title="Remover arquivo" danger
-      message={`Remover “${deleting.file_name}” da obra e do S3? Esta ação não pode ser desfeita.`}
+      message={`Confirma a remoção de “${deleting.file_name}” da obra? A remoção é permanente.`}
       confirmLabel="Remover" loading={busy} onCancel={() => { if (!busy) setDeleting(null) }} onConfirm={remove} />}
   </section>
 }

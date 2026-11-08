@@ -35,7 +35,7 @@ async function fetchProjectServices({ bridge, projectId }) {
   }
 }
 
-export function ProjectServicesPanel({ bridge, projectId }) {
+export function ProjectServicesPanel({ bridge, projectId, renderActions }) {
   const [services, setServices] = useState([])
   const [savedIds, setSavedIds] = useState(() => new Set())
   const [draftIds, setDraftIds] = useState(() => new Set())
@@ -167,6 +167,22 @@ export function ProjectServicesPanel({ bridge, projectId }) {
 
   return (
     <section className={catalogStyles.panel}>
+      {renderActions(error ? (
+        <button type="button" className={appStyles.secondaryButton} onClick={load} disabled={loading || busy}>
+          <RefreshCw size={15} aria-hidden="true" />
+          Tentar novamente
+        </button>
+      ) : <>
+        {canImport && <button type="button" className={appStyles.secondaryButton}
+          onClick={() => setImportOpen(true)} disabled={loading || busy}>
+          <Upload size={16} aria-hidden="true" />
+          Enviar FVS (criar serviço)
+        </button>}
+        <button type="button" className={catalogStyles.iconButton} onClick={load} disabled={loading || busy}
+          title="Recarregar" aria-label="Recarregar">
+          <RefreshCw size={15} aria-hidden="true" />
+        </button>
+      </>)}
       <p className={styles.notice}>
         {savedIds.size
           ? `As medições desta obra só oferecem os ${savedIds.size} serviço(s) marcados.`
@@ -176,13 +192,7 @@ export function ProjectServicesPanel({ bridge, projectId }) {
       {loading ? (
         <p className={catalogStyles.loading}>Carregando serviços da obra...</p>
       ) : error ? (
-        <div className={styles.stateBox}>
-          <p className={catalogStyles.empty}>{error}</p>
-          <button type="button" className={appStyles.secondaryButton} onClick={load}>
-            <RefreshCw size={15} aria-hidden="true" />
-            Tentar novamente
-          </button>
-        </div>
+        <p className={catalogStyles.empty}>{error}</p>
       ) : (
         <div className={styles.selector}>
           <div className={styles.toolbar}>
@@ -200,29 +210,6 @@ export function ProjectServicesPanel({ bridge, projectId }) {
             <span className={styles.counter}>
               {draftIds.size} de {services.length} marcado(s)
             </span>
-            <div className={styles.toolbarActions}>
-              {canImport ? (
-                <button
-                  type="button"
-                  className={appStyles.secondaryButton}
-                  onClick={() => setImportOpen(true)}
-                  disabled={busy}
-                >
-                  <Upload size={16} aria-hidden="true" />
-                  Enviar FVS (criar serviço)
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className={catalogStyles.iconButton}
-                onClick={load}
-                disabled={busy}
-                title="Recarregar"
-                aria-label="Recarregar"
-              >
-                <RefreshCw size={15} aria-hidden="true" />
-              </button>
-            </div>
           </div>
 
           {canEdit ? (

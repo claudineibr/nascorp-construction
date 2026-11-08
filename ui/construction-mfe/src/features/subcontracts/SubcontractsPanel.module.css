@@ -222,12 +222,6 @@
   color: var(--color-text-muted);
   text-align: center;
 }
-.toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.6rem;
-}
 .iconButton {
   display: inline-flex;
   flex: none;
