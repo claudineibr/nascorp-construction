@@ -47,6 +47,7 @@ class ConstructionProject(PreservedHistory, Base):
             name="uq_construction_projects_company_code"
             ),
         UniqueConstraint("company_id", "fiscal_work_code", name="uq_construction_projects_fiscal_work_code"),
+        CheckConstraint("nfse_receivable_due_days BETWEEN 0 AND 365", name="ck_project_nfse_receivable_due_days"),
         CheckConstraint("development_type IN ('INCORPORATION', 'CONTRACT_WORK')", name="ck_project_development_type"),
         {
             "schema": CONSTRUCTION_SCHEMA
@@ -57,6 +58,7 @@ class ConstructionProject(PreservedHistory, Base):
     company_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
     code: Mapped[str] = mapped_column(String(50), nullable=False)
     fiscal_work_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    nfse_receivable_due_days = mapped_column(Integer, nullable=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default=ConstructionProjectStatus.DRAFT)

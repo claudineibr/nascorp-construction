@@ -297,6 +297,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             company_id=company_id,
             code=request.code.strip(),
             fiscal_work_code=request.fiscal_work_code,
+            nfse_receivable_due_days=request.nfse_receivable_due_days,
             name=request.name.strip(),
             description=request.description,
             status=request.status,
@@ -335,6 +336,8 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         await self.repository.commit()
         if project.fiscal_work_code is not None:
             _logger.info(f"[project_fiscal_code] created: company_id={company_id} project_id={project.id}")
+        if project.nfse_receivable_due_days is not None:
+            _logger.info(f"[project_nfse_receivable] configured: company_id={company_id} project_id={project.id} actor_id={actor_user_id} enabled=True")
         await self.repository.refresh(project)
         return project
 
@@ -692,6 +695,9 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         await self.repository.commit()
         if "fiscal_work_code" in updates:
             _logger.info(f"[project_fiscal_code] updated: company_id={company_id} project_id={project.id}")
+        if "nfse_receivable_due_days" in updates:
+            _logger.info(f"[project_nfse_receivable] configured: company_id={company_id} project_id={project.id} "
+                         f"actor_id={actor_user_id} enabled={project.nfse_receivable_due_days is not None}")
         await self.repository.refresh(project)
         return project
 

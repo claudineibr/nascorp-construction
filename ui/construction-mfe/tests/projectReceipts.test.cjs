@@ -17,13 +17,18 @@ const context = {
   require: req,
   styles: new Proxy({}, { get: (_, key) => key }),
   statusOptions: [], projectTypeOptions: [],
+  useId: React.useId,
+  UnitBankSlipDialogFrame: ({ children }) => children,
+  InfoTip: () => null,
   PersonPicker: () => null,
+  TerminationTermsEditor: () => null,
   ContractTemplateField: () => React.createElement("label", { className: "field" }, "Template de contrato", React.createElement("input")),
   RowActionsMenu: ({ actions }) => { menus.push(actions); return null },
   formatMoney: String, formatDate: String, NOTHING_LEFT_TO_CHARGE: "Sem saldo",
 }
 for (const icon of ["RefreshCw", "Plus", "CheckCircle", "FileText", "Trash2"]) context[icon] = () => null
 vm.createContext(context)
+vm.runInContext(source.slice(source.indexOf("const PROJECT_FIELD_HELP ="), source.indexOf("function ProjectModal(")), context)
 for (const name of ["ProjectModal", "UnitCommissionsPanel"]) {
   const start = source.indexOf(`function ${name}(`)
   const end = source.indexOf("\nfunction ", start + 1)
@@ -36,8 +41,39 @@ test("project address starts with CEP and retains lookup on blur", () => {
   }))
   const document = new JSDOM(html).window.document
   const section = [...document.querySelectorAll("h4")].find(element => element.textContent === "Endereço")
-  assert.deepEqual([...section.nextElementSibling.querySelectorAll("label span")].map(element => element.textContent), ["CEP", "Logradouro", "Número", "Bairro", "Cidade", "UF"])
+  assert.deepEqual(
+    [...section.nextElementSibling.querySelectorAll("label span")].map(element => element.textContent),
+    ["CEP", "Logradouro", "Número", "Bairro", "Cidade", "UF", "Código IBGE do município", "Latitude", "Longitude"],
+  )
   assert.equal(section.nextElementSibling.querySelector("input").placeholder, "00000-000")
+})
+
+test("project groups subjects and shows the business-day field only for enabled billing", () => {
+  for (const [canConfigureNfseReceivables, autoNfseReceivable] of [[true, true], [true, false], [false, true]]) {
+    const html = renderToStaticMarkup(React.createElement(context.ProjectModal, {
+      mode: "edit", canConfigureNfseReceivables,
+      projectForm: { autoNfseReceivable, nfseReceivableDueDays: "0" }, people: [],
+    }))
+    const document = new JSDOM(html).window.document
+    const groups = [...document.querySelectorAll("fieldset > section[aria-labelledby]")]
+    assert.deepEqual(
+      groups.map(group => document.getElementById(group.getAttribute("aria-labelledby")).textContent),
+      ["Identificação", "Prazos", "Dados fiscais e faturamento", "Contrato de venda", "Configurações de distrato",
+        "Modelos de recibo", "Endereço"],
+    )
+    const billing = groups[2]
+    assert.match(billing.textContent, /CNO/)
+    assert.equal(Boolean(billing.querySelector('input[type="checkbox"]')), canConfigureNfseReceivables)
+    const days = billing.querySelector('input[type="number"]')
+    assert.equal(Boolean(days), canConfigureNfseReceivables && autoNfseReceivable)
+    if (days) {
+      assert.match(days.closest("label").textContent, /Dias úteis para vencimento/)
+      assert.equal(days.value, "0")
+      assert.equal(days.min, "0")
+      assert.equal(days.max, "365")
+      assert.equal(days.required, true)
+    }
+  }
 })
 
 test("signal receipt requires payment, respects read access and targets its own row", () => {

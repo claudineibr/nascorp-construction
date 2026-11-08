@@ -104,6 +104,7 @@ class ConstructionProjectCreate(ConstructionProjectAddressInput):
     project_type: str = ConstructionProjectType.RESIDENTIAL_VERTICAL
     customer_person_id: UUID | None = None
     fiscal_work_code: FiscalWorkCode = None
+    nfse_receivable_due_days: int | None = Field(default=None, ge=0, le=365, strict=True)
     cnpj_spe: str | None = Field(default=None, max_length=18)
     start_date: date | None = None
     expected_end_date: date | None = None
@@ -128,6 +129,7 @@ class ConstructionProjectUpdate(ConstructionProjectAddressInput):
     project_type: str | None = None
     customer_person_id: UUID | None = None
     fiscal_work_code: FiscalWorkCode = None
+    nfse_receivable_due_days: int | None = Field(default=None, ge=0, le=365, strict=True)
     cnpj_spe: str | None = Field(default=None, max_length=18)
     start_date: date | None = None
     expected_end_date: date | None = None
@@ -149,6 +151,7 @@ class FiscalProjectResponse(BaseModel):
     name: str
     code: str
     fiscal_work_code: str | None
+    nfse_receivable_due_days: int | None = None
     analytic_cost_center_id: UUID | None
     customer_person_id: UUID | None
 
@@ -184,6 +187,7 @@ class ConstructionProjectResponse(BaseModel):
     development_type: str | None = None
     customer_person_id: UUID | None = None
     fiscal_work_code: str | None = None
+    nfse_receivable_due_days: int | None = None
     cnpj_spe: str | None = None
     address_json: dict[str, Any] | None = None
     start_date: date | None = None

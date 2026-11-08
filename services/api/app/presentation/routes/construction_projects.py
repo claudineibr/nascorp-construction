@@ -150,6 +150,14 @@ async def get_project_service(
     )
 
 
+def require_nfse_receivable_configuration(ctx, request_data):
+    if "nfse_receivable_due_days" in request_data.model_fields_set and not (
+        ctx.can("receivable", PermissionAction.CREATE) and ctx.can("fiscal_documents", PermissionAction.READ)
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="A configuração exige acesso a Documentos fiscais e permissão para criar contas a receber.")
+
+
 @router.post(
     "/projects",
     response_model=ConstructionProjectResponse,
@@ -160,6 +168,7 @@ async def create_project(
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.CREATE)),
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionProjectResponse:
+    require_nfse_receivable_configuration(ctx, request_data)
     try:
         project = await service.create_project(
             company_id=ctx.company_id,
@@ -297,6 +306,7 @@ async def update_project(
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.PROJECTS, PermissionAction.UPDATE)),
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionProjectResponse:
+    require_nfse_receivable_configuration(ctx, request_data)
     try:
         project = await service.update_project(
             company_id=ctx.company_id, project_id=project_id, request=request_data, actor_user_id=ctx.user_id

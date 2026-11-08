@@ -391,6 +391,8 @@ const parseProjectCoordinate = (value) => {
 const defaultProjectForm = {
   code: "",
   fiscalWorkCode: "",
+  autoNfseReceivable: false,
+  nfseReceivableDueDays: "",
   name: "",
   description: "",
   status: "draft",
@@ -807,6 +809,8 @@ function toFormProject(project) {
   return {
     code: project.code ?? "",
     fiscalWorkCode: project.fiscalWorkCode ?? "",
+    autoNfseReceivable: project.nfseReceivableDueDays != null,
+    nfseReceivableDueDays: project.nfseReceivableDueDays == null ? "" : String(project.nfseReceivableDueDays),
     name: project.name ?? "",
     description: project.description ?? "",
     status: project.status ?? "draft",
@@ -1356,6 +1360,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false)
   const [projectModalMode, setProjectModalMode] = useState("create")
+  const [projectInvoicesRevision, setProjectInvoicesRevision] = useState(0)
   const [editingProjectId, setEditingProjectId] = useState(null)
   const [projectForm, setProjectForm] = useState(defaultProjectForm)
   const projectZipRequest = useRef(0)
@@ -1435,6 +1440,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const saleTargetUnitIdRef = useRef(null)
   const [terminationUnit, setTerminationUnit] = useState(null)
   const [transferUnit, setTransferUnit] = useState(null)
+  const canConfigureNfseReceivables = Boolean(bridge?.canCreate?.("receivable") && bridge?.canRead?.("fiscal_documents"))
   const canTransferUnits = Boolean(bridge?.canUpdate?.("construction_units") && bridge?.canUpdate?.("receivable"))
   const canTerminateUnits = Boolean(bridge?.canCreate?.("construction_unit_termination"))
   const [documentationTypes, setDocumentationTypes] = useState([])
@@ -2026,6 +2032,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }
 
   const reloadProjectDetail = async () => {
+    setProjectInvoicesRevision((value) => value + 1)
     await Promise.all([
       loadProjects(),
       loadBlocks(),
@@ -2186,6 +2193,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       const formWithAddress = { ...projectForm, ...lookup }
       const geocoding = await lookupProjectCoordinates(formWithAddress)
       const projectData = toApiProject({ ...formWithAddress, ...geocoding?.fields })
+      if (canConfigureNfseReceivables) {
+        projectData.nfseReceivableDueDays = projectForm.autoNfseReceivable ? Number(projectForm.nfseReceivableDueDays) : null
+      }
       const coordinateNotice = geocoding?.notice ? ` ${geocoding.notice}` : ""
       if (projectModalMode === "create") {
         const createdProject = await createConstructionProject({ bridge, projectData })
@@ -4559,7 +4569,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           {projectDetailTab === "serviceInvoices" && ProjectServiceInvoices ? (
             <DomainCard title="Notas fiscais da obra"
               content={<ProjectServiceInvoices key={[bridge.companyContext?.companyId, selectedProject.id].join(":")}
-                projectId={selectedProject.id} />} />
+                projectId={selectedProject.id} reloadRevision={projectInvoicesRevision} />} />
           ) : null}
 
           {projectDetailTab === "files" ? (
@@ -4849,6 +4859,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         <ProjectModal
           bridge={bridge}
           mode={projectModalMode}
+          canConfigureNfseReceivables={canConfigureNfseReceivables}
           projectForm={projectForm}
           people={personSummaries}
           loadingPeople={loadingPersonSummaries}
@@ -8903,6 +8914,16 @@ const PROJECT_FIELD_HELP = {
     "A Incorporadora Horizonte contratou a construção. Selecione a Incorporadora Horizonte.",
     "Registra quem contratou a obra. Se a própria SPE fez a contratação, selecione a SPE aqui.",
   ],
+  autoNfseReceivable: [
+    "Ative para gerar uma parcela em aberto para novas NFS-e emitidas e identificadas nesta obra.",
+    "Use se a NFS-e deve originar a cobrança do serviço no financeiro.",
+    "O título usa o líquido da nota e o centro de custo da obra. A geração ocorre depois que a nota é vinculada à obra.",
+  ],
+  nfseReceivableDueDays: [
+    "Informe de 0 a 365 dias úteis após a emissão. Sábados, domingos e feriados nacionais ficam fora da contagem.",
+    "Com prazo de 2 dias úteis, uma nota emitida na quinta vence na segunda, se não houver feriado.",
+    "Use 0 para vencer na data da emissão ou no primeiro dia útil seguinte.",
+  ],
   fiscalWorkCode: [
     "Cadastro Nacional de Obras. Informe o número da obra com ou sem pontuação, se disponível.",
     "Se a nota informar 00.123.45678/90, use esse número.",
@@ -8988,6 +9009,7 @@ const PROJECT_FIELD_HELP = {
 function ProjectModal({
   bridge,
   mode,
+  canConfigureNfseReceivables,
   projectForm,
   people,
   personLookupError,
@@ -9027,266 +9049,317 @@ function ProjectModal({
     <UnitBankSlipDialogFrame bridge={bridge} title={mode === "create" ? "Nova obra" : "Editar obra"} onClose={onClose} footer={footer}>
       <form id={formId} onSubmit={onSubmit}>
         <fieldset className={styles.projectForm} disabled={loading}>
-          <div className={`${styles.formGrid} ${styles.projectIdentityGrid}`}>
-            <label className={styles.filterControl}>
-              {fieldLabel("code", "Código", true)}
-              <input
-                type="text"
-                value={projectForm.code}
-                onChange={(event) => onChange("code", event.target.value)}
-                required
-              />
-            </label>
-            <label className={`${styles.filterControl} ${styles.projectWideField}`}>
-              <span>Nome da obra *</span>
-              <input
-                type="text"
-                value={projectForm.name}
-                onChange={(event) => onChange("name", event.target.value)}
-                required
-              />
-            </label>
-            <label className={styles.filterControl}>
-              {fieldLabel("status", "Status", true)}
-              <select value={projectForm.status} onChange={(event) => onChange("status", event.target.value)} required>
-                {statusOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className={styles.filterControl}>
-              {fieldLabel("projectType", "Tipo", true)}
-              <select
-                value={projectForm.projectType}
-                onChange={(event) => onChange("projectType", event.target.value)}
-                required
-              >
-                {projectTypeOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className={styles.filterControl}>
-              {fieldLabel("developmentType", "Regime da obra")}
-              <select value={projectForm.developmentType} onChange={(event) => onChange("developmentType", event.target.value)}>
-                <option value="">Selecione</option>
-                <option value="INCORPORATION">Incorporação</option>
-                <option value="CONTRACT_WORK">Empreitada</option>
-              </select>
-            </label>
-            <div className={styles.projectWideField}>
-              <PersonPicker
-                label="Cliente/Contratante"
-                labelHelp={help("customer", "Cliente/Contratante")}
-                value={projectForm.customerPersonId}
-                onChange={(value) => onChange("customerPersonId", value)}
-                knownPeople={people}
-                error={personLookupError}
-                emptyLabel="Buscar cliente pelo nome"
-                disabled={loading}
-              />
+          <section className={styles.projectFormSection} aria-labelledby={formId + "-identity"}>
+            <h4 id={formId + "-identity"} className={styles.sectionTitle}>Identificação</h4>
+            <div className={`${styles.formGrid} ${styles.projectIdentityGrid}`}>
+              <label className={styles.filterControl}>
+                {fieldLabel("code", "Código", true)}
+                <input
+                  type="text"
+                  value={projectForm.code}
+                  onChange={(event) => onChange("code", event.target.value)}
+                  required
+                />
+              </label>
+              <label className={`${styles.filterControl} ${styles.projectWideField}`}>
+                <span>Nome da obra *</span>
+                <input
+                  type="text"
+                  value={projectForm.name}
+                  onChange={(event) => onChange("name", event.target.value)}
+                  required
+                />
+              </label>
+              <label className={styles.filterControl}>
+                {fieldLabel("status", "Status", true)}
+                <select value={projectForm.status} onChange={(event) => onChange("status", event.target.value)} required>
+                  {statusOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className={styles.filterControl}>
+                {fieldLabel("projectType", "Tipo", true)}
+                <select
+                  value={projectForm.projectType}
+                  onChange={(event) => onChange("projectType", event.target.value)}
+                  required
+                >
+                  {projectTypeOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className={styles.filterControl}>
+                {fieldLabel("developmentType", "Regime da obra")}
+                <select value={projectForm.developmentType} onChange={(event) => onChange("developmentType", event.target.value)}>
+                  <option value="">Selecione</option>
+                  <option value="INCORPORATION">Incorporação</option>
+                  <option value="CONTRACT_WORK">Empreitada</option>
+                </select>
+              </label>
+              <div className={styles.projectWideField}>
+                <PersonPicker
+                  label="Cliente/Contratante"
+                  labelHelp={help("customer", "Cliente/Contratante")}
+                  value={projectForm.customerPersonId}
+                  onChange={(value) => onChange("customerPersonId", value)}
+                  knownPeople={people}
+                  error={personLookupError}
+                  emptyLabel="Buscar cliente pelo nome"
+                  disabled={loading}
+                />
+              </div>
+              <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
+                <span>Descrição</span>
+                <textarea
+                  className={styles.textarea}
+                  value={projectForm.description}
+                  onChange={(event) => onChange("description", event.target.value)}
+                />
+              </label>
             </div>
-            <label className={styles.filterControl}>
-              {fieldLabel("fiscalWorkCode", "CNO")}
-              <input
-                type="text"
-                value={projectForm.fiscalWorkCode}
-                onChange={(event) => onChange("fiscalWorkCode", event.target.value)}
-                maxLength={64}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              {fieldLabel("cnpjSpe", "CNPJ SPE")}
-              <input
-                type="text"
-                value={displayedCnpj}
-                onChange={(event) => onChange("cnpjSpe", event.target.value)}
-                placeholder="00.000.000/0000-00"
-                autoCapitalize="characters"
-              />
-            </label>
-            <label className={styles.filterControl}>
-              {fieldLabel("startDate", "Data de início")}
-              <input
-                type="date"
-                value={projectForm.startDate}
-                onChange={(event) => onChange("startDate", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              {fieldLabel("expectedEndDate", "Data prevista de fim")}
-              <input
-                type="date"
-                value={projectForm.expectedEndDate}
-                onChange={(event) => onChange("expectedEndDate", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              {fieldLabel("actualEndDate", "Data real de fim")}
-              <input
-                type="date"
-                value={projectForm.actualEndDate}
-                onChange={(event) => onChange("actualEndDate", event.target.value)}
-              />
-            </label>
-            <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
-              <span>Descrição</span>
-              <textarea
-                className={styles.textarea}
-                value={projectForm.description}
-                onChange={(event) => onChange("description", event.target.value)}
-              />
-            </label>
-          </div>
+          </section>
 
-          <h4 className={styles.sectionTitle}>Contrato de venda</h4>
-          <div className={styles.formGrid}>
-            <ContractTemplateField
-              bridge={bridge}
-              value={projectForm.contractTemplateId}
-              onChange={(value) => onChange("contractTemplateId", value)}
-              disabled={loading}
-              labelHelp={fieldLabel("contractTemplate", "Template de contrato")}
-            />
-            <label className={styles.filterControl}>{fieldLabel("lot", "Lote")}<input value={projectForm.lot} maxLength={120} onChange={(event) => onChange("lot", event.target.value)} /></label>
-            <label className={styles.filterControl}>{fieldLabel("registration", "Matrícula")}<input value={projectForm.registration} maxLength={120} onChange={(event) => onChange("registration", event.target.value)} /></label>
-            <label className={styles.filterControl}>{fieldLabel("landArea", "M² Obra")}<input type="number" min="0.01" step="0.01" value={projectForm.landArea} onChange={(event) => onChange("landArea", event.target.value)} /></label>
-          </div>
-          <h4 className={styles.sectionTitle}>Configurações de distrato</h4>
-          <p className={styles.metricHint}>
-            Regras padrão de rescisão copiadas para cada nova venda das unidades desta obra. Cada venda pode ter as
-            suas, ajustadas na confirmação da venda.
-          </p>
-          <label className={styles.checkboxControl}>
-            <input
-              type="checkbox"
-              checked={Boolean(projectForm.hasSegregatedAssets)}
-              disabled={loading}
-              onChange={(event) => onChange("hasSegregatedAssets", event.target.checked)}
-            />
-            {fieldLabel("segregatedAssets", "Obra com patrimônio de afetação (multa sobre o pago até 50%)")}
-          </label>
-          <TerminationTermsEditor
-            terms={projectForm.terminationDefaults}
-            hasSegregatedAssets={Boolean(projectForm.hasSegregatedAssets)}
-            disabled={loading}
-            onChange={(terms) => onChange("terminationDefaults", terms)}
-          />
-          <h4 className={styles.sectionTitle}>Modelos de recibo</h4>
-          <p className={styles.metricHint}>
-            Escolhidos na obra e herdados pelas unidades. O modelo da venda vale para as parcelas e para
-            os aditivos, que dividem o mesmo contrato; o do sinal é copiado no lançamento, então trocar o
-            modelo aqui depois não reescreve o que já foi lançado.
-          </p>
-          <div className={styles.formGrid}>
-            <label className={styles.filterControl}>
-              {fieldLabel("receipt", "Recibo de parcela e aditivo")}
-              <select
-                value={projectForm.receiptTemplateId}
-                onChange={(event) => onChange("receiptTemplateId", event.target.value)}
-              >
-                <option value="">Layout padrão do ERP</option>
-                {(receiptTemplates ?? []).map((template) => (
-                  <option key={template.id} value={template.id}>
-                    {template.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className={styles.filterControl}>
-              {fieldLabel("commissionReceipt", "Recibo do sinal")}
-              <select
-                value={projectForm.commissionReceiptTemplateId}
-                onChange={(event) => onChange("commissionReceiptTemplateId", event.target.value)}
-              >
-                <option value="">Layout padrão do ERP</option>
-                {(receiptTemplates ?? []).map((template) => (
-                  <option key={template.id} value={template.id}>
-                    {template.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          {receiptTemplatesError ? (
-            <small className={styles.formError}>{receiptTemplatesError}</small>
-          ) : null}
+          <section className={styles.projectFormSection} aria-labelledby={formId + "-dates"}>
+            <h4 id={formId + "-dates"} className={styles.sectionTitle}>Prazos</h4>
+            <div className={`${styles.formGrid} ${styles.projectIdentityGrid}`}>
+              <label className={styles.filterControl}>
+                {fieldLabel("startDate", "Data de início")}
+                <input
+                  type="date"
+                  value={projectForm.startDate}
+                  onChange={(event) => onChange("startDate", event.target.value)}
+                />
+              </label>
+              <label className={styles.filterControl}>
+                {fieldLabel("expectedEndDate", "Data prevista de fim")}
+                <input
+                  type="date"
+                  value={projectForm.expectedEndDate}
+                  onChange={(event) => onChange("expectedEndDate", event.target.value)}
+                />
+              </label>
+              <label className={styles.filterControl}>
+                {fieldLabel("actualEndDate", "Data real de fim")}
+                <input
+                  type="date"
+                  value={projectForm.actualEndDate}
+                  onChange={(event) => onChange("actualEndDate", event.target.value)}
+                />
+              </label>
+            </div>
+          </section>
 
-          <h4 className={styles.sectionTitle}>Endereço</h4>
-          <div className={styles.formGrid}>
-            <label className={styles.filterControl}>
-              {fieldLabel("zipCode", "CEP")}
-              <input
-                type="text"
-                value={projectForm.addressZipCode}
-                onChange={(event) => onChange("addressZipCode", event.target.value)}
-                onBlur={onZipLookup}
-                inputMode="numeric"
-                placeholder="00000-000"
+          <section className={styles.projectFormSection} aria-labelledby={formId + "-billing"}>
+            <h4 id={formId + "-billing"} className={styles.sectionTitle}>Dados fiscais e faturamento</h4>
+            <div className={styles.formGrid}>
+              <label className={styles.filterControl}>
+                {fieldLabel("fiscalWorkCode", "CNO")}
+                <input
+                  type="text"
+                  value={projectForm.fiscalWorkCode}
+                  onChange={(event) => onChange("fiscalWorkCode", event.target.value)}
+                  maxLength={64}
+                />
+              </label>
+              <label className={styles.filterControl}>
+                {fieldLabel("cnpjSpe", "CNPJ SPE")}
+                <input
+                  type="text"
+                  value={displayedCnpj}
+                  onChange={(event) => onChange("cnpjSpe", event.target.value)}
+                  placeholder="00.000.000/0000-00"
+                  autoCapitalize="characters"
+                />
+              </label>
+              {canConfigureNfseReceivables ? (
+                <>
+                  <label className={`${styles.checkboxControl} ${styles.spanTwoColumns}`}>
+                    <input
+                      type="checkbox"
+                      checked={projectForm.autoNfseReceivable}
+                      onChange={(event) => onChange("autoNfseReceivable", event.target.checked)}
+                    />
+                    {fieldLabel("autoNfseReceivable", "Gerar título a receber ao importar NFS-e")}
+                  </label>
+                  {projectForm.autoNfseReceivable ? (
+                    <label className={styles.filterControl}>
+                      {fieldLabel("nfseReceivableDueDays", "Dias úteis para vencimento", true)}
+                      <input
+                        type="number"
+                        min={0}
+                        max={365}
+                        step={1}
+                        required
+                        value={projectForm.nfseReceivableDueDays}
+                        onChange={(event) => onChange("nfseReceivableDueDays", event.target.value)}
+                      />
+                    </label>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          </section>
+
+          <section className={styles.projectFormSection} aria-labelledby={formId + "-contract"}>
+            <h4 id={formId + "-contract"} className={styles.sectionTitle}>Contrato de venda</h4>
+            <div className={styles.formGrid}>
+              <ContractTemplateField
+                bridge={bridge}
+                value={projectForm.contractTemplateId}
+                onChange={(value) => onChange("contractTemplateId", value)}
+                disabled={loading}
+                labelHelp={fieldLabel("contractTemplate", "Template de contrato")}
               />
-              {zipLookup?.loading ? <small className={styles.fieldHint}>Buscando CEP...</small> : null}
-              {zipLookup?.error ? <small className={styles.formError}>{zipLookup.error}</small> : null}
-            </label>
-            <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
-              <span>Logradouro</span>
+              <label className={styles.filterControl}>{fieldLabel("lot", "Lote")}<input value={projectForm.lot} maxLength={120} onChange={(event) => onChange("lot", event.target.value)} /></label>
+              <label className={styles.filterControl}>{fieldLabel("registration", "Matrícula")}<input value={projectForm.registration} maxLength={120} onChange={(event) => onChange("registration", event.target.value)} /></label>
+              <label className={styles.filterControl}>{fieldLabel("landArea", "M² Obra")}<input type="number" min="0.01" step="0.01" value={projectForm.landArea} onChange={(event) => onChange("landArea", event.target.value)} /></label>
+            </div>
+          </section>
+
+          <section className={styles.projectFormSection} aria-labelledby={formId + "-termination"}>
+            <h4 id={formId + "-termination"} className={styles.sectionTitle}>Configurações de distrato</h4>
+            <p className={styles.metricHint}>
+              Regras padrão de rescisão copiadas para cada nova venda das unidades desta obra. Cada venda pode ter as
+              suas, ajustadas na confirmação da venda.
+            </p>
+            <label className={styles.checkboxControl}>
               <input
-                type="text"
-                value={projectForm.addressStreet}
-                onChange={(event) => onChange("addressStreet", event.target.value)}
+                type="checkbox"
+                checked={Boolean(projectForm.hasSegregatedAssets)}
+                disabled={loading}
+                onChange={(event) => onChange("hasSegregatedAssets", event.target.checked)}
               />
+              {fieldLabel("segregatedAssets", "Obra com patrimônio de afetação (multa sobre o pago até 50%)")}
             </label>
-            <label className={styles.filterControl}>
-              <span>Número</span>
-              <input
-                type="text"
-                value={projectForm.addressNumber}
-                onChange={(event) => onChange("addressNumber", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Bairro</span>
-              <input
-                type="text"
-                value={projectForm.addressDistrict}
-                onChange={(event) => onChange("addressDistrict", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>Cidade</span>
-              <input
-                type="text"
-                value={projectForm.addressCity}
-                onChange={(event) => onChange("addressCity", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              <span>UF</span>
-              <input
-                type="text"
-                value={projectForm.addressState}
-                onChange={(event) => onChange("addressState", event.target.value)}
-              />
-            </label>
-            <label className={styles.filterControl}>
-              {fieldLabel("ibge", "Código IBGE do município")}
-              <input value={projectForm.addressIbge} onChange={(event) => onChange("addressIbge", event.target.value)}
-                inputMode="numeric" maxLength={7} placeholder="0000000" />
-            </label>
-            <label className={styles.filterControl}>
-              {fieldLabel("latitude", "Latitude")}
-              <input value={projectForm.addressLatitude} onChange={(event) => onChange("addressLatitude", event.target.value)}
-                placeholder="-23,550520" />
-            </label>
-            <label className={styles.filterControl}>
-              {fieldLabel("longitude", "Longitude")}
-              <input value={projectForm.addressLongitude} onChange={(event) => onChange("addressLongitude", event.target.value)}
-                placeholder="-46,633308" />
-            </label>
-          </div>
+            <TerminationTermsEditor
+              terms={projectForm.terminationDefaults}
+              hasSegregatedAssets={Boolean(projectForm.hasSegregatedAssets)}
+              disabled={loading}
+              onChange={(terms) => onChange("terminationDefaults", terms)}
+            />
+          </section>
+
+          <section className={styles.projectFormSection} aria-labelledby={formId + "-receipts"}>
+            <h4 id={formId + "-receipts"} className={styles.sectionTitle}>Modelos de recibo</h4>
+            <p className={styles.metricHint}>
+              Escolhidos na obra e herdados pelas unidades. O modelo da venda vale para as parcelas e para
+              os aditivos, que dividem o mesmo contrato; o do sinal é copiado no lançamento, então trocar o
+              modelo aqui depois não reescreve o que já foi lançado.
+            </p>
+            <div className={styles.formGrid}>
+              <label className={styles.filterControl}>
+                {fieldLabel("receipt", "Recibo de parcela e aditivo")}
+                <select
+                  value={projectForm.receiptTemplateId}
+                  onChange={(event) => onChange("receiptTemplateId", event.target.value)}
+                >
+                  <option value="">Layout padrão do ERP</option>
+                  {(receiptTemplates ?? []).map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className={styles.filterControl}>
+                {fieldLabel("commissionReceipt", "Recibo do sinal")}
+                <select
+                  value={projectForm.commissionReceiptTemplateId}
+                  onChange={(event) => onChange("commissionReceiptTemplateId", event.target.value)}
+                >
+                  <option value="">Layout padrão do ERP</option>
+                  {(receiptTemplates ?? []).map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            {receiptTemplatesError ? (
+              <small className={styles.formError}>{receiptTemplatesError}</small>
+            ) : null}
+          </section>
+
+          <section className={styles.projectFormSection} aria-labelledby={formId + "-address"}>
+            <h4 id={formId + "-address"} className={styles.sectionTitle}>Endereço</h4>
+            <div className={styles.formGrid}>
+              <label className={styles.filterControl}>
+                {fieldLabel("zipCode", "CEP")}
+                <input
+                  type="text"
+                  value={projectForm.addressZipCode}
+                  onChange={(event) => onChange("addressZipCode", event.target.value)}
+                  onBlur={onZipLookup}
+                  inputMode="numeric"
+                  placeholder="00000-000"
+                />
+                {zipLookup?.loading ? <small className={styles.fieldHint}>Buscando CEP...</small> : null}
+                {zipLookup?.error ? <small className={styles.formError}>{zipLookup.error}</small> : null}
+              </label>
+              <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
+                <span>Logradouro</span>
+                <input
+                  type="text"
+                  value={projectForm.addressStreet}
+                  onChange={(event) => onChange("addressStreet", event.target.value)}
+                />
+              </label>
+              <label className={styles.filterControl}>
+                <span>Número</span>
+                <input
+                  type="text"
+                  value={projectForm.addressNumber}
+                  onChange={(event) => onChange("addressNumber", event.target.value)}
+                />
+              </label>
+              <label className={styles.filterControl}>
+                <span>Bairro</span>
+                <input
+                  type="text"
+                  value={projectForm.addressDistrict}
+                  onChange={(event) => onChange("addressDistrict", event.target.value)}
+                />
+              </label>
+              <label className={styles.filterControl}>
+                <span>Cidade</span>
+                <input
+                  type="text"
+                  value={projectForm.addressCity}
+                  onChange={(event) => onChange("addressCity", event.target.value)}
+                />
+              </label>
+              <label className={styles.filterControl}>
+                <span>UF</span>
+                <input
+                  type="text"
+                  value={projectForm.addressState}
+                  onChange={(event) => onChange("addressState", event.target.value)}
+                />
+              </label>
+              <label className={styles.filterControl}>
+                {fieldLabel("ibge", "Código IBGE do município")}
+                <input value={projectForm.addressIbge} onChange={(event) => onChange("addressIbge", event.target.value)}
+                  inputMode="numeric" maxLength={7} placeholder="0000000" />
+              </label>
+              <label className={styles.filterControl}>
+                {fieldLabel("latitude", "Latitude")}
+                <input value={projectForm.addressLatitude} onChange={(event) => onChange("addressLatitude", event.target.value)}
+                  placeholder="-23,550520" />
+              </label>
+              <label className={styles.filterControl}>
+                {fieldLabel("longitude", "Longitude")}
+                <input value={projectForm.addressLongitude} onChange={(event) => onChange("addressLongitude", event.target.value)}
+                  placeholder="-46,633308" />
+              </label>
+            </div>
+          </section>
         </fieldset>
       </form>
     </UnitBankSlipDialogFrame>
