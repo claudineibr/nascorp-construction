@@ -196,6 +196,7 @@ class FakeProjectService:
         company_id: UUID,
         unit_id: UUID,
         installment_number: int,
+        reason,
         receivable_id=None,
         user_id=None,
     ) -> None:
@@ -204,6 +205,7 @@ class FakeProjectService:
                 "unit_id": unit_id,
                 "installment_number": installment_number,
                 "receivable_id": receivable_id,
+                "reason": reason,
             }
         )
 
@@ -971,6 +973,7 @@ def test_delete_unit_installment_requires_units_delete_permission() -> None:
 
     response = client.delete(
         f"/v1/construction/units/{uuid4()}/installments/1",
+        params={"reason": "Parcela cadastrada em duplicidade"},
         headers={
             "Authorization": make_authorization_header(user_id=uuid4()),
             "X-Company-ID": str(uuid4()),
@@ -981,7 +984,8 @@ def test_delete_unit_installment_requires_units_delete_permission() -> None:
 
 
 def test_delete_unit_installment_accepts_units_delete_permission() -> None:
-    receivable_id = uuid4()
+    unit_id, receivable_id = uuid4(), uuid4()
+    reason = "Parcela cadastrada em duplicidade"
     service = FakeProjectService()
     client = create_test_client(
         permissions={ConstructionFeature.UNITS: PermissionAction.DELETE},
@@ -989,15 +993,40 @@ def test_delete_unit_installment_accepts_units_delete_permission() -> None:
     )
 
     response = client.delete(
-        f"/v1/construction/units/{uuid4()}/installments/3?receivable_id={receivable_id}",
+        f"/v1/construction/units/{unit_id}/installments/3",
+        params={"receivable_id": str(receivable_id), "reason": reason},
         headers={
             "Authorization": make_authorization_header(user_id=uuid4()),
             "X-Company-ID": str(uuid4()),
         },
     )
 
-    assert response.status_code == 204
-    assert service.deleted_installments[0]["receivable_id"] == receivable_id
+    assert response.status_code == 204, response.text
+    assert service.deleted_installments == [{
+        "unit_id": unit_id,
+        "installment_number": 3,
+        "receivable_id": receivable_id,
+        "reason": reason,
+    }]
+
+
+def test_delete_unit_installment_requires_a_reason() -> None:
+    service = FakeProjectService()
+    client = create_test_client(
+        permissions={ConstructionFeature.UNITS: PermissionAction.DELETE},
+        service=service,
+    )
+    response = client.delete(
+        f"/v1/construction/units/{uuid4()}/installments/1",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4()),
+            "X-Company-ID": str(uuid4()),
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["query", "reason"]
+    assert not service.deleted_installments
 
 
 def test_delete_unit_adjustment_requires_a_reason() -> None:
