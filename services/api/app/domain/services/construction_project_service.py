@@ -267,6 +267,9 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             raise ConstructionInvalidValueError(message="Informe o CNPJ SPE completo, com os dois dígitos verificadores.")
         return cnpj or None
 
+    async def list_fiscal_projects(self, company_id, project_id, page, page_size):
+        return await self.repository.list_fiscal_projects(company_id, project_id, page, page_size)
+
     async def create_project(
         self,
         *,
@@ -631,8 +634,15 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         request: ConstructionProjectUpdate,
         actor_user_id: UUID | None = None,
     ) -> ConstructionProject:
-        project = await self.get_project(company_id=company_id, project_id=project_id)
         updates = request.model_dump(exclude_unset=True)
+        if updates.pop("fiscal_defaults_only", False):
+            project = await self.repository.get_project(company_id=company_id, project_id=project_id, for_update=True)
+            if project is None:
+                raise ConstructionNotFoundError(resource_name="a obra")
+            updates = {key: updates[key] for key in ("fiscal_work_code", "customer_person_id")
+                       if updates.get(key) is not None and getattr(project, key) is None}
+        else:
+            project = await self.get_project(company_id=company_id, project_id=project_id)
         if "cnpj_spe" in updates:
             if (updates["cnpj_spe"] or "").strip() == (project.cnpj_spe or "").strip():
                 updates.pop("cnpj_spe")

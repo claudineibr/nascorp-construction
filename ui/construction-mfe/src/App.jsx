@@ -290,6 +290,7 @@ const projectDetailTabs = [
   { id: "accountsPayable", label: "Contas a pagar", icon: HandCoins },
   { id: "subcontracts", label: "Empreitada", icon: FileText },
   { id: "files", label: "Arquivos", icon: Paperclip },
+  { id: "serviceInvoices", label: "Notas fiscais", icon: FileText },
   { id: "reports", label: "Relatórios", icon: BarChart3 },
 ]
 
@@ -1313,6 +1314,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const bridge = useMemo(() => providedBridge ?? resolveConstructionBridge(), [providedBridge])
   const ProjectPagination = bridge.components?.Pagination ?? StandalonePagination
   const ProjectPurchaseOrders = bridge.canRead?.("purchase_orders") ? bridge.components?.ProjectPurchaseOrders ?? null : null
+  const ProjectServiceInvoices = bridge.canRead?.("fiscal_documents") ? bridge.components?.ProjectServiceInvoices : null
   const ProjectAccountsPayable = bridge.canRead?.("accounts_payable") && bridge.canRead?.("construction_projects") ? bridge.components?.ProjectAccountsPayable ?? null : null
   const [restoredProject, setRestoredProject] = useState(null)
   useEffect(() => {
@@ -4535,7 +4537,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
           <section className={styles.projectTabCard}>
             <nav className={styles.projectTabList} aria-label="Abas da obra">
-              {projectDetailTabs.filter((tab) => (tab.id !== "purchaseOrders" || ProjectPurchaseOrders) && (tab.id !== "accountsPayable" || ProjectAccountsPayable)).map((tab) => {
+              {projectDetailTabs.filter((tab) => (tab.id !== "purchaseOrders" || ProjectPurchaseOrders) && (tab.id !== "accountsPayable" || ProjectAccountsPayable) &&
+                (tab.id !== "serviceInvoices" || ProjectServiceInvoices)).map((tab) => {
                 const Icon = tab.icon
                 return (
                   <button
@@ -4552,6 +4555,12 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                 )
               })}
             </nav>
+
+          {projectDetailTab === "serviceInvoices" && ProjectServiceInvoices ? (
+            <DomainCard title="Notas fiscais da obra"
+              content={<ProjectServiceInvoices key={[bridge.companyContext?.companyId, selectedProject.id].join(":")}
+                projectId={selectedProject.id} />} />
+          ) : null}
 
           {projectDetailTab === "files" ? (
             <DomainCard

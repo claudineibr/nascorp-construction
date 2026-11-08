@@ -119,6 +119,7 @@ class ConstructionProjectCreate(ConstructionProjectAddressInput):
 
 
 class ConstructionProjectUpdate(ConstructionProjectAddressInput):
+    fiscal_defaults_only: bool = False
     code: str | None = Field(default=None, min_length=1, max_length=50)
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
@@ -139,6 +140,25 @@ class ConstructionProjectUpdate(ConstructionProjectAddressInput):
     land_area: Decimal | None = Field(default=None, gt=0)
     termination_defaults: ConstructionTerminationTerms | None = None
     has_segregated_assets: bool | None = None
+
+
+class FiscalProjectResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    name: str
+    code: str
+    fiscal_work_code: str | None
+    analytic_cost_center_id: UUID | None
+    customer_person_id: UUID | None
+
+
+class FiscalProjectPage(BaseModel):
+    items: list[FiscalProjectResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
 
 
 class ConstructionProjectBuyerUnit(BaseModel):

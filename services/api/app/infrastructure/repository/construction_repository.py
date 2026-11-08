@@ -167,14 +167,15 @@ class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository)
         for entity in entities:
             self.session.add(entity)
 
-    async def get_project(self, *, company_id: UUID, project_id: UUID) -> ConstructionProject | None:
-        result = await self.session.execute(
-            select(ConstructionProject).where(
-                ConstructionProject.company_id == company_id,
-                ConstructionProject.id == project_id,
-                *scope_conditions(ConstructionProject, self.scope),
-            )
+    async def get_project(self, *, company_id: UUID, project_id: UUID, for_update=False) -> ConstructionProject | None:
+        statement = select(ConstructionProject).where(
+            ConstructionProject.company_id == company_id,
+            ConstructionProject.id == project_id,
+            *scope_conditions(ConstructionProject, self.scope),
         )
+        if for_update:
+            statement = statement.with_for_update().execution_options(populate_existing=True)
+        result = await self.session.execute(statement)
         return result.scalars().first()
 
     async def flush_project_fiscal_code(self, project):
@@ -187,6 +188,15 @@ class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository)
             code = project.fiscal_work_code
             await self.rollback()
             raise ConstructionDuplicateCodeError(resource_name="o código fiscal da obra", code=code) from exc
+
+    async def list_fiscal_projects(self, company_id, project_id, page, page_size):
+        conditions = [ConstructionProject.company_id == company_id, ConstructionProject.deleted_at.is_(None)]
+        if project_id is not None:
+            conditions.append(ConstructionProject.id == project_id)
+        total = await self.session.scalar(select(func.count()).select_from(ConstructionProject).where(*conditions))
+        result = await self.session.scalars(select(ConstructionProject).where(*conditions)
+            .order_by(ConstructionProject.id).offset((page - 1) * page_size).limit(page_size))
+        return result.all(), total
 
     async def get_project_by_code(self, *, company_id: UUID, code: str) -> ConstructionProject | None:
         result = await self.session.execute(

@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException
+from math import ceil
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_service_key
@@ -8,6 +11,7 @@ from app.infrastructure.database.session import get_session
 from app.infrastructure.repository.construction_repository import ConstructionRepository
 from app.infrastructure.repository.event_repository import EventRepository
 from app.schemas.construction import ConstructionMeasurementResponse, ConstructionProjectResponse, ConstructionUnitResponse
+from app.schemas.construction.project import FiscalProjectPage
 from app.schemas.events import EventEnvelopeRequest
 from app.schemas.construction import ConstructionProcurementRequestResponse
 
@@ -26,6 +30,21 @@ async def get_project_service(session: AsyncSession = Depends(get_session)) -> C
     return ConstructionProjectService(
         repository=ConstructionRepository(session=session),
         event_repository=EventRepository(session=session),
+    )
+
+
+@router.get("/fiscal-projects", response_model=FiscalProjectPage)
+async def fiscal_projects(
+    company_id: UUID = Header(alias="X-Company-ID"),
+    project_id: UUID | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=100),
+    _: None = Depends(require_service_key),
+    service: ConstructionProjectService = Depends(get_project_service),
+):
+    items, total = await service.list_fiscal_projects(company_id, project_id, page, page_size)
+    return FiscalProjectPage(
+        items=items, total=total, page=page, page_size=page_size, total_pages=ceil(total / page_size),
     )
 
 
