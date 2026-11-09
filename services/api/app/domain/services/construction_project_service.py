@@ -1510,11 +1510,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             "preview_version": request.preview_version,
         }
         if request.refund is not None:
-            payload["refund"] = {
-                "first_due_date": request.refund.first_due_date.isoformat(),
-                "installments": request.refund.installments,
-                "payment_method": request.refund.payment_method,
-            }
+            payload["refund"] = request.refund.model_dump(mode="json", exclude_none=True)
         return payload
 
     async def preview_unit_termination(

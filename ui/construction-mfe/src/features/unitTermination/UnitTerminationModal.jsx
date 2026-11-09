@@ -11,6 +11,8 @@ import {
 } from "../../services/constructionApi.js"
 import { UnitBankSlipDialogFrame as DialogFrame } from "../UnitBankSlipsDialog.jsx"
 
+const BANK_ACCOUNT_METHODS = ["PIX", "TRANSFER"]
+
 export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestConfirm }) {
   const [form, setForm] = useState({
     terminationDate: brazilTodayISO(),
@@ -21,6 +23,7 @@ export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestCon
     refundFirstDueDate: "",
     refundInstallments: "1",
     refundPaymentMethod: "PIX",
+    refundBankAccountId: "",
   })
   const [paymentMethods, setPaymentMethods] = useState([])
   useEffect(() => {
@@ -42,9 +45,19 @@ export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestCon
   }, [bridge])
   const [preview, setPreview] = useState(null)
   const [loading, setLoading] = useState(false)
+  const canListRefundAccounts = Array.isArray(preview?.refund_bank_accounts)
+  const showRefundAccount = Number(preview?.refund_amount) > 0 && BANK_ACCOUNT_METHODS.includes(form.refundPaymentMethod)
+  const accountLabelField = form.refundPaymentMethod === "PIX" ? "pix_label" : "transfer_label"
+  const eligibleAccounts = (preview?.refund_bank_accounts ?? []).filter((account) => account[accountLabelField])
 
   const change = (field, value) => {
-    setForm((current) => ({ ...current, [field]: value }))
+    setForm((current) => ({
+      ...current,
+      [field]: value,
+      ...(["destination", "refundPaymentMethod", "terminationDate", "additionalRefund"].includes(field)
+        ? { refundBankAccountId: "" }
+        : {}),
+    }))
     if (["terminationDate", "additionalRefund"].includes(field)) setPreview(null)
   }
 
@@ -56,7 +69,11 @@ export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestCon
     }
     setLoading(true)
     try {
-      const result = await previewConstructionUnitTermination({ bridge, unitId: unit.id, terminationData: form })
+      const result = await previewConstructionUnitTermination({
+        bridge,
+        unitId: unit.id,
+        terminationData: { ...form, destination: "credit" },
+      })
       setPreview(result)
       if (result?.suggested_refund_due_date && !form.refundFirstDueDate) {
         setForm((current) => ({ ...current, refundFirstDueDate: result.suggested_refund_due_date }))
@@ -85,6 +102,7 @@ export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestCon
     } catch (requestError) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível registrar o distrato.")
       setPreview(null)
+      setForm((current) => ({ ...current, refundBankAccountId: "" }))
     } finally {
       setLoading(false)
     }
@@ -93,6 +111,10 @@ export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestCon
   const askConfirmation = () => {
     if (form.destination === "refund" && (!form.refundFirstDueDate || Number(form.refundInstallments || 0) < 1)) {
       bridge?.feedback?.warning?.("Informe o 1º vencimento e as parcelas da restituição.")
+      return
+    }
+    if (form.refundBankAccountId && !eligibleAccounts.some((account) => account.id === form.refundBankAccountId)) {
+      bridge?.feedback?.warning?.("Selecione uma conta disponível do cliente ou deixe o campo sem conta vinculada.")
       return
     }
     requestConfirm({
@@ -325,6 +347,27 @@ export function UnitTerminationModal({ bridge, unit, onClose, onDone, requestCon
                           }
                         />
                       </label>
+                      {showRefundAccount ? (
+                        <label className={`${appStyles.filterControl} ${appStyles.spanTwoColumns}`}>
+                          <span>Conta do cliente</span>
+                          <select
+                            className={styles.refundAccountSelect}
+                            value={form.refundBankAccountId}
+                            disabled={loading || !canListRefundAccounts}
+                            onChange={(event) => change("refundBankAccountId", event.target.value)}
+                          >
+                            <option value="">Sem conta vinculada</option>
+                            {eligibleAccounts.map((account) => (
+                              <option key={account.id} value={account.id}>{account[accountLabelField]}</option>
+                            ))}
+                          </select>
+                          {!canListRefundAccounts ? (
+                            <small className={appStyles.metricHint}>A consulta exige permissão para gerar a restituição.</small>
+                          ) : !eligibleAccounts.length ? (
+                            <small className={appStyles.metricHint}>O cliente não tem dados bancários ativos para esta forma de pagamento.</small>
+                          ) : null}
+                        </label>
+                      ) : null}
                     </div>
                   ) : (
                     <p className={appStyles.metricHint}>

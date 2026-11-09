@@ -439,6 +439,7 @@ class ConstructionUnitSaleConfirmRequest(BaseModel):
 
 class ConstructionUnitTerminationRefund(BaseModel):
     payment_method: str = Field(default="PIX", min_length=1, max_length=30)
+    supplier_bank_account_id: UUID | None = None
     first_due_date: date
     installments: int = Field(default=1, ge=1, le=120)
 

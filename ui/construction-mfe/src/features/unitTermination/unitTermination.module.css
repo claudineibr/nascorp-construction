@@ -94,6 +94,12 @@
   min-width: 0;
 }
 
+.refundAccountSelect {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
+}
+
 .dialogActions {
   align-items: center;
   box-sizing: border-box;

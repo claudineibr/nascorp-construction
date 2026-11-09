@@ -1155,6 +1155,7 @@ const toTerminationPayload = (terminationData = {}) => ({
           first_due_date: terminationData.refundFirstDueDate,
           installments: Number(terminationData.refundInstallments || 1),
           payment_method: terminationData.refundPaymentMethod || "PIX",
+          supplier_bank_account_id: toNullableString(terminationData.refundBankAccountId),
         }
       : null,
 })
