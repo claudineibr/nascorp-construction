@@ -27,7 +27,11 @@ from app.infrastructure.database.models.unit_buyer_history import ConstructionUn
 from app.infrastructure.database.models.event import DeadLetterEvent, OutboxEvent, ProcessedEvent
 
 
+from app.infrastructure.database.models.project_document import ConstructionProjectDocument
+
+
 __all__ = [
+    "ConstructionProjectDocument",
     "ConstructionUnitBuyerHistory",
     "ConstructionBlock",
     "ConstructionDocumentationType",

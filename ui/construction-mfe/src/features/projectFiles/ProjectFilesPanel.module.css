@@ -45,6 +45,18 @@
   display: none;
 }
 
+.uploadOptions {
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(.65rem * var(--density, 1));
+  min-width: 0;
+}
+
+.panel h3 {
+  margin: 0;
+}
+
 .tableWrapper {
   composes: tableWrapper from "../../App.module.css";
 }

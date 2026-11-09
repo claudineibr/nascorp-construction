@@ -276,6 +276,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         company_id: UUID,
         request: ConstructionProjectCreate,
         actor_user_id: UUID | None = None,
+        source_document=None,
     ) -> ConstructionProject:
         self._ensure_known_value(value=request.status, allowed_values=PROJECT_STATUSES, field_name="status")
         self._ensure_known_value(value=request.project_type, allowed_values=PROJECT_TYPES, field_name="project_type")
@@ -328,6 +329,11 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         await self.repository.add(project)
         if project.fiscal_work_code is not None:
             await self.repository.flush_project_fiscal_code(project)
+        if source_document is not None:
+            await self.repository.flush()
+            source_document.project_id = project.id
+            await self.repository.add(source_document)
+            await self.repository.flush()
         project_created_event = self._build_project_created_event(project=project, actor_user_id=actor_user_id)
         dispatch_result = await self._dispatch_integration_event(event=project_created_event)
         if dispatch_result is not None and dispatch_result.response_event is not None:
@@ -644,6 +650,18 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                 raise ConstructionNotFoundError(resource_name="a obra")
             updates = {key: updates[key] for key in ("fiscal_work_code", "customer_person_id")
                        if updates.get(key) is not None and getattr(project, key) is None}
+        elif "development_type" in updates:
+            project = await self.repository.get_project(company_id=company_id, project_id=project_id, for_update=True)
+            if project is None:
+                raise ConstructionNotFoundError(resource_name="a obra")
+            next_development_type = updates["development_type"]
+            if next_development_type not in (project.development_type, "CONTRACT_WORK") and await self.repository.has_project_documents(
+                company_id=company_id, project_id=project_id,
+            ):
+                _logger.info(f"[project_documents] regime_change_blocked: company_id={company_id} project_id={project_id} actor_id={actor_user_id}")
+                raise ConstructionResourceInUseError(
+                    message="A obra tem documentos de Empreitada no cronograma. O regime precisa permanecer Empreitada."
+                )
         else:
             project = await self.get_project(company_id=company_id, project_id=project_id)
         if "cnpj_spe" in updates:

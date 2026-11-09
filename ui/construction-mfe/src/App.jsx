@@ -101,6 +101,8 @@ import { CreditOffsetModal } from "./features/unitTermination/CreditOffsetModal.
 import { ServiceTemplatesPanel } from "./features/serviceTemplates/ServiceTemplatesPanel.jsx"
 import { ProjectServicesPanel } from "./features/projectServices/ProjectServicesPanel.jsx"
 import { ProjectFilesPanel } from "./features/projectFiles/ProjectFilesPanel.jsx"
+import { phaseDeadline, ProjectDocumentModal, ProjectScheduleSummary } from "./features/projectDocuments/ProjectDocuments.jsx"
+import { toProjectView } from "./services/constructionApi.js"
 import { SubcontractsCardTitle, SubcontractsPanel } from "./features/subcontracts/SubcontractsPanel.jsx"
 import { SharedPayablesCardTitle, SharedPayablesSection } from "./features/sharedPayables/SharedPayablesSection.jsx"
 import { ContractMeasurementFields } from "./features/subcontracts/ContractMeasurementFields.jsx"
@@ -1318,6 +1320,7 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
 
 function ConstructionWorkspace({ bridge: providedBridge }) {
   const bridge = useMemo(() => providedBridge ?? resolveConstructionBridge(), [providedBridge])
+  const companyId = bridge.companyContext?.companyId
   const ProjectPagination = bridge.components?.Pagination ?? StandalonePagination
   const ProjectPurchaseOrders = bridge.canRead?.("purchase_orders") ? bridge.components?.ProjectPurchaseOrders ?? null : null
   const ProjectServiceInvoices = bridge.canRead?.("fiscal_documents") ? bridge.components?.ProjectServiceInvoices : null
@@ -1360,6 +1363,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [error, setError] = useState(null)
 
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false)
+  const [contractImportCompany, setContractImportCompany] = useState(null)
   const [projectModalMode, setProjectModalMode] = useState("create")
   const [projectDetailRevision, setProjectDetailRevision] = useState(0)
   const [editingProjectId, setEditingProjectId] = useState(null)
@@ -4362,6 +4366,19 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     }
   }
 
+  const renderSchedule = (today, measuredByPhase) => (
+    <ScheduleList
+      phases={schedulePhases}
+      loading={loadingSchedule}
+      error={scheduleError}
+      onRetry={loadSchedulePhases}
+      onEdit={bridge.canUpdate?.("construction_schedule") ? openEditSchedulePhase : null}
+      onDelete={bridge.canDelete?.("construction_schedule") ? handleDeleteSchedulePhase : null}
+      today={today}
+      measuredByPhase={measuredByPhase}
+    />
+  )
+
   return (
     // O bridge desce por contexto para os campos de pessoa, que falam com o
     // servidor de dentro de seis modais diferentes -- ver `bridgeContext.js`.
@@ -4390,6 +4407,11 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                 <Plus size={18} />
                 Nova obra
               </button>
+              {bridge.canRead?.("construction_projects") && bridge.canCreate?.("construction_projects") && (
+                <button type="button" className={styles.secondaryButton} onClick={() => setContractImportCompany(companyId)}>
+                  Criar empreitada pelo contrato
+                </button>
+              )}
               {bridge.canRead?.("construction_units") ? <button type="button" className={styles.secondaryButton} onClick={() => bridge.navigate?.("/construction/assistance-requests")}>Assistência técnica</button> : null}
               <button
                 type="button"
@@ -4577,9 +4599,12 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           {projectDetailTab === "files" ? (
             <DomainCard
               title="Arquivos da obra"
-              subtitle="Envie um ou mais arquivos de até 20 MB cada."
-              renderContent={(renderActions) => <ProjectFilesPanel key={`${bridge.companyContext?.companyId}-${selectedProject.id}`}
+              subtitle={selectedProject.developmentType === "CONTRACT_WORK"
+                ? "Envie anexos, vincule o contrato e importe boletins da empreitada."
+                : "Envie um ou mais arquivos de até 20 MB cada."}
+              renderContent={(renderActions) => <ProjectFilesPanel key={`${companyId}-${selectedProject.id}`}
                 bridge={bridge} projectId={selectedProject.id} RowActionsMenu={RowActionsMenu}
+                contractWork={selectedProject.developmentType === "CONTRACT_WORK"} onImported={loadSchedulePhases}
                 ConfirmModal={ConfirmModal} renderActions={renderActions} />}
             />
           ) : null}
@@ -4733,28 +4758,31 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
             />
           ) : null}
 
-          {projectDetailTab === "schedule" ? (
+          {projectDetailTab === "schedule" && !bridge.canRead?.("construction_schedule") && (
+            <p>Permissão insuficiente no módulo de Obras.</p>
+          )}
+          {projectDetailTab === "schedule" && bridge.canRead?.("construction_schedule") ? (
             <DomainCard
               title="Cronograma"
               subtitle={`Fases da obra em ordem, com progresso médio de ${scheduleProgress}%`}
               action={
                 <>
-                  <SchedulePhaseSuggestions />
-                  <button type="button" className={styles.primaryButton} onClick={openCreateSchedulePhase}>
-                    <Plus size={16} />
-                    Nova fase
-                  </button>
+                  {bridge.canCreate?.("construction_schedule") && <>
+                    <SchedulePhaseSuggestions />
+                    <button type="button" className={styles.primaryButton} onClick={openCreateSchedulePhase}>
+                      <Plus size={16} />
+                      Nova fase
+                    </button>
+                  </>}
                 </>
               }
               content={
-                <ScheduleList
-                  phases={schedulePhases}
-                  loading={loadingSchedule}
-                  error={scheduleError}
-                  onRetry={loadSchedulePhases}
-                  onEdit={openEditSchedulePhase}
-                  onDelete={handleDeleteSchedulePhase}
-                />
+                selectedProject.developmentType === "CONTRACT_WORK" ? (
+                  <ProjectScheduleSummary key={`${companyId}-${selectedProject.id}`} bridge={bridge}
+                    projectId={selectedProject.id}>
+                    {renderSchedule}
+                  </ProjectScheduleSummary>
+                ) : renderSchedule()
               }
             />
           ) : null}
@@ -4871,6 +4899,18 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         />
       ) : null}
 
+      {contractImportCompany && contractImportCompany === companyId && (
+        <ProjectDocumentModal bridge={bridge} mode="create" onClose={() => setContractImportCompany(null)}
+          onComplete={(result) => {
+            const project = toProjectView(result)
+            setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)])
+            setActiveProjectId(project.id)
+            setProjectDetailTab(bridge.canRead?.("construction_schedule") ? "schedule" : "overview")
+            setViewMode("projectDetail")
+            setContractImportCompany(null)
+            void loadProjects()
+          }} />
+      )}
       {isProjectModalOpen ? (
         <ProjectModal
           bridge={bridge}
@@ -7985,7 +8025,7 @@ function UnitsList({
   )
 }
 
-function ScheduleList({ phases, loading, error, onRetry, onEdit, onDelete }) {
+function ScheduleList({ phases, loading, error, onRetry, onEdit, onDelete, today, measuredByPhase }) {
   if (loading) {
     return (
       <div className={styles.tableWrapper} aria-busy="true">
@@ -8027,15 +8067,21 @@ function ScheduleList({ phases, loading, error, onRetry, onEdit, onDelete }) {
             <th>Ordem</th>
             <th>Fase</th>
             <th>Status</th>
-            <th>Inicio previsto</th>
+            <th>Início previsto</th>
             <th>Fim previsto</th>
+            {measuredByPhase && <th>Prazo</th>}
             <th>Progresso</th>
-            <th>Ações</th>
+            {measuredByPhase && <th>Medido (% do valor)</th>}
+            {(onEdit || onDelete) && <th>Ações</th>}
           </tr>
         </thead>
         <tbody>
-          {phases.map((phase) => (
-            <tr key={phase.id}>
+          {phases.map((phase) => {
+            const measured = measuredByPhase?.get(phase.id)
+            const valuePercent = measured && Number(measured.contracted) > 0
+              ? (100 * Number(measured.accumulated) / Number(measured.contracted)).toLocaleString("pt-BR", { maximumFractionDigits: 2 })
+              : null
+            return <tr key={phase.id}>
               <td>{phase.sequenceOrder}</td>
               <td>{phase.name}</td>
               <td>
@@ -8045,14 +8091,17 @@ function ScheduleList({ phases, loading, error, onRetry, onEdit, onDelete }) {
               </td>
               <td>{formatDate(phase.plannedStartDate)}</td>
               <td>{formatDate(phase.plannedEndDate)}</td>
+              {measuredByPhase && <td>{phaseDeadline(phase, today)}</td>}
               <td>{Number(phase.progressPercent ?? 0)}%</td>
-              <td>
+              {measuredByPhase && <td>{valuePercent === null ? "—" : `${valuePercent}%`}</td>}
+              {(onEdit || onDelete) && <td>
                 <RowActionsMenu
                   actions={[
                     {
                       key: "edit",
                       label: "Editar",
                       icon: Pencil,
+                      visible: Boolean(onEdit),
                       onSelect: () => onEdit(phase),
                     },
                     {
@@ -8061,13 +8110,14 @@ function ScheduleList({ phases, loading, error, onRetry, onEdit, onDelete }) {
                       icon: Trash2,
                       danger: true,
                       dividerBefore: true,
+                      visible: Boolean(onDelete),
                       onSelect: () => onDelete(phase),
                     },
                   ]}
                 />
-              </td>
+              </td>}
             </tr>
-          ))}
+          })}
         </tbody>
       </table>
     </div>

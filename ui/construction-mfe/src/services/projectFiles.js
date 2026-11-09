@@ -63,9 +63,13 @@ export async function uploadProjectFile(bridge, projectId, file, { signal, onPro
   return response.json()
 }
 
+export async function readProjectFile(bridge, projectId, fileId) {
+  const response = await fileRequest(bridge, `${pathFor(projectId)}/${fileId}/download`)
+  return response.blob()
+}
+
 export async function downloadProjectFile(bridge, projectId, file) {
-  const response = await fileRequest(bridge, `${pathFor(projectId)}/${file.id}/download`)
-  const url = URL.createObjectURL(await response.blob())
+  const url = URL.createObjectURL(await readProjectFile(bridge, projectId, file.id))
   const link = document.createElement("a")
   link.href = url
   link.download = file.file_name

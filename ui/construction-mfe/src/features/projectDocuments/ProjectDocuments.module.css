@@ -1,0 +1,64 @@
+.panel,
+.form {
+  display: grid;
+  gap: calc(.85rem * var(--density, 1));
+  min-width: 0;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+}
+
+.panel {
+  margin-top: calc(1.25rem * var(--density, 1));
+}
+
+.history li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: .65rem;
+}
+
+.panel h3,
+.panel p,
+.form p {
+  margin: 0;
+}
+
+.field {
+  display: grid;
+  gap: .35rem;
+  min-width: 0;
+}
+
+.field input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: calc(.65rem * var(--density-control, 1));
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.previewList {
+  max-height: 12rem;
+  overflow: auto;
+  margin: 0;
+  padding-inline-start: 1.5rem;
+}
+
+.history {
+  display: grid;
+  gap: .65rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history li {
+  padding: calc(.85rem * var(--density, 1));
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}

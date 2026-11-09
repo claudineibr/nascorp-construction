@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
 
+import httpx
 from fastapi import Depends, Header, HTTPException, status
 
 from app.core.config import settings
@@ -159,6 +160,13 @@ async def _resolve_permissions(
             type(exc).__name__,
             exc,
         )
+        if isinstance(exc, httpx.RequestError) or (
+            isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="A consulta de permissões de Obras está temporariamente indisponível. Tente novamente.",
+            ) from exc
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Não foi possível resolver as permissões de Obras") from exc
 
 

@@ -37,7 +37,7 @@ class ErpPermissionClient:
             "X-Company-ID": str(company_id),
             "X-User-ID": str(user_id),
         }
-        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=httpx.Timeout(20, connect=5)) as client:
             response = await client.get("/v1/internal/construction/permissions", headers=headers)
             response.raise_for_status()
             payload = response.json()

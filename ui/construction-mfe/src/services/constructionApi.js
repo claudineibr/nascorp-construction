@@ -655,7 +655,7 @@ const toSaleDocumentationPayload = (documentation = {}) => ({
   amount: toNullableNumber(documentation.amountValue),
 })
 
-async function requestJson({ bridge, path, method = "GET", body = null, baseUrl = null, signal = undefined }) {
+async function requestJson({ bridge, path, method = "GET", body = null, baseUrl = null, signal = undefined, responseType = "json" }) {
   const apiBaseUrl = baseUrl || bridge?.constructionApiBaseUrl || DEFAULT_CONSTRUCTION_API_URL
   const headers = {
     ...(bridge?.getAuthHeaders?.() ?? {}),
@@ -665,7 +665,8 @@ async function requestJson({ bridge, path, method = "GET", body = null, baseUrl 
     throw new Error("Contexto autenticado da empresa indisponível.")
   }
 
-  if (body !== null) {
+  const isForm = body instanceof FormData
+  if (body !== null && !isForm) {
     headers["Content-Type"] = "application/json"
   }
 
@@ -673,7 +674,7 @@ async function requestJson({ bridge, path, method = "GET", body = null, baseUrl 
     fetch(`${apiBaseUrl}${path}`, {
       method,
       headers: overrideHeaders,
-      body: body === null ? undefined : JSON.stringify(body),
+      body: body === null ? undefined : isForm ? body : JSON.stringify(body),
       signal,
     })
 
@@ -724,7 +725,7 @@ async function requestJson({ bridge, path, method = "GET", body = null, baseUrl 
     return null
   }
 
-  return response.json()
+  return responseType === "blob" ? response.blob() : response.json()
 }
 
 export const subcontractRequest = ({ bridge, path, method = "GET", body = null }) =>

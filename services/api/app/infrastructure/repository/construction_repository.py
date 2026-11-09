@@ -43,6 +43,7 @@ from app.infrastructure.database.models import (
     ConstructionMeasurementItemOccurrence,
     ConstructionProcurementRequest,
     ConstructionProject,
+    ConstructionProjectDocument,
     ConstructionProjectServiceTemplate,
     ConstructionSchedulePhase,
     ConstructionUnit,
@@ -177,6 +178,13 @@ class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository)
             statement = statement.with_for_update().execution_options(populate_existing=True)
         result = await self.session.execute(statement)
         return result.scalars().first()
+
+    async def has_project_documents(self, *, company_id, project_id):
+        return await self.session.scalar(select(select(ConstructionProjectDocument.id).where(
+            ConstructionProjectDocument.company_id == company_id,
+            ConstructionProjectDocument.project_id == project_id,
+            *scope_conditions(ConstructionProjectDocument, self.scope),
+        ).exists()))
 
     async def flush_project_fiscal_code(self, project):
         code = project.fiscal_work_code
