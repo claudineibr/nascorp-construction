@@ -12,6 +12,7 @@ import httpx
 
 from app.domain.business_clock import BRAZIL_TIMEZONES, current_business_timezone, get_business_today
 from app.domain.constants import (
+    MAX_UNIT_SALE_AMOUNT,
     ConstructionInspectionRoundSource,
     BLOCK_STATUSES,
     ConstructionUnitPaymentSource,
@@ -110,6 +111,7 @@ from app.schemas.construction import (
     ConstructionUnitInstallmentCreateRequest,
     ConstructionUnitInstallmentPaymentRequest,
     ConstructionUnitReserveRequest,
+    ConstructionDeliveredSaleUpdateRequest,
     ConstructionUnitSaleConfirmRequest,
     ConstructionUnitTerminationReactivateRequest,
     ConstructionUnitTerminationRequest,
@@ -880,6 +882,13 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             if unit is None:
                 raise ConstructionNotFoundError(resource_name="a unidade")
 
+        if unit.status == ConstructionUnitStatus.DELIVERED and "sale_price" in updates:
+            if updates.pop("sale_price") != unit.sale_price:
+                raise ConstructionInvalidValueError(
+                    message="O preço de uma unidade entregue é preenchido em Editar venda e bloqueado após o primeiro registro.",
+                    error_code="CONSTRUCTION_DELIVERED_SALE_PRICE_LOCKED",
+                )
+
         next_status = updates.get("status")
         if next_status is not None:
             self._ensure_known_value(value=next_status, allowed_values=UNIT_STATUSES, field_name="status")
@@ -1112,10 +1121,12 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         *,
         company_id: UUID,
         unit_id: UUID,
-        request: ConstructionUnitSaleConfirmRequest,
+        request: ConstructionUnitSaleConfirmRequest | ConstructionDeliveredSaleUpdateRequest,
         actor_user_id: UUID | None = None,
     ) -> ConstructionUnit:
-        await self._editable_transfer_unit(company_id, unit_id)
+        unit = await self._editable_transfer_unit(company_id, unit_id)
+        if isinstance(request, ConstructionDeliveredSaleUpdateRequest):
+            return await self._update_delivered_sale(unit, request, actor_user_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
 
         # Unidade ja vendida cai no mesmo caminho de proposito: e assim que a
@@ -1174,7 +1185,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         )
 
         net_sale_price = sale_price - discount_amount
-        documentations = await self._resolve_sale_documentations(unit=unit, request=request)
+        documentations = await self._resolve_sale_documentations(unit=unit, items=request.documentations)
         documentation_total = self._sum_documentations(documentations=documentations)
         commission_offset = self._sum_composing_commissions(
             await self.repository.list_unit_commissions(
@@ -1204,20 +1215,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                 error_code="CONSTRUCTION_UNIT_WITHOUT_INSTALLMENT_SOURCE",
             )
 
-        if request.financing_date is not None:
-            if request.financing_date > get_business_today(current_business_timezone()):
-                raise ConstructionInvalidValueError(
-                    message="A data do financiamento não pode ser futura.",
-                    error_code="CONSTRUCTION_FINANCING_FUTURE_DATE",
-                )
-
-            if not any(
-                source["source_type"] == "financing" and Decimal(source["amount"]) > 0 for source in payment_sources
-            ):
-                raise ConstructionInvalidValueError(
-                    message="A data do financiamento exige financiamento maior que zero.",
-                    error_code="CONSTRUCTION_FINANCING_REQUIRED",
-                )
+        self._validate_sale_financing_date(request.financing_date, payment_sources)
 
         await self._replace_unit_payment_sources(unit=unit, payment_sources=payment_sources)
         await self._replace_unit_documentations(unit=unit, documentations=documentations)
@@ -1286,6 +1284,185 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         await self.repository.refresh(unit)
         return unit
 
+    async def _update_delivered_sale(self, unit, request, actor_user_id):
+        _logger.info(
+            f"[delivered_unit_sale] salvar: company_id={unit.company_id} unit_id={unit.id} "
+            f"sale_id={request.sale_id} status={unit.status} user={actor_user_id}"
+        )
+        if unit.status != ConstructionUnitStatus.DELIVERED:
+            raise ConstructionInvalidValueError(
+                message="Esta edição exige uma unidade entregue.",
+                error_code="CONSTRUCTION_UNIT_INVALID_STATUS",
+            )
+
+        sale = await self._get_active_current_sale(unit=unit) if unit.current_sale_id == request.sale_id else None
+        if sale is None or sale.unit_id != unit.id:
+            raise ConstructionInvalidValueError(
+                message="A venda atual da unidade mudou. Reabra a edição para conferir os dados da venda.",
+                error_code="CONSTRUCTION_UNIT_SALE_SUPERSEDED",
+            )
+
+        changes = request.model_dump(
+            exclude_unset=True, exclude={"sale_id", "documentations", "bank_sources", "termination_terms"},
+        )
+        requested_price = changes.pop("sale_price", None)
+        if requested_price is not None:
+            if unit.sale_price is None:
+                changes["sale_price"] = requested_price
+            elif requested_price != unit.sale_price:
+                raise ConstructionInvalidValueError(
+                    message="O preço da venda já foi preenchido e está bloqueado.",
+                    error_code="CONSTRUCTION_DELIVERED_SALE_PRICE_LOCKED",
+                )
+
+        if "broker_person_id" in changes and request.broker_person_id != unit.broker_person_id:
+            await self._require_company_people(
+                company_id=unit.company_id, actor_user_id=actor_user_id,
+                people={"O corretor": request.broker_person_id},
+            )
+        if "sale_notes" in changes:
+            changes["sale_notes"] = (request.sale_notes or "").strip() or None
+
+        previous_documentations = await self.repository.list_unit_documentations(company_id=unit.company_id, unit_id=unit.id)
+        documentations = await self._resolve_sale_documentations(
+            unit=unit, items=request.documentations, current_documentations=previous_documentations,
+        )
+        payment_sources = await self._delivered_sale_payment_sources(
+            unit, sale, request, documentations,
+            sale_price=changes.get("sale_price", unit.sale_price),
+            previous_documentation_total=sum((row.amount for row in previous_documentations), Decimal("0")),
+        )
+        self._validate_sale_financing_date(changes.get("financing_date", unit.financing_date), payment_sources)
+
+        for field, value in changes.items():
+            setattr(unit, field, value)
+            setattr(sale, field, value)
+        if request.termination_terms is not None:
+            project = await self.repository.get_project(company_id=unit.company_id, project_id=unit.project_id)
+            self._update_sale_termination_terms(sale, project, request.termination_terms)
+
+        await self._replace_unit_payment_sources(unit=unit, payment_sources=payment_sources)
+        await self._replace_unit_documentations(unit=unit, documentations=documentations)
+        sale.payment_sources = self._json_safe(payment_sources)
+        sale.documentations = documentations
+        await self.repository.commit()
+        await self.repository.refresh(unit)
+        return unit
+
+    async def _delivered_sale_payment_sources(
+        self, unit, sale, request, documentations, *, sale_price, previous_documentation_total,
+    ):
+        existing = await self.repository.list_unit_payment_sources(company_id=unit.company_id, unit_id=unit.id)
+        sources = {
+            row.source_type: {
+                "source_type": row.source_type,
+                "amount": row.amount,
+                "due_date": self._format_event_date(value=row.due_date),
+                "installments": row.installments,
+                "generates_installments": row.generates_installments,
+            }
+            for row in existing
+        }
+        if request.bank_sources is not None:
+            bank_types = {source.source_type for source in request.bank_sources}
+            if len(bank_types) != len(request.bank_sources):
+                raise ConstructionInvalidValueError(
+                    message="Informe cada origem de liberação do banco uma única vez.",
+                    error_code="CONSTRUCTION_UNIT_DUPLICATE_PAYMENT_SOURCE",
+                )
+            for source_type in ConstructionUnitPaymentSource.SETTLEMENT_SOURCES:
+                sources.pop(source_type, None)
+            sources.update({
+                source.source_type: {
+                    "source_type": source.source_type,
+                    "amount": source.amount,
+                    "due_date": self._format_event_date(value=source.due_date),
+                    "installments": 1,
+                    "generates_installments": False,
+                }
+                for source in request.bank_sources
+            })
+
+        if sale_price is None or sale_price <= 0:
+            return list(sources.values())
+
+        previous_discount = unit.discount_amount or Decimal("0")
+        discount = request.discount_amount if "discount_amount" in request.model_fields_set else previous_discount
+        if discount >= sale_price and (unit.sale_price is None or discount > previous_discount):
+            raise ConstructionInvalidValueError(
+                message="O desconto da venda precisa ser menor que o preço de venda.",
+                error_code="CONSTRUCTION_UNIT_DISCOUNT_EXCEEDS_SALE_PRICE",
+            )
+        informed_total = sum(
+            (source["amount"] for key, source in sources.items() if key in ConstructionUnitPaymentSource.INFORMED_SOURCES),
+            Decimal("0"),
+        )
+        commission_offset = self._sum_composing_commissions(await self.repository.list_unit_commissions(
+            company_id=unit.company_id, unit_id=unit.id, sale_id=sale.id,
+        ))
+        balance = sale_price + self._sum_documentations(documentations=documentations) - discount
+        balance -= informed_total + commission_offset
+        if balance < 0:
+            previous_informed_total = sum(
+                (row.amount for row in existing if row.source_type in ConstructionUnitPaymentSource.INFORMED_SOURCES),
+                Decimal("0"),
+            )
+            previous_balance = (
+                unit.sale_price + previous_documentation_total - previous_discount
+                - previous_informed_total - commission_offset
+            ) if unit.sale_price is not None else Decimal("0")
+            if balance < min(previous_balance, Decimal("0")):
+                raise ConstructionInvalidValueError(
+                    message="Os valores informados excedem o preço mais a documentação ou aumentam a diferença já registrada.",
+                    error_code="CONSTRUCTION_UNIT_PAYMENT_SOURCES_TOTAL_MISMATCH",
+                )
+            return list(sources.values())
+
+        self._validate_sale_balance_limit(balance)
+        previous_balance_source = sources.pop(ConstructionUnitPaymentSource.BALANCE, {})
+        if balance > 0:
+            sources[ConstructionUnitPaymentSource.BALANCE] = {
+                "source_type": ConstructionUnitPaymentSource.BALANCE,
+                "amount": balance,
+                "due_date": previous_balance_source.get("due_date"),
+                "installments": 1,
+                "generates_installments": False,
+            }
+        return list(sources.values())
+
+    @staticmethod
+    def _validate_sale_balance_limit(balance):
+        if balance > MAX_UNIT_SALE_AMOUNT:
+            raise ConstructionInvalidValueError(
+                message="O saldo da venda excede o limite de R$ 999.999.999.999,99. Revise os valores.",
+                error_code="CONSTRUCTION_UNIT_SALE_BALANCE_LIMIT",
+            )
+
+    @staticmethod
+    def _validate_sale_financing_date(financing_date, payment_sources):
+        if financing_date is None:
+            return
+        if financing_date > get_business_today(current_business_timezone()):
+            raise ConstructionInvalidValueError(
+                message="A data do financiamento não pode ser futura.",
+                error_code="CONSTRUCTION_FINANCING_FUTURE_DATE",
+            )
+        if not any(
+            source["source_type"] == ConstructionUnitPaymentSource.FINANCING and Decimal(source["amount"]) > 0
+            for source in payment_sources
+        ):
+            raise ConstructionInvalidValueError(
+                message="A data do financiamento exige financiamento maior que zero.",
+                error_code="CONSTRUCTION_FINANCING_REQUIRED",
+            )
+
+    def _update_sale_termination_terms(self, sale, project, terms):
+        segregated = self._sale_has_segregated_assets(sale=sale, project=project)
+        sale.termination_terms = {
+            **normalize_termination_terms(terms.model_dump(mode="json"), has_segregated_assets=segregated),
+            "has_segregated_assets": segregated,
+        }
+
     async def _upsert_current_sale(
         self,
         *,
@@ -1298,13 +1475,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
     ) -> ConstructionUnitSale:
         sale = await self._ensure_current_sale(unit=unit, project=project, actor_user_id=actor_user_id)
         if request.termination_terms is not None:
-            segregated = self._sale_has_segregated_assets(sale=sale, project=project)
-            sale.termination_terms = {
-                **normalize_termination_terms(
-                    request.termination_terms.model_dump(mode="json"), has_segregated_assets=segregated
-                ),
-                "has_segregated_assets": segregated,
-            }
+            self._update_sale_termination_terms(sale, project, request.termination_terms)
         sale.buyer_person_id = unit.buyer_person_id
         sale.secondary_buyer_person_id = unit.secondary_buyer_person_id
         sale.broker_person_id = unit.broker_person_id
@@ -4919,7 +5090,8 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         self,
         *,
         unit: ConstructionUnit,
-        request: ConstructionUnitSaleConfirmRequest,
+        items,
+        current_documentations=None,
     ) -> list[dict[str, Any]]:
         """Resolve cada item de documentacao para um tipo do catalogo da empresa.
 
@@ -4927,17 +5099,14 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         quando ele digitou um novo no combobox -- e so aqui o tipo novo e
         criado, nunca ao digitar.
         """
-        items = request.documentations or []
         if not items:
             return []
 
-        current_type_ids = {
-            documentation.documentation_type_id
-            for documentation in await self.repository.list_unit_documentations(
-                company_id=unit.company_id,
-                unit_id=unit.id,
+        if current_documentations is None:
+            current_documentations = await self.repository.list_unit_documentations(
+                company_id=unit.company_id, unit_id=unit.id,
             )
-        }
+        current_type_ids = {documentation.documentation_type_id for documentation in current_documentations}
 
         documentations: list[dict[str, Any]] = []
         seen_type_ids: set[UUID] = set()
@@ -6457,6 +6626,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                 error_code="CONSTRUCTION_UNIT_PAYMENT_SOURCES_TOTAL_MISMATCH",
             )
 
+        ConstructionProjectService._validate_sale_balance_limit(balance)
         if balance > Decimal("0"):
             # O saldo entra na composicao para o usuario ver o que ainda falta,
             # mas nao gera parcela: quem cobra o resto e o sinal ou o aditivo.

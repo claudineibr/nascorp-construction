@@ -1078,6 +1078,28 @@ export async function releaseConstructionUnitReservation({ bridge, unitId }) {
   return toUnitView(payload)
 }
 
+export async function updateDeliveredSale({ bridge, unitId, saleId, saleData }) {
+  const salePrice = toNullableNumber(saleData.salePrice)
+  return requestJson({
+    bridge,
+    path: `/v1/construction/units/${unitId}/confirm-sale`,
+    method: "POST",
+    body: {
+      sale_id: saleId,
+      ...(salePrice != null ? { sale_price: salePrice } : {}),
+      broker_person_id: toNullableString(saleData.brokerPersonId),
+      discount_amount: toNullableNumber(saleData.discountAmount) ?? 0,
+      contract_signature_date: toNullableString(saleData.contractSignatureDate),
+      financing_completed: Boolean(saleData.financingCompleted),
+      financing_date: toNullableString(saleData.financingDate),
+      sale_notes: toNullableString(saleData.saleNotes),
+      bank_sources: saleData.bankSources.map(toSalePaymentSourcePayload),
+      documentations: saleData.documentations.map(toSaleDocumentationPayload),
+      ...(saleData.terminationTerms ? { termination_terms: toTerminationTermsPayload(saleData.terminationTerms) } : {}),
+    },
+  })
+}
+
 export async function confirmConstructionUnitSale({ bridge, unitId, saleData }) {
   const paymentSources = (saleData.paymentSources ?? []).map(toSalePaymentSourcePayload)
   // first_due_date e a data do SALDO -- e com ela que o backend grava a fonte

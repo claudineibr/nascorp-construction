@@ -106,6 +106,7 @@ from app.schemas.construction import (
     ConstructionUnitListResponse,
     ConstructionUnitReserveRequest,
     ConstructionUnitResponse,
+    ConstructionDeliveredSaleUpdateRequest,
     ConstructionUnitSaleConfirmRequest,
     ConstructionUnitUpdate,
 )
@@ -512,7 +513,7 @@ async def release_unit_reservation(
 @router.post("/units/{unit_id}/confirm-sale", response_model=ConstructionUnitResponse)
 async def confirm_unit_sale(
     unit_id: UUID,
-    request_data: ConstructionUnitSaleConfirmRequest,
+    request_data: ConstructionUnitSaleConfirmRequest | ConstructionDeliveredSaleUpdateRequest,
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.UPDATE)),
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> ConstructionUnitResponse:

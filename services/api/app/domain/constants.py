@@ -1,3 +1,9 @@
+from decimal import Decimal
+
+
+MAX_UNIT_SALE_AMOUNT = Decimal("999999999999.99")
+
+
 class ConstructionProjectStatus:
     DRAFT = "draft"
     ACTIVE = "active"

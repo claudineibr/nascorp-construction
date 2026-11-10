@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.constants import (
+    MAX_UNIT_SALE_AMOUNT,
     ConstructionBlockStatus,
     ConstructionProjectStatus,
     ConstructionProjectType,
@@ -382,7 +383,7 @@ class ConstructionUnitSaleDocumentation(BaseModel):
 
     documentation_type_id: UUID | None = None
     name: str | None = Field(default=None, min_length=1, max_length=100)
-    amount: Decimal = Field(..., gt=0)
+    amount: Decimal = Field(..., gt=0, le=MAX_UNIT_SALE_AMOUNT)
 
     @model_validator(mode="after")
     def validate_type_reference(self) -> "ConstructionUnitSaleDocumentation":
@@ -416,6 +417,28 @@ class ConstructionDocumentationTypeResponse(BaseModel):
 class ConstructionDocumentationTypeListResponse(BaseModel):
     items: list[ConstructionDocumentationTypeResponse]
     total: int
+
+
+class ConstructionDeliveredSaleBankSource(BaseModel):
+    source_type: Literal["government_subsidy", "fgts", "financing"]
+    amount: Decimal = Field(gt=0, max_digits=14, decimal_places=2)
+    due_date: date | None = None
+    installments: Literal[1] = 1
+
+
+class ConstructionDeliveredSaleUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sale_id: UUID
+    documentations: list[ConstructionUnitSaleDocumentation]
+    bank_sources: list[ConstructionDeliveredSaleBankSource] | None = None
+    sale_price: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
+    broker_person_id: UUID | None = None
+    discount_amount: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
+    contract_signature_date: date | None = None
+    financing_completed: bool = False
+    financing_date: date | None = None
+    sale_notes: str | None = None
+    termination_terms: ConstructionTerminationTerms | None = None
 
 
 class ConstructionUnitSaleConfirmRequest(BaseModel):

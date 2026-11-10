@@ -116,6 +116,7 @@ import { resolveConstructionBridge } from "./bridge/constructionBridge.js"
 import {
   approveConstructionMeasurement,
   confirmConstructionUnitSale,
+  updateDeliveredSale,
   listConstructionUnitSales,
   terminationTermsError,
   createConstructionBlock,
@@ -249,6 +250,9 @@ const unitStatusOptions = [
 
 const unitStatusLabel = Object.fromEntries(unitStatusOptions.map((option) => [option.value, option.label]))
 const buyerHoldingUnitStatuses = ["reserved", "sold", "delivered"]
+const canEditUnitSale = (unit, canEditDeliveredSale) =>
+  (unit.status === "sold" && Boolean(unit.analyticCostCenterId)) ||
+  (canEditDeliveredSale && unit.status === "delivered" && Boolean(unit.currentSaleId))
 
 const measurementStatusOptions = [
   { value: "draft", label: "Rascunho" },
@@ -1148,28 +1152,8 @@ function buildSalePaymentSourcesFromForm(formSale) {
     .filter((paymentSource) => paymentSource.amountValue > 0)
 }
 
-function requiredSaleFieldError(formSale) {
-  if (!String(formSale.buyerPersonId ?? "").trim()) {
-    return "Informe a pessoa compradora para confirmar a venda."
-  }
-
-  const secondaryBuyerPersonId = String(formSale.secondaryBuyerPersonId ?? "").trim()
-  if (secondaryBuyerPersonId && secondaryBuyerPersonId === String(formSale.buyerPersonId ?? "").trim()) {
-    return "O comprador secundário deve ser diferente do comprador principal."
-  }
-
-  const grossSalePrice = parseCurrencyFormValue(formSale.salePrice)
-  const discountAmount = parseCurrencyFormValue(formSale.discountAmount)
-  if (discountAmount < 0) {
-    return "O desconto não pode ser negativo."
-  }
-
-  if (grossSalePrice > 0 && discountAmount >= grossSalePrice) {
-    return "O desconto deve ser menor que o preço da venda."
-  }
-
+function saleDocumentationError(formSale) {
   const seenDocumentationKeys = new Set()
-  let documentationTotal = 0
   for (const documentationRow of formSale.documentations ?? []) {
     const rowTypeName = String(documentationRow.documentationTypeName ?? "").trim()
     const rowTypeId = String(documentationRow.documentationTypeId ?? "").trim()
@@ -1195,8 +1179,33 @@ function requiredSaleFieldError(formSale) {
     }
 
     seenDocumentationKeys.add(documentationKey)
-    documentationTotal += rowAmount
   }
+  return null
+}
+
+function requiredSaleFieldError(formSale) {
+  if (!String(formSale.buyerPersonId ?? "").trim()) {
+    return "Informe a pessoa compradora para confirmar a venda."
+  }
+
+  const secondaryBuyerPersonId = String(formSale.secondaryBuyerPersonId ?? "").trim()
+  if (secondaryBuyerPersonId && secondaryBuyerPersonId === String(formSale.buyerPersonId ?? "").trim()) {
+    return "O comprador secundário deve ser diferente do comprador principal."
+  }
+
+  const grossSalePrice = parseCurrencyFormValue(formSale.salePrice)
+  const discountAmount = parseCurrencyFormValue(formSale.discountAmount)
+  if (discountAmount < 0) {
+    return "O desconto não pode ser negativo."
+  }
+
+  if (grossSalePrice > 0 && discountAmount >= grossSalePrice) {
+    return "O desconto deve ser menor que o preço da venda."
+  }
+
+  const documentationError = saleDocumentationError(formSale)
+  if (documentationError) return documentationError
+  const documentationTotal = sumSaleDocumentations(buildSaleDocumentationsFromForm(formSale))
 
   const paymentSources = buildSalePaymentSourcesFromForm(formSale)
   for (const paymentSource of paymentSources) {
@@ -1458,7 +1467,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [unitPaymentPlanError, setUnitPaymentPlanError] = useState(null)
   const [saleUnitForm, setSaleUnitForm] = useState(defaultSaleUnitForm)
   const [saleTargetUnit, setSaleTargetUnit] = useState(null)
-  const saleTargetUnitIdRef = useRef(null)
+  const saleEditorRequest = useRef(null)
   const [terminationUnit, setTerminationUnit] = useState(null)
   const [transferUnit, setTransferUnit] = useState(null)
   const canConfigureNfseReceivables = Boolean(bridge?.canCreate?.("receivable") && bridge?.canRead?.("fiscal_documents"))
@@ -2664,7 +2673,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     }
 
     void loadDocumentationTypes()
-    saleTargetUnitIdRef.current = unit.id
+    const request = Symbol()
+    saleEditorRequest.current = request
     setSaleTargetUnit(unit)
     setSaleUnitForm({
       ...defaultSaleUnitForm,
@@ -2683,17 +2693,17 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     if (unit.currentSaleId) {
       listConstructionUnitSales({ bridge, unitId: unit.id })
         .then((sales) => {
-          if (saleTargetUnitIdRef.current !== unit.id) return
+          if (saleEditorRequest.current !== request) return
           const current = sales.find((sale) => sale.id === unit.currentSaleId)
           if (current) setSaleUnitForm((form) => ({ ...form, terminationTerms: current.terminationTerms }))
         })
         .catch((requestError) => {
-          if (saleTargetUnitIdRef.current !== unit.id) return
+          if (saleEditorRequest.current !== request) return
           bridge?.feedback?.warning?.(requestError?.message ?? "Não foi possível carregar as regras de rescisão da venda.")
         })
     }
 
-    if (unit.status !== "sold") {
+    if (unit.status !== "sold" && unit.status !== "delivered") {
       setSaleComposition({ status: "ready", receivableTotal: null, commissionOffset: 0 })
       return
     }
@@ -2705,7 +2715,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     setSaleComposition({ status: "loading", receivableTotal: null, commissionOffset: 0 })
     try {
       const plan = await getConstructionUnitPaymentPlan({ bridge, unitId: unit.id })
-      if (saleTargetUnitIdRef.current !== unit.id) return
+      if (saleEditorRequest.current !== request) return
       setSaleUnitForm((current) => ({
         ...current,
         ...saleFormFieldsFromPlan(plan),
@@ -2722,7 +2732,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         commissionOffset: Number(plan.commissionOffset ?? 0),
       })
     } catch (requestError) {
-      if (saleTargetUnitIdRef.current !== unit.id) return
+      if (saleEditorRequest.current !== request) return
       setSaleComposition({ status: "failed", receivableTotal: null, commissionOffset: 0 })
       bridge?.feedback?.warning?.(
         requestError?.message ?? "Não foi possível carregar a composição atual da venda.",
@@ -3486,7 +3496,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       return
     }
 
-    saleTargetUnitIdRef.current = null
+    saleEditorRequest.current = null
     setSaleTargetUnit(null)
     setSaleUnitForm(defaultSaleUnitForm)
     setSaleComposition({ status: "ready", receivableTotal: null, commissionOffset: 0 })
@@ -3500,10 +3510,11 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const handleSaleUnitSubmit = async (event) => {
     event.preventDefault()
 
-    if (!saleTargetUnit) {
+    if (!saleTargetUnit || submittingSale) {
       return
     }
 
+    const isDelivered = saleTargetUnit.status === "delivered"
     if (saleComposition.status === "loading") {
       bridge?.feedback?.warning?.("Aguarde: a composição atual da venda ainda está carregando.")
       return
@@ -3511,12 +3522,13 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
     if (saleComposition.status === "failed") {
       bridge?.feedback?.error?.(
-        "A composição atual da venda não foi carregada. Feche e abra novamente: salvar agora refaria as parcelas em aberto com dados incompletos.",
+        "A composição atual da venda não foi carregada. Feche e abra a edição novamente.",
       )
       return
     }
 
-    const validationError = requiredSaleFieldError(saleUnitForm) ?? terminationTermsError(saleUnitForm.terminationTerms)
+    const validationError = (isDelivered ? saleDocumentationError(saleUnitForm) : requiredSaleFieldError(saleUnitForm))
+      ?? terminationTermsError(saleUnitForm.terminationTerms)
     if (validationError) {
       bridge?.feedback?.warning?.(validationError)
       return
@@ -3524,24 +3536,42 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
     setSubmittingSale(true)
     try {
+      const documentations = buildSaleDocumentationsFromForm(saleUnitForm)
       const paymentSources = buildSalePaymentSourcesFromForm(saleUnitForm)
-      await confirmConstructionUnitSale({
-        bridge,
-        unitId: saleTargetUnit.id,
-        saleData: {
-          ...saleUnitForm,
-          firstDueDate: resolveBalanceDueDate(saleUnitForm),
-          paymentSources,
-          documentations: buildSaleDocumentationsFromForm(saleUnitForm),
-        },
-      })
+      if (isDelivered) {
+        const updatedSale = await updateDeliveredSale({
+          bridge,
+          unitId: saleTargetUnit.id,
+          saleId: saleTargetUnit.currentSaleId,
+          saleData: {
+            ...saleUnitForm,
+            salePrice: saleTargetUnit.salePrice == null ? saleUnitForm.salePrice : null,
+            bankSources: paymentSources.filter((source) => !SALE_INSTALLMENT_SOURCE_TYPES.includes(source.sourceType)),
+            documentations,
+          },
+        })
+        setUnits((current) => current.map((unit) =>
+          unit.id === saleTargetUnit.id ? { ...unit, salePrice: updatedSale.sale_price } : unit,
+        ))
+        bridge?.feedback?.success?.("Venda atualizada. A unidade está Entregue.")
+      } else {
+        await confirmConstructionUnitSale({
+          bridge,
+          unitId: saleTargetUnit.id,
+          saleData: {
+            ...saleUnitForm,
+            firstDueDate: resolveBalanceDueDate(saleUnitForm),
+            paymentSources,
+            documentations,
+          },
+        })
+        bridge?.feedback?.success?.(saleTargetUnit.status === "sold"
+          ? "Venda atualizada: contrato e parcelas em aberto refeitos."
+          : "Venda confirmada com sucesso.")
+      }
       // Os tipos criados digitando no combobox só existem depois do confirm:
       // recarregar deixa o próximo lançamento achá-los na lista.
       void loadDocumentationTypes()
-      const wasEditing = saleTargetUnit.status === "sold"
-      bridge?.feedback?.success?.(
-        wasEditing ? "Venda atualizada: contrato e parcelas em aberto refeitos." : "Venda confirmada com sucesso.",
-      )
       closeSaleUnitModal()
       await loadUnits()
 
@@ -3552,10 +3582,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       }
     } catch (requestError) {
       bridge?.feedback?.error?.(
-        requestError?.message ??
-          (saleTargetUnit.status === "sold"
-            ? "Não foi possível atualizar a venda da unidade."
-            : "Não foi possível confirmar a venda da unidade."),
+        requestError?.message ?? "Não foi possível salvar a venda da unidade.",
       )
     } finally {
       setSubmittingSale(false)
@@ -4789,6 +4816,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                       onReserve={openReserveUnitModal}
                       onRelease={handleReleaseUnit}
                       onSale={openSaleUnitModal}
+                      canEditDeliveredSale={Boolean(bridge?.canUpdate?.("construction_units"))}
                       onTerminate={canTerminateUnits ? setTerminationUnit : null}
                     />
                   </>
@@ -5983,7 +6011,7 @@ function UnitDetailPanel({
   const canReserve = unit.status === "available"
   const canRelease = unit.status === "reserved"
   const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
-  const canEditSale = unit.status === "sold" && Boolean(unit.analyticCostCenterId)
+  const canEditSale = canEditUnitSale(unit, bridge?.canUpdate?.("construction_units"))
 
   return (
     <div className={styles.integrationPanel}>
@@ -8016,6 +8044,7 @@ function UnitsList({
   onReserve,
   onRelease,
   onSale,
+  canEditDeliveredSale,
   onTerminate,
 }) {
   const blockNameById = useMemo(() => {
@@ -8072,7 +8101,7 @@ function UnitsList({
             const canReserve = unit.status === "available"
             const canRelease = unit.status === "reserved"
             const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
-  const canEditSale = unit.status === "sold" && Boolean(unit.analyticCostCenterId)
+            const canEditSale = canEditUnitSale(unit, canEditDeliveredSale)
 
             return (
               <tr key={unit.id}>
@@ -9665,6 +9694,7 @@ function UnitModal({ mode, unitForm, blocks, units, editingUnitId, onClose, onCh
   // silencio. O servidor recusa; o campo fica travado para nao oferecer o que
   // vai ser negado.
   const codeIsLocked = mode !== "create"
+  const salePriceLocked = mode === "edit" && units.some((unit) => unit.id === editingUnitId && unit.status === "delivered")
 
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
@@ -9813,9 +9843,13 @@ function UnitModal({ mode, unitForm, blocks, units, editingUnitId, onClose, onCh
                 type="text"
                 inputMode="decimal"
                 value={unitForm.salePrice}
+                disabled={salePriceLocked}
                 onChange={(event) => onChange("salePrice", formatCurrencyInput(event.target.value))}
                 placeholder="0,00"
               />
+              {salePriceLocked && !unitForm.salePrice && (
+                <span className={styles.metricHint}>Para preencher o preço em branco, use Editar venda.</span>
+              )}
             </label>
             <label className={styles.filterControl}>
               <span>Status*</span>
@@ -9893,6 +9927,113 @@ function ReserveUnitModal({ reserveForm, unit, people, onClose, onChange, onSubm
   )
 }
 
+function SaleDocumentationEditor({ saleForm, onChange, documentationTypes, loadingDocumentationTypes, disabled }) {
+  const documentationRows = saleForm.documentations ?? []
+  const documentationTotal = sumSaleDocumentations(buildSaleDocumentationsFromForm(saleForm))
+
+  const changeDocumentationRow = (key, changes) => {
+    onChange(
+      "documentations",
+      documentationRows.map((row) => (row.key === key ? { ...row, ...changes } : row)),
+    )
+  }
+
+  const removeDocumentationRow = (key) => {
+    onChange(
+      "documentations",
+      documentationRows.filter((row) => row.key !== key),
+    )
+  }
+
+  const addDocumentationRow = () => {
+    onChange("documentations", [...documentationRows, makeSaleDocumentationRow()])
+  }
+
+  return (
+    <div className={styles.card}>
+      <div className={styles.scopeMeta}>
+        <strong>Documentação</strong>
+        <span className={styles.metricHint}>
+          Avaliação, prefeitura, cartório, IPTU e outras taxas cobradas do comprador.{" "}
+          <strong>Entram no saldo devedor.</strong>
+        </span>
+      </div>
+      {documentationRows.map((documentationRow) => (
+        <div key={documentationRow.key} className={styles.formGrid}>
+          <div className={styles.filterControl}>
+            <span>Tipo *</span>
+            <CreatableCombobox
+              allowCreate
+              disabled={disabled}
+              items={documentationTypes}
+              loading={loadingDocumentationTypes}
+              placeholder="Escolha ou digite um novo tipo"
+              emptyMessage="Nenhum tipo cadastrado."
+              notFoundMessage="Nenhum tipo encontrado."
+              value={
+                documentationRow.documentationTypeName
+                  ? {
+                      id: documentationRow.documentationTypeId || null,
+                      name: documentationRow.documentationTypeName,
+                    }
+                  : null
+              }
+              onChange={(documentationType) =>
+                changeDocumentationRow(documentationRow.key, {
+                  documentationTypeId: documentationType?.id ?? "",
+                  documentationTypeName: documentationType?.name ?? "",
+                })
+              }
+            />
+          </div>
+          <label className={styles.filterControl}>
+            <span>Valor *</span>
+            <input
+              type="text"
+              inputMode="decimal"
+              disabled={disabled}
+              value={documentationRow.amount}
+              onChange={(event) =>
+                changeDocumentationRow(documentationRow.key, {
+                  amount: formatCurrencyInput(event.target.value),
+                })
+              }
+              placeholder="0,00"
+            />
+          </label>
+          <div className={styles.filterControl}>
+            <span>&nbsp;</span>
+            <button
+              type="button"
+              className={styles.secondaryButton}
+              onClick={() => removeDocumentationRow(documentationRow.key)}
+              disabled={disabled}
+            >
+              <Trash2 size={16} />
+              Remover
+            </button>
+          </div>
+        </div>
+      ))}
+      <div className={styles.formGrid}>
+        <div className={styles.filterControl}>
+          <span>&nbsp;</span>
+          <button type="button" className={styles.primaryButton} onClick={addDocumentationRow} disabled={disabled}>
+            <Plus size={16} />
+            Incluir documentação
+          </button>
+        </div>
+        <div className={styles.filterControl}>
+          <span>Total da documentação</span>
+          <strong className={styles.installmentPreview}>
+            {documentationTotal > 0 ? formatMoney(documentationTotal) : "-"}
+          </strong>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function SaleUnitModal({
   saleForm,
   unit,
@@ -9906,7 +10047,9 @@ function SaleUnitModal({
   composition = { status: "ready", receivableTotal: null },
   hasSegregatedAssets = false,
 }) {
-  const isEditing = unit?.status === "sold"
+  const isDelivered = unit?.status === "delivered"
+  const isEditing = unit?.status === "sold" || isDelivered
+  const salePriceLocked = isDelivered && unit.salePrice != null
   const grossSalePrice = parseCurrencyFormValue(saleForm.salePrice)
   const discountAmount = parseCurrencyFormValue(saleForm.discountAmount)
 
@@ -9928,7 +10071,6 @@ function SaleUnitModal({
   const downPaymentTotal = installmentSources.reduce((total, source) => total + source.amountValue, 0)
   const settlementTotal = settlementSources.reduce((total, source) => total + source.amountValue, 0)
 
-  const documentationRows = saleForm.documentations ?? []
   const documentationTotal = sumSaleDocumentations(buildSaleDocumentationsFromForm(saleForm))
 
   // SALDO = preço + documentação - desconto - entrada - financiamento - FGTS
@@ -9969,28 +10111,10 @@ function SaleUnitModal({
   // das fontes serem persistidas, parcela removida à mão). Salvar realinha os
   // dois, e um salto de valor aqui não pode passar sem o usuário ver.
   const divergesFromReceivable =
-    isEditing &&
+    isEditing && !isDelivered &&
     composition.status === "ready" &&
     composition.receivableTotal != null &&
     Math.abs(Number(composition.receivableTotal) - receivableTotal) > 0.01
-
-  const changeDocumentationRow = (key, changes) => {
-    onChange(
-      "documentations",
-      documentationRows.map((row) => (row.key === key ? { ...row, ...changes } : row)),
-    )
-  }
-
-  const removeDocumentationRow = (key) => {
-    onChange(
-      "documentations",
-      documentationRows.filter((row) => row.key !== key),
-    )
-  }
-
-  const addDocumentationRow = () => {
-    onChange("documentations", [...documentationRows, makeSaleDocumentationRow()])
-  }
 
   return (
     <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
@@ -10010,7 +10134,10 @@ function SaleUnitModal({
           </button>
         </header>
         <form className={styles.modalBody} onSubmit={onSubmit}>
-          {isEditing ? (
+          {isDelivered && (
+            <p className={styles.metricHint}>Unidade entregue. Salve as alterações na composição da venda.</p>
+          )}
+          {isEditing && !isDelivered ? (
             <p className={styles.metricHint}>
               Salvar reescreve o contrato e refaz as parcelas <strong>em aberto</strong> desta unidade. As
               parcelas já pagas são preservadas e o que restar é redistribuído.
@@ -10018,8 +10145,7 @@ function SaleUnitModal({
           ) : null}
           {compositionFailed ? (
             <p className={styles.metricHint}>
-              <strong>A composição atual da venda não foi carregada.</strong> Feche e abra novamente: salvar
-              agora refaria as parcelas em aberto com dados incompletos.
+              <strong>A composição atual da venda não foi carregada.</strong> Feche e abra a edição novamente.
             </p>
           ) : null}
           {divergesFromReceivable ? (
@@ -10032,19 +10158,21 @@ function SaleUnitModal({
           ) : null}
           <div className={styles.formGrid}>
             <PersonPicker
-              label="Comprador*"
+              label={isDelivered ? "Comprador" : "Comprador*"}
+              disabled={isDelivered}
               value={saleForm.buyerPersonId}
               onChange={(value) => onChange("buyerPersonId", value)}
               knownPeople={people}
-              emptyLabel="Buscar comprador pelo nome"
-              required
+              emptyLabel={isDelivered ? "Comprador não informado" : "Buscar comprador pelo nome"}
+              required={!isDelivered}
             />
             <PersonPicker
               label="Comprador secundário"
+              disabled={isDelivered}
               value={saleForm.secondaryBuyerPersonId}
               onChange={(value) => onChange("secondaryBuyerPersonId", value)}
               knownPeople={people}
-              emptyLabel="Buscar comprador secundário"
+              emptyLabel={isDelivered ? "Comprador secundário não informado" : "Buscar comprador secundário"}
             />
             <PersonPicker
               label="Corretor"
@@ -10055,14 +10183,18 @@ function SaleUnitModal({
               emptyLabel="Buscar corretor pelo nome"
             />
             <label className={styles.filterControl}>
-              <span>Preço da venda*</span>
+              <span>{isDelivered ? "Preço da venda" : "Preço da venda*"}</span>
               <input
                 type="text"
                 inputMode="decimal"
+                disabled={loading || salePriceLocked}
                 value={saleForm.salePrice}
                 onChange={(event) => onChange("salePrice", formatCurrencyInput(event.target.value))}
                 placeholder="0,00"
               />
+              {isDelivered && !salePriceLocked && (
+                <span className={styles.metricHint}>O preço fica bloqueado após o primeiro preenchimento.</span>
+              )}
             </label>
             <label className={styles.filterControl}>
               <span>Desconto</span>
@@ -10101,84 +10233,13 @@ function SaleUnitModal({
             />
           </div>
 
-          <div className={styles.card}>
-            <div className={styles.scopeMeta}>
-              <strong>Documentação</strong>
-              <span className={styles.metricHint}>
-                Avaliação, prefeitura, cartório, IPTU e outras taxas cobradas do comprador.{" "}
-                <strong>Entram no saldo devedor.</strong>
-              </span>
-            </div>
-            {documentationRows.map((documentationRow) => (
-              <div key={documentationRow.key} className={styles.formGrid}>
-                <div className={styles.filterControl}>
-                  <span>Tipo</span>
-                  <CreatableCombobox
-                    allowCreate
-                    items={documentationTypes}
-                    loading={loadingDocumentationTypes}
-                    placeholder="Escolha ou digite um novo tipo"
-                    emptyMessage="Nenhum tipo cadastrado."
-                    notFoundMessage="Nenhum tipo encontrado."
-                    value={
-                      documentationRow.documentationTypeName
-                        ? {
-                            id: documentationRow.documentationTypeId || null,
-                            name: documentationRow.documentationTypeName,
-                          }
-                        : null
-                    }
-                    onChange={(documentationType) =>
-                      changeDocumentationRow(documentationRow.key, {
-                        documentationTypeId: documentationType?.id ?? "",
-                        documentationTypeName: documentationType?.name ?? "",
-                      })
-                    }
-                  />
-                </div>
-                <label className={styles.filterControl}>
-                  <span>Valor</span>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={documentationRow.amount}
-                    onChange={(event) =>
-                      changeDocumentationRow(documentationRow.key, {
-                        amount: formatCurrencyInput(event.target.value),
-                      })
-                    }
-                    placeholder="0,00"
-                  />
-                </label>
-                <div className={styles.filterControl}>
-                  <span>&nbsp;</span>
-                  <button
-                    type="button"
-                    className={styles.secondaryButton}
-                    onClick={() => removeDocumentationRow(documentationRow.key)}
-                  >
-                    <Trash2 size={16} />
-                    Remover
-                  </button>
-                </div>
-              </div>
-            ))}
-            <div className={styles.formGrid}>
-              <div className={styles.filterControl}>
-                <span>&nbsp;</span>
-                <button type="button" className={styles.primaryButton} onClick={addDocumentationRow}>
-                  <Plus size={16} />
-                  Incluir documentação
-                </button>
-              </div>
-              <div className={styles.filterControl}>
-                <span>Total da documentação</span>
-                <strong className={styles.installmentPreview}>
-                  {documentationTotal > 0 ? formatMoney(documentationTotal) : "-"}
-                </strong>
-              </div>
-            </div>
-          </div>
+          <SaleDocumentationEditor
+            saleForm={saleForm}
+            onChange={onChange}
+            documentationTypes={documentationTypes}
+            loadingDocumentationTypes={loadingDocumentationTypes}
+            disabled={loading || compositionLoading || compositionFailed}
+          />
 
           <div className={styles.card}>
             <div className={styles.scopeMeta}>
@@ -10196,6 +10257,7 @@ function SaleUnitModal({
                     type="text"
                     inputMode="decimal"
                     value={saleForm[source.amountField]}
+                    disabled={loading || compositionLoading || compositionFailed}
                     onChange={(event) =>
                       onChange(source.amountField, formatCurrencyInput(event.target.value))
                     }
@@ -10206,6 +10268,7 @@ function SaleUnitModal({
                   <span>Previsão de liberação</span>
                   <input
                     type="date"
+                    disabled={loading || compositionLoading || compositionFailed}
                     value={saleForm[source.dueDateField]}
                     onChange={(event) => onChange(source.dueDateField, event.target.value)}
                   />
@@ -10244,9 +10307,10 @@ function SaleUnitModal({
               <div className={styles.scopeMeta}>
                 <strong>Cobrado do comprador</strong>
                 <span className={styles.metricHint}>
-                  Definido quando a venda foi confirmada e mantido como está ao salvar. Para alterar entrada,
-                  quantidade de parcelas ou vencimento, use <strong>Refazer plano de pagamento</strong> na aba
-                  Parcelas.
+                  {isDelivered
+                    ? "As parcelas existentes podem ser consultadas na aba Parcelas."
+                    : <>Definido quando a venda foi confirmada. Para alterar entrada, quantidade de parcelas ou
+                        vencimento, use <strong>Refazer plano de pagamento</strong> na aba Parcelas.</>}
                 </span>
               </div>
               <div className={styles.formGrid}>
@@ -10261,7 +10325,9 @@ function SaleUnitModal({
                 <div className={styles.filterControl}>
                   <span>Saldo devedor</span>
                   <strong className={styles.installmentPreview}>
-                    {balance > 0 ? `${balanceInstallments} x ${formatMoney(balanceInstallmentAmount)}` : "-"}
+                    {isDelivered
+                      ? (grossSalePrice > 0 ? formatMoney(Math.max(balance, 0)) : "-")
+                      : (balance > 0 ? `${balanceInstallments} x ${formatMoney(balanceInstallmentAmount)}` : "-")}
                   </strong>
                   <span className={styles.rowSecondaryText}>
                     preço + documentação - desconto - entrada - liberações do banco - sinal
@@ -10369,7 +10435,7 @@ function SaleUnitModal({
                 <tbody>
                   <tr>
                     <td>Preço da venda</td>
-                    <td className={styles.textRight}>{formatMoney(grossSalePrice)}</td>
+                    <td className={styles.textRight}>{isDelivered && grossSalePrice <= 0 ? "-" : formatMoney(grossSalePrice)}</td>
                   </tr>
                   <tr>
                     <td>Documentação</td>
@@ -10400,26 +10466,26 @@ function SaleUnitModal({
                       <div className={styles.rowSecondaryText}>ainda sem cobrança lançada</div>
                     </td>
                     <td className={styles.textRight}>
-                      <strong>{formatMoney(Math.max(balance, 0))}</strong>
+                      <strong>{isDelivered && grossSalePrice <= 0 ? "-" : formatMoney(Math.max(balance, 0))}</strong>
                     </td>
                   </tr>
                   <tr>
                     <td>
                       <strong>Total devido pelo comprador (entrada + sinal + saldo)</strong>
                       <div className={styles.rowSecondaryText}>
-                        {installmentCount ? `${installmentCount} parcela(s) no total` : "nenhuma parcela"}
+                        {!isDelivered && (installmentCount ? `${installmentCount} parcela(s) no total` : "nenhuma parcela")}
                       </div>
                     </td>
                     <td className={styles.textRight}>
-                      <strong>{formatMoney(receivableTotal)}</strong>
+                      <strong>{isDelivered && grossSalePrice <= 0 ? "-" : formatMoney(receivableTotal)}</strong>
                     </td>
                   </tr>
                 </tbody>
               </table>
             </div>
-            <span className={exceedsPrice ? styles.badgeMuted : styles.badgeSuccess}>
+            <span className={exceedsPrice || grossSalePrice <= 0 ? styles.badgeMuted : styles.badgeSuccess}>
               {grossSalePrice <= 0
-                ? "Informe o preço da venda"
+                ? (isDelivered ? "Preço da venda não informado" : "Informe o preço da venda")
                 : exceedsPrice
                   ? `Composição excede o preço mais a documentação em ${formatMoney(Math.abs(balance))}`
                   : `Cobrança do comprador: ${formatMoney(receivableTotal)}`}
