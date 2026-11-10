@@ -160,7 +160,7 @@ async def test_unpaid_commission_due_before_today_is_overdue(brasilia_today) -> 
         for commission in await service.list_unit_commissions(company_id=company_id, unit_id=unit.id)
         if commission.due_date == date(2026, 3, 1)
     )
-    await service.settle_unit_commission(company_id=company_id, commission_id=paid.id, payment_date=date(2026, 3, 2))
+    await service.settle_unit_commission(company_id=company_id, commission_id=paid.id, payment_date=date(2026, 3, 2), payment_method="PIX", actor_user_id=uuid4())
 
     composition = await service.build_unit_sale_composition(company_id=company_id, unit_id=unit.id)
 

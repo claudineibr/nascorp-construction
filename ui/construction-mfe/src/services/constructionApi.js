@@ -1458,6 +1458,7 @@ export async function getConstructionUnitPaymentPlan({ bridge, unitId }) {
     commissionPaidTotal: payload.commission_paid_total ?? null,
     commissionOffset: payload.commission_offset ?? null,
     commissions: (payload.commissions ?? []).map(toUnitCommissionView),
+    historicalCommissions: (payload.historical_commissions ?? []).map(toUnitCommissionView),
     externalReceivableId: payload.external_receivable_id ?? null,
     externalReceivableStatus: payload.external_receivable_status ?? null,
     documentations: (payload.documentations ?? []).map((documentation) => ({
@@ -1514,6 +1515,8 @@ const toUnitCommissionView = (commission) => ({
   amount: commission.amount ?? null,
   dueDate: commission.due_date ?? null,
   paymentDate: commission.payment_date ?? null,
+  paymentMethod: commission.payment_method ?? null,
+  updatedAt: commission.updated_at,
   status: commission.status ?? null,
   composesSalePrice: Boolean(commission.composes_sale_price),
   receiptTemplateId: commission.receipt_template_id ?? null,
@@ -1571,15 +1574,28 @@ export async function updateConstructionUnitCommission({ bridge, commissionId, c
   return toUnitCommissionView(payload)
 }
 
-export async function settleConstructionUnitCommission({ bridge, commissionId, paymentDate }) {
+export async function settleConstructionUnitCommission({ bridge, commissionId, paymentDate, paymentMethod, expectedUpdatedAt }) {
   const payload = await requestJson({
     bridge,
     path: `/v1/construction/commissions/${commissionId}/settle`,
     method: "POST",
-    body: { payment_date: toNullableString(paymentDate) },
+    body: {
+      payment_date: toNullableString(paymentDate),
+      payment_method: toNullableString(paymentMethod),
+      expected_updated_at: expectedUpdatedAt,
+    },
   })
 
   return toUnitCommissionView(payload)
+}
+
+export async function completeConstructionUnitCommissionPaymentMethod({ bridge, commissionId, paymentMethod, expectedUpdatedAt }) {
+  return requestJson({
+    bridge,
+    path: `/v1/construction/commissions/${commissionId}/payment-method`,
+    method: "PATCH",
+    body: { payment_method: paymentMethod, expected_updated_at: expectedUpdatedAt },
+  })
 }
 
 export async function deleteConstructionUnitCommission({ bridge, commissionId }) {
@@ -2392,8 +2408,8 @@ export {
 export const bankSlipErpOperation = ({ bridge, path, method = "POST", body = null }) =>
   requestJson({ bridge, baseUrl: erpBaseUrl(bridge), path: `/v1/bank-slips${path}`, method, body })
 
-export const downloadErpCommissionReceiptPdf = ({ bridge, commissionId }) => downloadErpPdf({
-  bridge, path: `/v1/receipts/construction-commissions/${commissionId}/pdf`,
+export const downloadErpCommissionReceiptPdf = ({ bridge, commissionId, unitId }) => downloadErpPdf({
+  bridge, path: `/v1/receipts/construction-commissions/${commissionId}/pdf?unit_id=${encodeURIComponent(unitId)}`,
   fallbackMessage: "Não foi possível baixar o recibo do sinal.",
 })
 

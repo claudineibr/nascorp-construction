@@ -104,7 +104,7 @@ async def test_the_paid_commission_that_composes_lowers_what_the_buyer_still_owe
             await service.settle_unit_commission(
                 company_id=company_id,
                 commission_id=commissions[0].id,
-                payment_date=date(2026, 3, 12),
+                payment_date=date(2026, 3, 12), payment_method="PIX", actor_user_id=uuid4(),
             )
             await service.confirm_unit_sale(
                 company_id=company_id,

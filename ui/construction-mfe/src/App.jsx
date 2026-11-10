@@ -170,6 +170,7 @@ import {
   releaseConstructionUnitReservation,
   reserveConstructionUnit,
   settleConstructionUnitCommission,
+  completeConstructionUnitCommissionPaymentMethod,
   submitConstructionMeasurement,
   submitConstructionProcurementRequest,
   updateConstructionBlock,
@@ -1315,7 +1316,9 @@ export default function ConstructionApp({ bridge: providedBridge } = {}) {
       {error || "Carregando configuração da empresa..."}
     </p>
   }
-  return bridge.assistanceView ? <AssistancePanel key={bridge.companyContext?.companyId} bridge={bridge} /> : <ConstructionWorkspace bridge={bridge} />
+  return bridge.assistanceView
+    ? <AssistancePanel key={companyId} bridge={bridge} />
+    : <ConstructionWorkspace key={companyId} bridge={bridge} />
 }
 
 function ConstructionWorkspace({ bridge: providedBridge }) {
@@ -1346,7 +1349,20 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [viewMode, setViewMode] = useState("projects")
   const [projectDetailTab, setProjectDetailTab] = useState("overview")
   const [activeProjectId, setActiveProjectId] = useState(null)
-  const [activeUnitId, setActiveUnitId] = useState(null)
+  const [activeUnitId, updateActiveUnitId] = useState(null)
+  const activeUnitIdRef = useRef(null)
+  const unitPaymentPlanRequest = useRef(0)
+  const setActiveUnitId = useCallback((unitId) => {
+    if (activeUnitIdRef.current !== unitId) {
+      activeUnitIdRef.current = unitId
+      unitPaymentPlanRequest.current += 1
+    }
+    updateActiveUnitId(unitId)
+  }, [])
+  useEffect(() => () => {
+    activeUnitIdRef.current = null
+    unitPaymentPlanRequest.current += 1
+  }, [])
   const [unitBuyerFilter, setUnitBuyerFilter] = useState({ projectId: null, personId: "" })
   const [unitDetailTab, setUnitDetailTab] = useState("summary")
 
@@ -1503,6 +1519,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   // servidor e dois cliques seguidos na mesma linha pediriam duas vezes.
   const [receiptBusyId, setReceiptBusyId] = useState(null)
   const [receiptInstallment, setReceiptInstallment] = useState(null)
+  const [settlingCommission, setSettlingCommission] = useState(null)
+  const [submittingCommissionSettlement, setSubmittingCommissionSettlement] = useState(false)
   // A lista vista de dentro do callback, sem ele depender dela: com
   // `personSummaries` na dependencia, cada pessoa acrescentada recriava o
   // callback e o efeito disparava de novo.
@@ -1584,7 +1602,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       setActiveUnitId(null)
       setViewMode("projects")
     }
-  }, [activeProjectId, projects, restoredProject])
+  }, [activeProjectId, projects, restoredProject, setActiveUnitId])
 
   useEffect(() => {
     if (!activeUnitId) {
@@ -1596,7 +1614,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       setActiveUnitId(null)
       setUnitDetailTab("summary")
     }
-  }, [activeUnitId, units])
+  }, [activeUnitId, units, setActiveUnitId])
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === activeProjectId) ?? (restoredProject?.id === activeProjectId ? restoredProject : null),
@@ -2030,6 +2048,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }
 
   const closeUnitDetail = () => {
+    setSettlingCommission(null)
     setActiveUnitId(null)
     setUnitDetailTab("summary")
     setUnitPaymentPlan(null)
@@ -3208,10 +3227,12 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   // paga e sem recibo, emite e baixa. A ordem importa: `generate` promove um
   // provisorio se houver, entao consultar antes evita queimar numeracao.
   const handleCommissionReceipt = async (commission) => {
-    if (receiptBusyId) return
+    const unitId = selectedUnit?.id
+    if (!unitId || unitId !== commission.unitId || unitId !== activeUnitIdRef.current || receiptBusyId) return
     setReceiptBusyId(commission.id)
     try {
-      const blob = await downloadErpCommissionReceiptPdf({ bridge, commissionId: commission.id })
+      const blob = await downloadErpCommissionReceiptPdf({ bridge, commissionId: commission.id, unitId })
+      if (activeUnitIdRef.current !== unitId) return
       const url = URL.createObjectURL(blob)
       const link = document.createElement("a")
       link.href = url
@@ -3223,7 +3244,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       link.remove()
       setTimeout(() => URL.revokeObjectURL(url), 60000)
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível baixar o recibo do sinal.")
+      if (activeUnitIdRef.current === unitId) {
+        bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível baixar o recibo do sinal.")
+      }
     } finally {
       setReceiptBusyId(null)
     }
@@ -3361,24 +3384,32 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     }
   }
 
-  const handleSettleCommission = async (commission) => {
-    if (!selectedUnit) {
-      return
-    }
+  const handleSettleCommission = async (commission, paymentDate, paymentMethod, complete = false) => {
+    if (selectedUnit?.id !== commission.unitId || submittingCommissionSettlement) return
 
-    // Estornar devolve o sinal para em aberto: e o caminho para corrigir um
-    // sinal que compoe a venda e foi baixado por engano.
-    const paymentDate = commission.paymentDate ? null : brazilTodayISO()
+    setSubmittingCommissionSettlement(true)
     try {
-      await settleConstructionUnitCommission({
+      const options = {
         bridge,
         commissionId: commission.id,
-        paymentDate,
-      })
-      bridge?.feedback?.success?.(paymentDate ? "Sinal baixado." : "Baixa do sinal estornada.")
-      await loadUnitPaymentPlan(selectedUnit.id)
+        paymentMethod,
+        expectedUpdatedAt: commission.updatedAt,
+      }
+      if (complete) {
+        await completeConstructionUnitCommissionPaymentMethod(options)
+      } else {
+        await settleConstructionUnitCommission({ ...options, paymentDate })
+      }
+      const message = complete
+        ? "Forma de recebimento registrada."
+        : paymentDate ? "Sinal baixado." : "Baixa do sinal estornada."
+      bridge?.feedback?.success?.(message)
+      setSettlingCommission(null)
+      await loadUnitPaymentPlan(commission.unitId)
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível baixar o sinal.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível salvar a baixa do sinal.")
+    } finally {
+      setSubmittingCommissionSettlement(false)
     }
   }
 
@@ -3606,20 +3637,25 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
   const loadUnitPaymentPlan = useCallback(
     async (unitId) => {
-      if (!unitId) {
-        return
-      }
+      if (!unitId || unitId !== activeUnitIdRef.current) return
 
+      const requestId = ++unitPaymentPlanRequest.current
+      const isCurrent = () => requestId === unitPaymentPlanRequest.current && unitId === activeUnitIdRef.current
       setLoadingUnitPaymentPlan(true)
       setUnitPaymentPlanError(null)
       try {
         const plan = await getConstructionUnitPaymentPlan({ bridge, unitId })
+        if (!isCurrent()) return
+        if (plan.constructionUnitId !== unitId) {
+          throw new Error("As parcelas recebidas não pertencem à unidade aberta.")
+        }
         setUnitPaymentPlan(plan)
       } catch (requestError) {
+        if (!isCurrent()) return
         setUnitPaymentPlan(null)
         setUnitPaymentPlanError(requestError?.message ?? "Não foi possível carregar as parcelas da unidade.")
       } finally {
-        setLoadingUnitPaymentPlan(false)
+        if (isCurrent()) setLoadingUnitPaymentPlan(false)
       }
     },
     [bridge]
@@ -4697,7 +4733,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                     onOpenMeasurementItems={openMeasurementItems}
                     onSubmitMeasurement={handleSubmitMeasurement}
                     onRejectMeasurement={openRejectMeasurement}
-                    paymentPlan={unitPaymentPlan}
+                    paymentPlan={unitPaymentPlan?.constructionUnitId === selectedUnit.id ? unitPaymentPlan : null}
                     loadingPaymentPlan={loadingUnitPaymentPlan}
                     paymentPlanError={unitPaymentPlanError}
                     onRetryPaymentPlan={loadUnitPaymentPlan}
@@ -4714,7 +4750,10 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                     people={personSummaries}
                     onEnsurePeople={ensurePeopleLoaded}
                     onCreateCommission={openCommissionModal}
-                    onSettleCommission={handleSettleCommission}
+                    onSettleCommission={setSettlingCommission}
+                    onReverseCommission={bridge?.canUpdate?.("construction_units") ? (
+                      (commission) => handleSettleCommission(commission, null, null)
+                    ) : null}
                     onDeleteCommission={handleDeleteCommission}
                     onCreateAdjustment={openAdjustmentModal}
                   />
@@ -5006,6 +5045,17 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           onChange={handleCreateInstallmentChange}
           onSubmit={handleSubmitCreateInstallment}
           loading={submittingCreateInstallment}
+        />
+      ) : null}
+
+      {settlingCommission && selectedUnit?.id === settlingCommission.unitId ? (
+        <CommissionSettlementDialog
+          key={settlingCommission.id}
+          bridge={bridge}
+          commission={settlingCommission}
+          saving={submittingCommissionSettlement}
+          onClose={() => setSettlingCommission(null)}
+          onSave={(date, method) => handleSettleCommission(settlingCommission, date, method, Boolean(settlingCommission.paymentDate))}
         />
       ) : null}
 
@@ -5911,6 +5961,7 @@ function UnitDetailPanel({
   onEnsurePeople,
   onCreateCommission,
   onSettleCommission,
+  onReverseCommission,
   onDeleteCommission,
   onCreateAdjustment,
 }) {
@@ -6131,6 +6182,9 @@ function UnitDetailPanel({
           onRetry={() => onRetryPaymentPlan(unit.id)}
           onCreate={onCreateCommission}
           onSettle={onSettleCommission}
+          canSettle={bridge?.canUpdate?.("construction_units")}
+          canComplete={bridge?.canUpdate?.("construction_units") || bridge?.canRead?.("receipt")}
+          onReverse={onReverseCommission}
           onDelete={onDeleteCommission}
           onReceipt={onCommissionReceipt}
           receiptBusyId={receiptBusyId}
@@ -7404,6 +7458,9 @@ function UnitCommissionsPanel({
   onRetry,
   onCreate,
   onSettle,
+  canSettle,
+  canComplete,
+  onReverse,
   onDelete,
   onReceipt,
   receiptBusyId,
@@ -7431,6 +7488,10 @@ function UnitCommissionsPanel({
 
   const composition = plan ?? {}
   const commissions = composition.commissions ?? []
+  const rows = [
+    ...commissions,
+    ...(composition.historicalCommissions ?? []).map((commission) => ({ ...commission, historical: true })),
+  ]
   const personNameById = Object.fromEntries((people ?? []).map((person) => [person.id, person.name]))
   // Antes da venda nao ha composicao, e o sinal costuma ser lancado justamente
   // nessa fase. Depois de vendida, saldo zerado quer dizer que nao sobrou o que
@@ -7479,7 +7540,7 @@ function UnitCommissionsPanel({
             </button>
           </span>
         </div>
-        {commissions.length ? (
+        {rows.length ? (
           <div className={styles.tableWrapper}>
             <table className={styles.table}>
               <thead>
@@ -7493,10 +7554,11 @@ function UnitCommissionsPanel({
                 </tr>
               </thead>
               <tbody>
-                {commissions.map((commission) => (
+                {rows.map((commission) => (
                   <tr key={commission.id}>
                     <td>
                       <strong>{commission.sequenceNumber}</strong>
+                      {commission.historical ? <div className={styles.rowSecondaryText}>Venda anterior</div> : null}
                     </td>
                     <td>
                       {personNameById[commission.beneficiaryPersonId] ?? commission.beneficiaryPersonId}
@@ -7524,23 +7586,31 @@ function UnitCommissionsPanel({
                             key: "receipt",
                             label: "Baixar recibo",
                             icon: FileText,
-                            disabled: !commission.paymentDate || Boolean(receiptBusyId),
-                            title: !commission.paymentDate ? "Baixe o sinal antes de emitir o recibo." : undefined,
+                            disabled: !commission.paymentDate || !commission.paymentMethod || Boolean(receiptBusyId),
+                            title: !commission.paymentDate
+                              ? "Baixe o sinal antes de emitir o recibo."
+                              : !commission.paymentMethod ? "Informe a forma de recebimento antes de emitir o recibo." : undefined,
                             onSelect: () => onReceipt(commission),
                           }] : []),
-                          {
+                          ...(!commission.paymentMethod && (commission.paymentDate ? canComplete : canSettle) ? [{
                             key: "settle",
-                            label: commission.paymentDate ? "Estornar baixa" : "Baixar sinal",
+                            label: commission.paymentDate ? "Informar forma de recebimento" : "Baixar sinal",
                             icon: CheckCircle,
                             onSelect: () => onSettle(commission),
-                          },
-                          {
+                          }] : []),
+                          ...(onReverse && commission.paymentDate && !commission.historical ? [{
+                            key: "reverse",
+                            label: "Estornar baixa",
+                            icon: RotateCcw,
+                            onSelect: () => onReverse(commission),
+                          }] : []),
+                          ...(!commission.historical ? [{
                             key: "delete",
                             label: "Excluir",
                             icon: Trash2,
                             danger: true,
                             onSelect: () => onDelete(commission),
-                          },
+                          }] : []),
                         ]}
                       />
                     </td>
@@ -7558,6 +7628,65 @@ function UnitCommissionsPanel({
         )}
       </div>
     </div>
+  )
+}
+
+function CommissionSettlementDialog({ bridge, commission, saving, onClose, onSave }) {
+  const formId = useId()
+  const [date, setDate] = useState(() => commission.paymentDate ?? brazilTodayISO())
+  const [method, setMethod] = useState("")
+  const [methods, setMethods] = useState(null)
+  const [attempt, setAttempt] = useState(0)
+  const title = commission.paymentDate ? "Informar forma de recebimento" : "Baixar sinal"
+
+  useEffect(() => {
+    let active = true
+    listErpPaymentMethods({ bridge })
+      .then((options) => {
+        if (active) setMethods(options.filter((option) => !option.settlement_only && !option.credit_only))
+      })
+      .catch((error) => {
+        if (!active) return
+        setMethods([])
+        bridge?.feedback?.error?.(error.message ?? "Não foi possível carregar as formas de recebimento.")
+      })
+    return () => { active = false }
+  }, [bridge, attempt])
+
+  const footer = (
+    <div className={styles.dialogActions}>
+      <button type="button" className={styles.secondaryButton} disabled={saving} onClick={onClose}>Cancelar</button>
+      <button type="submit" form={formId} className={styles.primaryButton} disabled={saving || !date || !method}>
+        {saving ? "Salvando..." : "Confirmar"}
+      </button>
+    </div>
+  )
+  return (
+    <UnitBankSlipDialogFrame bridge={bridge} title={title} onClose={saving ? undefined : onClose} footer={footer} dialogMaxWidth={560}>
+      <form id={formId} className={styles.formGrid} onSubmit={(event) => {
+        event.preventDefault()
+        if (!saving && date && method) onSave(date, method)
+      }}>
+        <label className={styles.filterControl}>
+          <span>Data do pagamento *</span>
+          <input type="date" value={date} readOnly={Boolean(commission.paymentDate)} required disabled={saving}
+            max={commission.paymentDate ? undefined : brazilTodayISO()} onChange={(event) => setDate(event.target.value)} />
+        </label>
+        <label className={styles.filterControl}>
+          <span>Forma de recebimento *</span>
+          <select value={method} required disabled={saving || !methods?.length} onChange={(event) => setMethod(event.target.value)}>
+            <option value="">{methods === null ? "Carregando..." : "Selecione"}</option>
+            {methods?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        {methods?.length === 0 ? (
+          <button type="button" className={styles.secondaryButton} onClick={() => {
+            setMethods(null)
+            setAttempt((value) => value + 1)
+          }}>Tentar carregar as formas novamente</button>
+        ) : null}
+      </form>
+    </UnitBankSlipDialogFrame>
   )
 }
 

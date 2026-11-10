@@ -621,8 +621,14 @@ class ConstructionUnitCommissionUpdate(BaseModel):
 
 
 class ConstructionUnitCommissionSettleRequest(BaseModel):
-    #: ``None`` estorna a baixa e devolve o sinal para em aberto.
-    payment_date: date | None = None
+    payment_date: date | None
+    payment_method: str | None = Field(default=None, max_length=30)
+    expected_updated_at: datetime | None = None
+
+
+class ConstructionUnitCommissionPaymentMethodRequest(BaseModel):
+    payment_method: str = Field(min_length=1, max_length=30)
+    expected_updated_at: datetime
 
 
 class ConstructionUnitCommissionResponse(BaseModel):
@@ -636,6 +642,7 @@ class ConstructionUnitCommissionResponse(BaseModel):
     amount: Decimal
     due_date: date
     payment_date: date | None = None
+    payment_method: str | None = None
     status: str = ConstructionUnitCommissionStatus.OPEN
     composes_sale_price: bool
     receipt_template_id: UUID | None = None

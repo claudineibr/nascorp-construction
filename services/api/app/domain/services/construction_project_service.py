@@ -5189,6 +5189,12 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             except Exception as request_error:
                 plan["erp_unavailable_reason"] = str(request_error)
 
+        historical_commissions = await self.repository.list_historical_paid_unit_commissions(
+            company_id=company_id, unit_id=unit.id, current_sale_id=unit.current_sale_id,
+        )
+        composition["historical_commissions"] = [
+            self.to_commission_response(commission) for commission in historical_commissions
+        ]
         composition["payment_plan"] = plan
         return composition
 
@@ -5567,6 +5573,8 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                 )
 
         if "beneficiary_person_id" in updates and updates["beneficiary_person_id"] != commission.beneficiary_person_id:
+            if commission.payment_date:
+                raise ConstructionInvalidValueError(message="Estorne a baixa antes de alterar o favorecido do sinal.")
             await self._require_company_people(
                 company_id=company_id,
                 actor_user_id=actor_user_id,
@@ -5591,19 +5599,76 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         company_id: UUID,
         commission_id: UUID,
         payment_date: date | None,
+        payment_method: str | None,
+        actor_user_id: UUID,
+        expected_updated_at: datetime | None = None,
     ) -> ConstructionUnitCommissionModel:
-        """Registra (ou estorna) a baixa do sinal.
-
-        Nao redispara o evento da venda de proposito: um sinal que compoe muda
-        o saldo exibido, mas reemitir o contrato por causa de uma comissao paga
-        seria pior que o problema. Quem quiser refletir no contrato reabre a
-        venda e salva.
-        """
+        log_context = f"company_id={company_id} commission_id={commission_id} actor_user_id={actor_user_id}"
+        _logger.info(f"[commission_settlement] solicitada: {log_context} payment_date={payment_date}")
         commission = await self._editable_transfer_commission(company_id, commission_id)
+        self._check_commission_version(commission, expected_updated_at, log_context)
+        if payment_date is None:
+            if payment_method is not None:
+                raise ConstructionInvalidValueError(message="O estorno não aceita forma de recebimento.")
+            if commission.payment_date is None and commission.payment_method is None:
+                return commission
+            action = "estorno"
+        else:
+            self._validate_commission_payment_method(payment_method, log_context)
+            if payment_date > get_business_today(current_business_timezone()):
+                _logger.info(f"[commission_settlement] recusada: {log_context} motivo=data_futura")
+                raise ConstructionInvalidValueError(message="A data do pagamento do sinal não pode ser futura.")
+            if commission.payment_date is not None:
+                if commission.payment_date == payment_date and commission.payment_method == payment_method:
+                    return commission
+                _logger.info(f"[commission_settlement] recusada: {log_context} motivo=baixa_existente")
+                raise ConstructionDomainError(
+                    status_code=409,
+                    message="O sinal já foi baixado. Atualize a tela ou estorne a baixa para alterá-la.",
+                )
+            action = "baixa"
+
         commission.payment_date = payment_date
+        commission.payment_method = payment_method
+        commission.payment_recorded_by_user_id = actor_user_id
         await self.repository.commit()
+        _logger.info(f"[commission_settlement] {action}_confirmado: {log_context} beneficiary_person_id={commission.beneficiary_person_id}")
         await self.repository.refresh(commission)
         return commission
+
+    async def complete_unit_commission_payment_method(
+        self, *, company_id, commission_id, payment_method, expected_updated_at, actor_user_id,
+    ):
+        log_context = f"company_id={company_id} commission_id={commission_id} actor_user_id={actor_user_id}"
+        _logger.info(f"[commission_settlement] complemento_solicitado: {log_context}")
+        self._validate_commission_payment_method(payment_method, log_context)
+        commission = await self._editable_transfer_commission(company_id, commission_id)
+        self._check_commission_version(commission, expected_updated_at, log_context)
+        if commission.payment_date is None or commission.payment_method:
+            _logger.info(f"[commission_settlement] recusada: {log_context} motivo=sem_baixa_pendente")
+            raise ConstructionDomainError(
+                status_code=409, message="O sinal precisa estar pago e sem forma de recebimento para completar a baixa.",
+            )
+        commission.payment_method = payment_method
+        commission.payment_recorded_by_user_id = actor_user_id
+        await self.repository.commit()
+        _logger.info(f"[commission_settlement] complemento_confirmado: {log_context} payment_method={payment_method}")
+        await self.repository.refresh(commission)
+        return commission
+
+    @staticmethod
+    def _check_commission_version(commission, expected_updated_at, log_context):
+        if expected_updated_at is not None and commission.updated_at != expected_updated_at:
+            _logger.info(f"[commission_settlement] recusada: {log_context} motivo=sinal_alterado")
+            raise ConstructionDomainError(
+                status_code=409, message="O sinal foi alterado. Atualize a tela antes de confirmar.",
+            )
+
+    @staticmethod
+    def _validate_commission_payment_method(payment_method, log_context):
+        if payment_method not in {"PIX", "BOLETO", "CREDIT_CARD", "DEBIT_CARD", "CASH", "TRANSFER", "CHECK", "DIRECT_DEBIT"}:
+            _logger.info(f"[commission_settlement] recusada: {log_context} motivo=forma_invalida")
+            raise ConstructionInvalidValueError(message="Informe uma forma de recebimento válida para o sinal.")
 
     async def delete_unit_commission(self, *, company_id: UUID, commission_id: UUID) -> None:
         commission = await self._editable_transfer_commission(company_id, commission_id)
@@ -5791,11 +5856,14 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             "commissions": [
                 {
                     "id": commission.id,
+                    "unit_id": commission.unit_id,
+                    "updated_at": commission.updated_at,
                     "beneficiary_person_id": commission.beneficiary_person_id,
                     "sequence_number": commission.sequence_number,
                     "amount": commission.amount,
                     "due_date": commission.due_date,
                     "payment_date": commission.payment_date,
+                    "payment_method": commission.payment_method,
                     "status": unit_commission_status(
                         due_date=commission.due_date,
                         payment_date=commission.payment_date,

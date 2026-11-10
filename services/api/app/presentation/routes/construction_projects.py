@@ -27,6 +27,7 @@ from app.infrastructure.repository.construction_repository import ConstructionRe
 from app.infrastructure.repository.event_repository import EventRepository
 from app.schemas.construction.project import (
     ConstructionMeasurementPayableLink,
+    ConstructionUnitCommissionPaymentMethodRequest,
     ConstructionProjectBuyerUnit,
     ConstructionProjectCoordinates,
     ConstructionProjectGeocodingRequest,
@@ -1231,6 +1232,34 @@ async def settle_unit_commission(
             company_id=ctx.company_id,
             commission_id=commission_id,
             payment_date=request_data.payment_date,
+            payment_method=request_data.payment_method,
+            actor_user_id=ctx.user_id,
+            expected_updated_at=request_data.expected_updated_at,
+        )
+        return service.to_commission_response(commission)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.patch("/commissions/{commission_id}/payment-method", response_model=ConstructionUnitCommissionResponse)
+async def complete_unit_commission_payment_method(
+    commission_id: UUID,
+    request_data: ConstructionUnitCommissionPaymentMethodRequest,
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+) -> ConstructionUnitCommissionResponse:
+    if not (
+        ctx.can(ConstructionFeature.RECEIPT, PermissionAction.READ)
+        or ctx.can(ConstructionFeature.UNITS, PermissionAction.UPDATE)
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permissão insuficiente para completar a baixa do sinal.")
+    try:
+        commission = await service.complete_unit_commission_payment_method(
+            company_id=ctx.company_id,
+            commission_id=commission_id,
+            payment_method=request_data.payment_method,
+            expected_updated_at=request_data.expected_updated_at,
+            actor_user_id=ctx.user_id,
         )
         return service.to_commission_response(commission)
     except ConstructionDomainError as exc:

@@ -253,7 +253,9 @@ class FakeProjectService:
     async def update_unit_commission(self, *, company_id: UUID, commission_id: UUID, request, actor_user_id=None):
         return self._fake_commission(company_id=company_id, commission_id=commission_id, unit_id=uuid4())
 
-    async def settle_unit_commission(self, *, company_id: UUID, commission_id: UUID, payment_date):
+    async def settle_unit_commission(
+        self, *, company_id, commission_id, payment_date, payment_method, actor_user_id, expected_updated_at=None,
+    ):
         return self._fake_commission(
             company_id=company_id,
             commission_id=commission_id,
@@ -773,7 +775,7 @@ def test_settle_unit_commission_requires_units_update_permission() -> None:
             "Authorization": make_authorization_header(user_id=uuid4()),
             "X-Company-ID": str(uuid4()),
         },
-        json={"payment_date": "2026-06-12"},
+        json={"payment_date": "2026-06-12", "payment_method": "PIX"},
     )
 
     assert response.status_code == 403
@@ -789,7 +791,7 @@ def test_settle_unit_commission_accepts_units_update_permission() -> None:
             "Authorization": make_authorization_header(user_id=uuid4()),
             "X-Company-ID": str(uuid4()),
         },
-        json={"payment_date": "2026-06-12"},
+        json={"payment_date": "2026-06-12", "payment_method": "PIX"},
     )
 
     assert response.status_code == 200

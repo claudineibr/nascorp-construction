@@ -1,6 +1,7 @@
 class ConstructionFeature:
     PROJECTS = "construction_projects"
     UNITS = "construction_units"
+    RECEIPT = "receipt"
     SCHEDULE = "construction_schedule"
     MEASUREMENTS = "construction_measurements"
     PROCUREMENT = "construction_procurement"

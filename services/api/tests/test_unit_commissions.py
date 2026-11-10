@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import uuid4
 
@@ -65,6 +65,38 @@ def seed_project_and_unit(
     repository.projects[(company_id, project.id)] = project
     repository.units[(company_id, unit.id)] = unit
     return project, unit
+
+
+async def test_completing_payment_method_cannot_reopen_a_reversed_commission():
+    company_id, actor_id = uuid4(), uuid4()
+    repository = FakeConstructionRepository()
+    _, unit = seed_project_and_unit(repository, company_id=company_id)
+    service = ConstructionProjectService(repository=repository, erp_client=FakeErpMeasurementClient())
+    commission, = await service.create_unit_commissions(
+        company_id=company_id,
+        unit_id=unit.id,
+        request=ConstructionUnitCommissionCreate(
+            beneficiary_person_id=uuid4(), amount=Decimal("1500.00"), due_date=date(2026, 3, 12),
+        ),
+    )
+    commission.payment_date = date(2026, 3, 12)
+    version = datetime(2026, 3, 12, tzinfo=UTC)
+    commission.updated_at = version
+
+    await service.settle_unit_commission(
+        company_id=company_id, commission_id=commission.id, payment_date=None, payment_method=None,
+        actor_user_id=actor_id, expected_updated_at=version,
+    )
+
+    with pytest.raises(ConstructionDomainError) as failure:
+        await service.complete_unit_commission_payment_method(
+            company_id=company_id, commission_id=commission.id, payment_method="PIX",
+            expected_updated_at=version, actor_user_id=uuid4(),
+        )
+    assert failure.value.status_code == 409
+    assert commission.payment_date is None
+    assert commission.payment_method is None
+    assert commission.payment_recorded_by_user_id == actor_id
 
 
 async def test_repeating_the_commission_generates_one_row_per_month() -> None:
@@ -149,7 +181,7 @@ async def test_paid_commission_that_composes_reduces_the_balance_the_buyer_owes(
     await service.settle_unit_commission(
         company_id=company_id,
         commission_id=commissions[0].id,
-        payment_date=date(2026, 3, 12),
+        payment_date=date(2026, 3, 12), payment_method="PIX", actor_user_id=uuid4(),
     )
 
     await service.confirm_unit_sale(
@@ -278,7 +310,7 @@ async def test_settling_a_commission_does_not_reemit_the_sale_event() -> None:
     await service.settle_unit_commission(
         company_id=company_id,
         commission_id=commissions[0].id,
-        payment_date=date(2026, 5, 12),
+        payment_date=date(2026, 5, 12), payment_method="PIX", actor_user_id=uuid4(),
     )
 
     assert len(erp_client.events) == events_after_sale
@@ -402,7 +434,7 @@ async def test_sale_composition_exposes_the_commission_totals() -> None:
     await service.settle_unit_commission(
         company_id=company_id,
         commission_id=composing[0].id,
-        payment_date=date(2026, 3, 12),
+        payment_date=date(2026, 3, 12), payment_method="PIX", actor_user_id=uuid4(),
     )
 
     composition = await service.build_unit_sale_composition(company_id=company_id, unit_id=unit.id)

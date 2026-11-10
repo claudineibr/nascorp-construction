@@ -280,6 +280,17 @@ class FakeConstructionRepository:
             key=lambda commission: commission.sequence_number,
         )
 
+    async def list_historical_paid_unit_commissions(self, *, company_id, unit_id, current_sale_id):
+        return sorted(
+            (
+                commission
+                for (stored_company_id, _), commission in self.unit_commissions.items()
+                if stored_company_id == company_id and commission.unit_id == unit_id and commission.deleted_at is None
+                and commission.sale_id not in {None, current_sale_id} and commission.payment_date is not None
+            ),
+            key=lambda commission: commission.sequence_number,
+        )
+
     async def get_unit_commission(self, *, company_id, commission_id):
         return self.unit_commissions.get((company_id, commission_id))
 

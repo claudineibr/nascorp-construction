@@ -782,6 +782,8 @@ class ConstructionUnitCommission(PreservedHistory, Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
     due_date: Mapped[date] = mapped_column(Date, nullable=False)
     payment_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    payment_method: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    payment_recorded_by_user_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     composes_sale_price: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,

@@ -1049,6 +1049,23 @@ class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository)
         )
         return list(result.scalars().all())
 
+    async def list_historical_paid_unit_commissions(self, *, company_id, unit_id, current_sale_id):
+        result = await self.session.scalars(
+            select(ConstructionUnitCommission)
+            .where(
+                ConstructionUnitCommission.company_id == company_id,
+                ConstructionUnitCommission.unit_id == unit_id,
+                ConstructionUnitCommission.deleted_at.is_(None),
+                ConstructionUnitCommission.unit.has(ConstructionUnit.deleted_at.is_(None)),
+                ConstructionUnitCommission.sale_id.is_not(None),
+                ConstructionUnitCommission.sale_id.is_distinct_from(current_sale_id),
+                ConstructionUnitCommission.payment_date.is_not(None),
+                *scope_conditions(ConstructionUnitCommission, self.scope),
+            )
+            .order_by(ConstructionUnitCommission.sequence_number)
+        )
+        return list(result.all())
+
     async def get_unit_commission(
         self,
         *,
