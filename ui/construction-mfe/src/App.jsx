@@ -815,6 +815,9 @@ const defaultProcurementForm = {
 }
 
 function toFormProject(project) {
+  const status = project.status ?? "draft"
+  const actualEndDate = project.actualEndDate ? String(project.actualEndDate).slice(0, 10) : ""
+
   return {
     code: project.code ?? "",
     fiscalWorkCode: project.fiscalWorkCode ?? "",
@@ -822,7 +825,9 @@ function toFormProject(project) {
     nfseReceivableDueDays: project.nfseReceivableDueDays == null ? "" : String(project.nfseReceivableDueDays),
     name: project.name ?? "",
     description: project.description ?? "",
-    status: project.status ?? "draft",
+    status,
+    originalStatus: status,
+    originalUpdatedAt: project.updatedAt,
     projectType: project.projectType ?? "residential_vertical",
     developmentType: project.developmentType ?? "",
     customerPersonId: project.customerPersonId ?? "",
@@ -830,7 +835,8 @@ function toFormProject(project) {
     originalCnpjSpe: project.cnpjSpe ?? "",
     startDate: project.startDate ? String(project.startDate).slice(0, 10) : "",
     expectedEndDate: project.expectedEndDate ? String(project.expectedEndDate).slice(0, 10) : "",
-    actualEndDate: project.actualEndDate ? String(project.actualEndDate).slice(0, 10) : "",
+    actualEndDate,
+    originalActualEndDate: actualEndDate,
     addressStreet: project.address?.street ?? "",
     addressNumber: project.address?.number ?? "",
     addressDistrict: project.address?.district ?? "",
@@ -1339,25 +1345,14 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const ProjectAccountsPayable = bridge.canRead?.("accounts_payable") && bridge.canRead?.("construction_projects") ? bridge.components?.ProjectAccountsPayable ?? null : null
   const ProjectAccountsReceivable = bridge.canRead?.("receivable") && bridge.canRead?.("construction_projects") ? bridge.components?.ProjectAccountsReceivable ?? null : null
   const [restoredProject, setRestoredProject] = useState(null)
-  useEffect(() => {
-    if (!bridge.initialProjectId) return
-    let active = true
-    getConstructionProject({ bridge, projectId: bridge.initialProjectId }).then((project) => {
-      if (!active) return
-      setRestoredProject(project)
-      setActiveProjectId(project.id)
-      setViewMode("projectDetail")
-      const requestedTab = bridge.initialProjectTab
-      const canRestoreTab = requestedTab === "units" ||
-        (requestedTab === "accountsPayable" && ProjectAccountsPayable) ||
-        (requestedTab === "accountsReceivable" && ProjectAccountsReceivable)
-      setProjectDetailTab(canRestoreTab ? requestedTab : "overview")
-    }).catch((error) => { if (active) bridge.feedback?.error?.(error.message) })
-    return () => { active = false }
-  }, [bridge, ProjectAccountsPayable, ProjectAccountsReceivable])
   const [viewMode, setViewMode] = useState("projects")
   const [projectDetailTab, setProjectDetailTab] = useState("overview")
   const [activeProjectId, setActiveProjectId] = useState(null)
+  const projectDetailRequest = useRef(null)
+  const dismissedInitialProjectId = useRef(null)
+  const initialProjectId = bridge.initialProjectId
+  useEffect(() => () => projectDetailRequest.current?.abort(), [activeProjectId])
+
   const [activeUnitId, updateActiveUnitId] = useState(null)
   const activeUnitIdRef = useRef(null)
   const unitPaymentPlanRequest = useRef(0)
@@ -1626,7 +1621,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }, [activeUnitId, units, setActiveUnitId])
 
   const selectedProject = useMemo(
-    () => projects.find((project) => project.id === activeProjectId) ?? (restoredProject?.id === activeProjectId ? restoredProject : null),
+    () => restoredProject?.id === activeProjectId
+      ? restoredProject
+      : projects.find((project) => project.id === activeProjectId) ?? null,
     [activeProjectId, projects, restoredProject]
   )
 
@@ -2018,6 +2015,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }
 
   const openProjectDetail = (project) => {
+    dismissedInitialProjectId.current = initialProjectId
+    projectDetailRequest.current?.abort()
+    setRestoredProject(project)
     setActiveProjectId(project.id)
     setUnitBuyerFilter({ projectId: project.id, personId: filters.buyerPersonId })
     setProjectDetailTab("overview")
@@ -2026,8 +2026,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     setViewMode("projectDetail")
   }
 
-  const closeProjectDetail = () => {
-    clearFilters()
+  const clearProjectDetail = useCallback(() => {
+    dismissedInitialProjectId.current = initialProjectId
+    projectDetailRequest.current?.abort()
     ++unitLoadRequest.current
     setUnitBuyerFilter({ projectId: null, personId: "" })
     setActiveProjectId(null)
@@ -2040,6 +2041,11 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     setUnitPaymentPlan(null)
     setUnitPaymentPlanError(null)
     setViewMode("projects")
+  }, [initialProjectId, setActiveUnitId])
+
+  const closeProjectDetail = () => {
+    clearFilters()
+    clearProjectDetail()
   }
 
   const openUnitDetail = (unit) => {
@@ -2065,6 +2071,24 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }
 
   const reloadProjectDetail = async () => {
+    if (!selectedProject) return
+
+    projectDetailRequest.current?.abort()
+    const controller = new AbortController()
+    projectDetailRequest.current = controller
+    const projectId = selectedProject.id
+
+    try {
+      const project = await getConstructionProject({ bridge, projectId, signal: controller.signal })
+      if (controller.signal.aborted) return
+
+      setRestoredProject((current) => current === selectedProject ? project : current)
+    } catch (error) {
+      if (controller.signal.aborted) return
+
+      if (handleProjectDetailError(error, projectId)) return
+    }
+
     setProjectDetailRevision((value) => value + 1)
     await Promise.all([
       loadProjects(),
@@ -2104,16 +2128,53 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     setIsProjectModalOpen(true)
   }
 
-  const closeProjectModal = () => {
-    if (submittingProject) {
-      return
-    }
-
+  const resetProjectModal = useCallback(() => {
     setIsProjectModalOpen(false)
     setEditingProjectId(null)
     projectZipRequest.current += 1
     setProjectForm(defaultProjectForm)
     setProjectZipLookup({ loading: false, error: null })
+  }, [])
+
+  const handleProjectDetailError = useCallback((error, projectId) => {
+    const unavailable = error.status === 403 || error.status === 404
+    if (unavailable) {
+      setProjects((current) => current.filter((project) => project.id !== projectId))
+      resetProjectModal()
+      clearProjectDetail()
+      void loadProjects()
+    }
+
+    bridge.feedback?.error?.(error.message ?? "Não foi possível carregar a obra.")
+    return unavailable
+  }, [bridge, clearProjectDetail, loadProjects, resetProjectModal])
+
+  useEffect(() => {
+    if (!initialProjectId || dismissedInitialProjectId.current === initialProjectId) return
+
+    projectDetailRequest.current?.abort()
+    const controller = new AbortController()
+    projectDetailRequest.current = controller
+    getConstructionProject({ bridge, projectId: initialProjectId, signal: controller.signal }).then((project) => {
+      if (controller.signal.aborted) return
+
+      setRestoredProject(project)
+      setActiveProjectId(project.id)
+      setViewMode("projectDetail")
+      const requestedTab = bridge.initialProjectTab
+      const canRestoreTab = requestedTab === "units" ||
+        (requestedTab === "accountsPayable" && ProjectAccountsPayable) ||
+        (requestedTab === "accountsReceivable" && ProjectAccountsReceivable)
+      setProjectDetailTab(canRestoreTab ? requestedTab : "overview")
+    }).catch((error) => {
+      if (!controller.signal.aborted) handleProjectDetailError(error, initialProjectId)
+    })
+
+    return () => controller.abort()
+  }, [bridge, handleProjectDetailError, initialProjectId, ProjectAccountsPayable, ProjectAccountsReceivable])
+
+  const closeProjectModal = () => {
+    if (!submittingProject) resetProjectModal()
   }
 
   const handleProjectFieldChange = (field, value) => {
@@ -2236,16 +2297,25 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           createdProject,
           ...currentProjects.filter((project) => project.id !== createdProject.id),
         ])
+        setRestoredProject(createdProject)
         setActiveProjectId(createdProject.id)
         setProjectDetailTab("overview")
         setViewMode("projectDetail")
         bridge?.feedback?.success?.(`Obra criada com sucesso.${coordinateNotice}`)
       } else if (editingProjectId) {
-        await updateConstructionProject({
+        const statusChanged = projectData.status !== projectForm.originalStatus
+        const actualEndDateChanged = projectData.actualEndDate !== projectForm.originalActualEndDate
+        const updatedProject = await updateConstructionProject({
           bridge,
           projectId: editingProjectId,
-          projectData,
+          projectData: {
+            ...projectData,
+            status: statusChanged ? projectData.status : undefined,
+            expectedUpdatedAt: statusChanged || actualEndDateChanged ? projectForm.originalUpdatedAt : undefined,
+            actualEndDate: actualEndDateChanged ? projectData.actualEndDate : undefined,
+          },
         })
+        setRestoredProject((current) => current?.id === updatedProject.id ? updatedProject : current)
         bridge?.feedback?.success?.(`Obra atualizada com sucesso.${coordinateNotice}`)
       }
 
@@ -2273,11 +2343,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     try {
       await deleteConstructionProject({ bridge, projectId: project.id })
       bridge?.feedback?.success?.("Obra removida com sucesso.")
-      if (activeProjectId === project.id) {
-        setActiveProjectId(null)
-        setProjectDetailTab("overview")
-        setViewMode("projects")
-      }
+      if (activeProjectId === project.id) clearProjectDetail()
       await loadProjects()
     } catch (requestError) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível remover a obra.")
@@ -4971,6 +5037,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           onComplete={(result) => {
             const project = toProjectView(result)
             setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)])
+            setRestoredProject(project)
             setActiveProjectId(project.id)
             setProjectDetailTab(bridge.canRead?.("construction_schedule") ? "schedule" : "overview")
             setViewMode("projectDetail")

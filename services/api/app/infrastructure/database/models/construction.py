@@ -74,6 +74,7 @@ class ConstructionProject(PreservedHistory, Base):
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     expected_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     actual_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    completion_history = mapped_column(JSONB, nullable=True)
     synthetic_cost_center_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     analytic_cost_center_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     receipt_template_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)

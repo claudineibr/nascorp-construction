@@ -173,7 +173,7 @@ PROJECT_STATUS_TRANSITIONS = {
         ConstructionProjectStatus.CANCELLED,
     },
     ConstructionProjectStatus.PAUSED: {ConstructionProjectStatus.ACTIVE, ConstructionProjectStatus.CANCELLED},
-    ConstructionProjectStatus.COMPLETED: set(),
+    ConstructionProjectStatus.COMPLETED: {ConstructionProjectStatus.ACTIVE},
     ConstructionProjectStatus.CANCELLED: set(),
 }
 

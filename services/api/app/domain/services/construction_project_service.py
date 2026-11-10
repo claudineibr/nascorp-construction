@@ -22,6 +22,7 @@ from app.domain.constants import (
     CONSTRUCTION_PROCUREMENT_APPROVAL_THRESHOLD,
     ConstructionMeasurementStatus,
     ConstructionProcurementStatus,
+    ConstructionProjectStatus,
     PROJECT_TYPES,
     ConstructionUnitStatus,
     PROJECT_STATUS_TRANSITIONS,
@@ -646,17 +647,20 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         actor_user_id: UUID | None = None,
     ) -> ConstructionProject:
         updates = request.model_dump(exclude_unset=True)
+        expected_updated_at = updates.pop("expected_updated_at", None)
         if updates.pop("fiscal_defaults_only", False):
             project = await self.repository.get_project(company_id=company_id, project_id=project_id, for_update=True)
             if project is None:
                 raise ConstructionNotFoundError(resource_name="a obra")
             updates = {key: updates[key] for key in ("fiscal_work_code", "customer_person_id")
                        if updates.get(key) is not None and getattr(project, key) is None}
-        elif "development_type" in updates:
+        elif expected_updated_at is not None or any(
+            field in updates for field in ("development_type", "status", "actual_end_date")
+        ):
             project = await self.repository.get_project(company_id=company_id, project_id=project_id, for_update=True)
             if project is None:
                 raise ConstructionNotFoundError(resource_name="a obra")
-            next_development_type = updates["development_type"]
+            next_development_type = updates.get("development_type", project.development_type)
             if next_development_type not in (project.development_type, "CONTRACT_WORK") and await self.repository.has_project_documents(
                 company_id=company_id, project_id=project_id,
             ):
@@ -666,6 +670,22 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                 )
         else:
             project = await self.get_project(company_id=company_id, project_id=project_id)
+        previous_status = project.status
+        next_status = updates.get("status")
+        status_changed = next_status is not None and next_status != previous_status
+        end_date_changed = "actual_end_date" in updates and updates["actual_end_date"] != project.actual_end_date
+        if status_changed or end_date_changed or expected_updated_at is not None:
+            if expected_updated_at is None or expected_updated_at != project.updated_at:
+                _logger.warning(
+                    f"[project_status] stale_edit: company_id={company_id} project_id={project_id} "
+                    f"actor_id={actor_user_id} from_status={previous_status} status_changed={status_changed} "
+                    f"end_date_changed={end_date_changed} has_version={expected_updated_at is not None}"
+                )
+                raise ConstructionResourceInUseError(
+                    message="Recarregue a obra e confira o status e a data real de fim antes de salvar.",
+                    error_code="CONSTRUCTION_PROJECT_STATUS_CONFLICT",
+                )
+
         if "cnpj_spe" in updates:
             if (updates["cnpj_spe"] or "").strip() == (project.cnpj_spe or "").strip():
                 updates.pop("cnpj_spe")
@@ -681,9 +701,15 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                 actor_user_id=actor_user_id,
                 people={"O cliente da obra": updates.get("customer_person_id")},
             )
-        next_status = updates.get("status")
-        if next_status is not None:
-            self._ensure_project_status_transition(current_status=project.status, next_status=next_status)
+        if status_changed:
+            _logger.info(f"[project_status] validating: company_id={company_id} project_id={project_id} "
+                         f"actor_id={actor_user_id} from_status={previous_status}")
+            try:
+                self._ensure_project_status_transition(current_status=previous_status, next_status=next_status)
+            except ConstructionInvalidStatusTransitionError:
+                _logger.warning(f"[project_status] transition_blocked: company_id={company_id} project_id={project_id} "
+                                f"actor_id={actor_user_id} from_status={previous_status}")
+                raise
 
         next_project_type = updates.get("project_type")
         if next_project_type is not None:
@@ -709,10 +735,17 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                     defaults, has_segregated_assets=bool(segregated)
                 )
 
+        if status_changed:
+            transition_on = get_business_today(current_business_timezone(), instant=datetime.now(UTC)).isoformat()
+            self._record_project_completion_transition(project, next_status, transition_on)
+
         self._apply_updates(entity=project, updates=updates)
         if "fiscal_work_code" in updates:
             await self.repository.flush_project_fiscal_code(project)
         await self.repository.commit()
+        if status_changed:
+            _logger.info(f"[project_status] updated: company_id={company_id} project_id={project_id} "
+                         f"actor_id={actor_user_id} from_status={previous_status} to_status={next_status}")
         if "fiscal_work_code" in updates:
             _logger.info(f"[project_fiscal_code] updated: company_id={company_id} project_id={project.id}")
         if "nfse_receivable_due_days" in updates:
@@ -720,6 +753,21 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                          f"actor_id={actor_user_id} enabled={project.nfse_receivable_due_days is not None}")
         await self.repository.refresh(project)
         return project
+
+    @staticmethod
+    def _record_project_completion_transition(project, next_status, transition_on):
+        history = project.completion_history or []
+        if project.status == ConstructionProjectStatus.COMPLETED:
+            completed_on = project.actual_end_date.isoformat() if project.actual_end_date else None
+            if history and history[-1]["reopened_on"] is None:
+                if completed_on:
+                    completed_on = max(completed_on, history[-1]["completed_on"])
+
+                history = history[:-1]
+
+            project.completion_history = [*history, {"completed_on": completed_on, "reopened_on": transition_on}]
+        elif next_status == ConstructionProjectStatus.COMPLETED and history:
+            project.completion_history = [*history, {"completed_on": transition_on, "reopened_on": None}]
 
     async def delete_project(self, *, company_id: UUID, project_id: UUID) -> None:
         project = await self.get_project(company_id=company_id, project_id=project_id)

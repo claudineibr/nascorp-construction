@@ -7,6 +7,7 @@ import httpx
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
+from app.domain.business_clock import business_clock_scope
 from app.domain.constants import ConstructionMeasurementStatus, ConstructionProcurementStatus, ConstructionProjectStatus
 from app.domain.exceptions import (
     ConstructionDomainError,
@@ -20,6 +21,7 @@ from app.domain.exceptions import (
 from app.domain.events.constants import ConstructionEventType, ConstructionIntegrationMode, ErpEventType
 from app.domain.events.contracts import EventEnvelope
 from app.domain.services import ConstructionIntegrationDispatcher, ConstructionProjectService
+from app.domain.services import construction_project_service
 from app.infrastructure.database.models.unit_buyer_history import ConstructionUnitBuyerHistory
 from app.infrastructure.database.models import (
     ConstructionDocumentationType,
@@ -724,7 +726,7 @@ class FakeConstructionRepository:
     ) -> None:
         return None
 
-    async def get_project(self, *, company_id, project_id):
+    async def get_project(self, *, company_id, project_id, for_update=False):
         return self.projects.get((company_id, project_id))
 
     async def get_project_by_code(self, *, company_id, code):
@@ -1478,15 +1480,122 @@ async def test_create_unit_applies_sync_cost_center_confirmation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_project_rejects_invalid_status_transition() -> None:
+@pytest.mark.parametrize(("lock_instant", "reopened_on"), [
+    (datetime(2026, 12, 1, 3, 59, 55, tzinfo=UTC), "2026-11-30"),
+    (datetime(2026, 12, 1, 4, 0, 5, tzinfo=UTC), "2026-12-01"),
+])
+async def test_update_project_reopens_completed_project(monkeypatch, lock_instant, reopened_on):
     company_id = uuid4()
     repository = FakeConstructionRepository()
+    actual_end_date = date(2026, 11, 9)
+    version = datetime(2026, 11, 9, 12, tzinfo=UTC)
     project = ConstructionProject(
         id=uuid4(),
         company_id=company_id,
         code="OBRA-002",
         name="Completed project",
         status=ConstructionProjectStatus.COMPLETED,
+        actual_end_date=actual_end_date,
+        updated_at=version,
+    )
+    repository.projects[(company_id, project.id)] = project
+    service = make_service(repository=repository)
+
+    with pytest.raises(ConstructionResourceInUseError) as error:
+        await service.update_project(
+            company_id=company_id,
+            project_id=project.id,
+            request=ConstructionProjectUpdate(status=ConstructionProjectStatus.ACTIVE),
+        )
+
+    assert error.value.error_code == "CONSTRUCTION_PROJECT_STATUS_CONFLICT"
+    assert project.status == ConstructionProjectStatus.COMPLETED
+    assert repository.commits == 0
+
+    request_instant = datetime(2026, 12, 1, 3, 59, 50, tzinfo=UTC)
+    current_instant = request_instant
+    get_project = repository.get_project
+
+    async def get_locked_project(**kwargs):
+        nonlocal current_instant
+        result = await get_project(**kwargs)
+        if kwargs["for_update"]:
+            current_instant = lock_instant
+        return result
+
+    monkeypatch.setattr(repository, "get_project", get_locked_project)
+    monkeypatch.setattr(construction_project_service, "datetime", SimpleNamespace(now=lambda tz: current_instant.astimezone(tz)))
+
+    with business_clock_scope("America/Campo_Grande", instant=request_instant):
+        updated = await service.update_project(
+            company_id=company_id,
+            project_id=project.id,
+            request=ConstructionProjectUpdate(
+                status=ConstructionProjectStatus.ACTIVE,
+                expected_updated_at=version,
+                actual_end_date=None,
+            ),
+        )
+
+    assert updated.status == ConstructionProjectStatus.ACTIVE
+    assert updated.actual_end_date is None
+    assert updated.completion_history == [{"completed_on": "2026-11-09", "reopened_on": reopened_on}]
+    assert repository.commits == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("current_status", "fields"), [
+    ("completed", {"status": "completed", "actual_end_date": date(2026, 10, 10)}),
+    ("completed", {"actual_end_date": None}),
+    ("completed", {"status": "active"}),
+    ("active", {"status": "completed", "expected_updated_at": None}),
+])
+async def test_update_project_rejects_stale_completion_edits(current_status, fields):
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    history = [{"completed_on": "2026-09-30", "reopened_on": "2026-11-01"}]
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-002",
+        name="Project with completion history",
+        status=current_status,
+        actual_end_date=date(2026, 9, 30),
+        completion_history=history,
+        updated_at=datetime(2026, 11, 10, 12, tzinfo=UTC),
+    )
+    repository.projects[(company_id, project.id)] = project
+    service = make_service(repository=repository)
+    request = ConstructionProjectUpdate.model_validate({
+        "expected_updated_at": datetime(2026, 11, 9, 12, tzinfo=UTC),
+        **fields,
+    })
+
+    with pytest.raises(ConstructionResourceInUseError) as error:
+        await service.update_project(company_id=company_id, project_id=project.id, request=request)
+
+    assert error.value.error_code == "CONSTRUCTION_PROJECT_STATUS_CONFLICT"
+    assert project.status == current_status
+    assert project.actual_end_date == date(2026, 9, 30)
+    assert project.completion_history == history
+    assert repository.commits == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("current_status", "next_status"), [
+    (ConstructionProjectStatus.COMPLETED, ConstructionProjectStatus.PAUSED),
+    (ConstructionProjectStatus.CANCELLED, ConstructionProjectStatus.ACTIVE),
+])
+async def test_update_project_rejects_invalid_status_transition(current_status, next_status):
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    project = ConstructionProject(
+        id=uuid4(),
+        company_id=company_id,
+        code="OBRA-002",
+        name="Project with invalid transition",
+        status=current_status,
+        updated_at=datetime(2026, 11, 10, 12, tzinfo=UTC),
     )
     repository.projects[(company_id, project.id)] = project
     service = make_service(repository=repository)
@@ -1495,8 +1604,11 @@ async def test_update_project_rejects_invalid_status_transition() -> None:
         await service.update_project(
             company_id=company_id,
             project_id=project.id,
-            request=ConstructionProjectUpdate(status=ConstructionProjectStatus.ACTIVE),
+            request=ConstructionProjectUpdate(status=next_status, expected_updated_at=project.updated_at),
         )
+
+    assert project.status == current_status
+    assert repository.commits == 0
 
 
 @pytest.mark.asyncio

@@ -125,6 +125,7 @@ class ConstructionProjectUpdate(ConstructionProjectAddressInput):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     status: str | None = None
+    expected_updated_at: datetime | None = None
     development_type: Literal["INCORPORATION", "CONTRACT_WORK"] | None = None
     project_type: str | None = None
     customer_person_id: UUID | None = None

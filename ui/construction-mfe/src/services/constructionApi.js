@@ -467,6 +467,7 @@ const toProjectPayload = (projectData = {}) => ({
   name: String(projectData.name ?? "").trim(),
   description: toNullableString(projectData.description),
   status: projectData.status,
+  expected_updated_at: projectData.expectedUpdatedAt,
   project_type: projectData.projectType,
   development_type: toNullableString(projectData.developmentType),
   customer_person_id: toNullableString(projectData.customerPersonId),
@@ -476,7 +477,7 @@ const toProjectPayload = (projectData = {}) => ({
   address_json: toAddressPayload(projectData.address),
   start_date: toNullableString(projectData.startDate),
   expected_end_date: toNullableString(projectData.expectedEndDate),
-  actual_end_date: toNullableString(projectData.actualEndDate),
+  actual_end_date: projectData.actualEndDate === undefined ? undefined : toNullableString(projectData.actualEndDate),
   receipt_template_id: toNullableString(projectData.receiptTemplateId),
   commission_receipt_template_id: toNullableString(projectData.commissionReceiptTemplateId),
   contract_template_id: toNullableString(projectData.contractTemplateId),
@@ -717,6 +718,7 @@ async function requestJson({ bridge, path, method = "GET", body = null, baseUrl 
       errorMessage = fallback
     }
     const requestError = new Error(errorMessage)
+    requestError.status = response.status
     requestError.errorCode = errorCode
     throw requestError
   }
@@ -889,8 +891,8 @@ export async function listConstructionPersonSummaries({
   }
 }
 
-export async function getConstructionProject({ bridge, projectId }) {
-  return toProjectView(await requestJson({ bridge, path: "/v1/construction/projects/" + projectId }))
+export async function getConstructionProject({ bridge, projectId, signal }) {
+  return toProjectView(await requestJson({ bridge, path: "/v1/construction/projects/" + projectId, signal }))
 }
 
 export async function createConstructionProject({ bridge, projectData }) {
