@@ -2084,7 +2084,8 @@
   padding-bottom: 0.25rem;
 }
 
-.unitDetailActions button {
+.unitDetailActions button,
+.unitSummaryDownloadButton {
   box-sizing: border-box;
   flex: 0 0 auto;
   min-height: 32px;

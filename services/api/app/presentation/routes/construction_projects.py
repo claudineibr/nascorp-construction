@@ -13,7 +13,10 @@ from app.domain.exceptions import ConstructionDomainError
 from app.domain.permissions import ConstructionFeature, PermissionAction
 from app.domain.services import ConstructionProjectService
 from app.domain.services.construction_contract_context_service import ConstructionContractContextService
-from app.schemas.construction.unit_contract import ConstructionUnitContractContextResponse
+from app.schemas.construction.unit_contract import (
+    ConstructionUnitContractContextResponse,
+    ConstructionUnitSummaryContextResponse,
+)
 from app.schemas.construction.unit_buyer_history import UnitBuyerHistoryList
 from app.schemas.construction.unit_transfer import (
     ConstructionUnitTransferRequest, ConstructionUnitTransferResponse, ConstructionUnitTransferList,
@@ -116,7 +119,21 @@ router = APIRouter(prefix="/construction", tags=["construction"])
 
 @router.get("/internal/units/{unit_id}/contract-context", response_model=ConstructionUnitContractContextResponse, dependencies=[Depends(require_service_key)])
 async def unit_contract_context(unit_id: UUID, company_id: UUID = Header(alias="X-Company-ID"), session=Depends(get_session)):
-    return await ConstructionContractContextService(session).get_context(company_id, unit_id)
+    return await ConstructionContractContextService(ConstructionRepository(session)).get_context(company_id, unit_id)
+
+
+@router.get(
+    "/internal/units/{unit_id}/sales/{sale_id}/summary-context",
+    response_model=ConstructionUnitSummaryContextResponse,
+    dependencies=[Depends(require_service_key)],
+)
+async def unit_summary_context(
+    unit_id: UUID, sale_id: UUID, company_id: UUID = Header(alias="X-Company-ID"), session=Depends(get_session)
+):
+    try:
+        return await ConstructionContractContextService(ConstructionRepository(session)).get_summary_context(company_id, unit_id, sale_id)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
 
 
 MAX_SERVICE_TEMPLATE_FILES = 30

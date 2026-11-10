@@ -1477,6 +1477,8 @@ export async function getConstructionUnitPaymentPlan({ bridge, unitId }) {
     totalCharged: payload.total_charged ?? null,
     installmentTotal: payload.installment_total ?? null,
     balanceTotal: payload.balance_total ?? null,
+    hasBalanceToCharge: payload.has_balance_to_charge ?? null,
+    chargeAvailabilityError: payload.charge_availability_error ?? null,
     settlementTotal: payload.settlement_total ?? null,
     commissionTotal: payload.commission_total ?? null,
     commissionPaidTotal: payload.commission_paid_total ?? null,

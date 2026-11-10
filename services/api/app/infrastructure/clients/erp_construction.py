@@ -323,6 +323,24 @@ class ErpConstructionClient:
         name = items[0].get("name")
         return str(name) if name else None
 
+    async def has_unit_balance_to_charge(self, company_id, unit_id, sale_id, user_id, data):
+        if not settings.erp_service_key:
+            raise RuntimeError("ERP service key is not configured for unit charge availability.")
+        headers = {
+            "X-Service-Key": settings.erp_service_key,
+            "X-Company-ID": str(company_id),
+        }
+        if user_id is not None:
+            headers["X-User-ID"] = str(user_id)
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+            response = await client.post(
+                f"/v1/internal/construction/units/{unit_id}/sales/{sale_id}/charge-availability",
+                headers=headers,
+                json=data,
+            )
+            response.raise_for_status()
+            return response.json()["has_balance_to_charge"] is True
+
     async def get_unit_payment_plan(
         self,
         *,

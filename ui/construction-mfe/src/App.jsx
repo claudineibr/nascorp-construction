@@ -32,6 +32,7 @@ import {
 import { InstallmentObservationModal } from "./features/InstallmentObservationModal.jsx"
 import { formatUnitType, unitTypeOptions } from "./features/unitTypes.js"
 import { commissionStatusLabel } from "./features/unitCommissions.js"
+import { UnitFinancialSummary } from "./features/UnitFinancialSummary.jsx"
 import { brazilTodayISO, setBusinessTimezone, formatBusinessDate } from "./utils/brazilDate.js"
 import { Pagination as StandalonePagination } from "./components/Pagination.jsx"
 import {
@@ -184,6 +185,7 @@ import {
   updateConstructionUnit,
   getErpReceiptByInstallment,
   generateErpReceiptForInstallment,
+  downloadErpPdf,
   downloadErpReceiptPdf,
   downloadErpCommissionReceiptPdf,
 } from "./services/constructionApi.js"
@@ -575,10 +577,14 @@ const SALE_INSTALLMENT_SOURCE_TYPES = ["down_payment"]
 // aproveitamos so as parcelas e o primeiro vencimento que o usuario escolheu.
 const SALE_BALANCE_SOURCE_TYPES = ["balance", "direct_builder"]
 
-// Saldo zerado: cobrar mais exigiria um valor que a venda nao tem. Os botoes
-// ficam visiveis e desabilitados -- some-los esconderia que a acao existe.
 const NOTHING_LEFT_TO_CHARGE =
-  "Saldo devedor zerado: tudo que o comprador deve já está lançado. Para cobrar a mais, aumente o preço da venda ou inclua uma documentação."
+  "Não há saldo sem cobrança lançada. O valor da venda já está coberto por pagamentos ou cobranças."
+
+function getChargeDisabledReason(plan) {
+  if (plan?.hasBalanceToCharge === true) return undefined
+  if (plan?.hasBalanceToCharge === false) return NOTHING_LEFT_TO_CHARGE
+  return plan?.chargeAvailabilityError ?? "Não foi possível verificar o saldo para cobrança."
+}
 
 // A ancora do saldo sai das fontes gravadas. Venda antiga nao tem fonte
 // nenhuma -- a tabela so passou a ser preenchida depois que elas foram
@@ -1369,6 +1375,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }, [])
   const [unitBuyerFilter, setUnitBuyerFilter] = useState({ projectId: null, personId: "" })
   const [unitDetailTab, setUnitDetailTab] = useState("summary")
+  const [downloadingUnitSummary, setDownloadingUnitSummary] = useState(false)
 
   const [filters, setFilters] = useState(defaultFilters)
   const [projects, setProjects] = useState([])
@@ -3296,6 +3303,32 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
   const handleDeleteInstallment = (installment) => handleDeleteInstallments([installment])
 
+  const handleDownloadUnitSummary = async (unit) => {
+    if (!unit.currentSaleId || unit.id !== activeUnitIdRef.current || downloadingUnitSummary) return
+    const fallbackMessage = "Não foi possível baixar o resumo da unidade."
+    setDownloadingUnitSummary(true)
+    try {
+      const blob = await downloadErpPdf({
+        bridge,
+        path: `/v1/reports/units/${unit.id}/sales/${unit.currentSaleId}/summary.pdf`,
+        fallbackMessage,
+      })
+      if (unit.id !== activeUnitIdRef.current) return
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = `resumo-da-unidade-${unit.code}.pdf`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+    } catch (error) {
+      if (unit.id === activeUnitIdRef.current) bridge.feedback?.error?.(error?.message || fallbackMessage)
+    } finally {
+      setDownloadingUnitSummary(false)
+    }
+  }
+
   // Recibo da parcela.
   //
   // Vai direto ao ERP com o token do operador, e e o MESMO recibo da tela de
@@ -4800,6 +4833,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
               content={
                 selectedUnit ? (
                   <UnitDetailPanel
+                    onDownloadSummary={handleDownloadUnitSummary}
+                    downloadingSummary={downloadingUnitSummary}
                     onBack={closeUnitDetail}
                     bridge={bridge}
                     unit={selectedUnit}
@@ -6014,6 +6049,8 @@ function BlocksList({ blocks, loading, error, onRetry, onEdit, onDelete }) {
 
 function UnitDetailPanel({
   bridge,
+  onDownloadSummary,
+  downloadingSummary,
   onBack,
   unit,
   blocks,
@@ -6214,8 +6251,27 @@ function UnitDetailPanel({
         </div>
       ) : null}
 
-      {activeTab === "summary" ? (
-        <UnitSaleCompositionCard unit={unit} plan={paymentPlan} />
+      {activeTab === "summary" && unit.currentSaleId && unit.buyerPersonId
+        && ["sold", "delivered"].includes(unit.status)
+        && bridge.canRead?.("construction_units") && bridge.canRead?.("receivable") ? (
+        <UnitFinancialSummary
+          key={unit.currentSaleId}
+          bridge={bridge}
+          unit={unit}
+          plan={paymentPlan}
+          formatMoney={formatMoney}
+          downloadAction={(
+            <button
+              type="button"
+              className={`${styles.primaryButton} ${styles.unitSummaryDownloadButton}`}
+              onClick={() => onDownloadSummary(unit)}
+              disabled={downloadingSummary}
+            >
+              <FileText size={16} aria-hidden="true" />
+              {downloadingSummary ? "Baixando resumo..." : "Baixar resumo da unidade"}
+            </button>
+          )}
+        />
       ) : null}
 
       {activeTab === "measurements" ? (
@@ -6308,130 +6364,6 @@ function UnitDetailPanel({
 
 // A composicao vive na aba Resumo: ela descreve a venda, nao as parcelas, e
 // ocupava metade da tela de Parcelas empurrando o contas a receber para baixo.
-function UnitSaleCompositionCard({ unit, plan }) {
-  const canSale = (unit.status === "available" || unit.status === "reserved") && unit.analyticCostCenterId
-
-  const composition = plan ?? {}
-  const sources = composition.sources ?? []
-  const installmentSources = sources.filter((source) => source.generatesInstallments)
-  // O saldo nao gera parcela, mas tambem nao e liberacao de banco: e divida do
-  // comprador esperando virar sinal ou aditivo. Separar os dois evita a tela
-  // dizer que o banco cobre o que o comprador ainda deve.
-  const balanceSources = sources.filter(
-    (source) => !source.generatesInstallments && SALE_BALANCE_SOURCE_TYPES.includes(source.sourceType),
-  )
-  const settlementSources = sources.filter(
-    (source) => !source.generatesInstallments && !SALE_BALANCE_SOURCE_TYPES.includes(source.sourceType),
-  )
-  const documentations = composition.documentations ?? []
-  const commissions = composition.commissions ?? []
-  const commissionOffset = Number(composition.commissionOffset ?? 0)
-  const orderedSources = installmentSources.concat(settlementSources, balanceSources)
-
-  return (
-    <div className={styles.card}>
-      <strong>Como a venda foi composta</strong>
-      <p className={styles.metricHint}>
-        O que o banco libera (subsídio, FGTS e financiamento) entra no preço da venda mas não vira parcela: a
-        data de pagamento depende da liberação. A <strong>documentação</strong> é cobrada do comprador junto
-        do preço. O <strong>sinal</strong> também compõe a venda, mas é pago direto ao corretor e por isso não
-        entra no contas a receber. O que sobra depois de tudo isso é o <strong>saldo</strong>, que não vira
-        parcela sozinho: quem o cobra é um sinal novo ou um aditivo. Só a <strong>entrada</strong> gera as
-        parcelas do contas a receber.
-      </p>
-      {sources.length || commissions.length ? (
-        <div className={styles.tableWrapper}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th>Fonte</th>
-                <th>Valor</th>
-                <th>Composição</th>
-                <th>Data</th>
-              </tr>
-            </thead>
-            <tbody>
-              {orderedSources.map((source) => {
-                const isBalance = SALE_BALANCE_SOURCE_TYPES.includes(source.sourceType)
-                return (
-                  <tr key={source.sourceType}>
-                    <td>
-                      <strong>{source.label}</strong>
-                      <div className={styles.rowSecondaryText}>
-                        {source.generatesInstallments
-                          ? "cobrado do comprador"
-                          : isBalance
-                            ? "ainda sem cobrança lançada"
-                            : "liberado pelo banco"}
-                      </div>
-                    </td>
-                    <td>{formatMoney(source.amount)}</td>
-                    <td>
-                      {source.generatesInstallments
-                        ? `${source.installments} x ${formatMoney(Number(source.amount ?? 0) / Math.max(source.installments, 1))}`
-                        : isBalance
-                          ? "lance sinal ou aditivo"
-                          : "a vista, sem parcela"}
-                    </td>
-                    <td>{source.dueDate ? formatDate(source.dueDate) : "-"}</td>
-                  </tr>
-                )
-              })}
-              {commissionOffset > 0 ? (
-                <tr>
-                  <td>
-                    <strong>Sinal</strong>
-                    <div className={styles.rowSecondaryText}>
-                      pago ao corretor, fora do contas a receber
-                    </div>
-                  </td>
-                  <td>{formatMoney(commissionOffset)}</td>
-                  <td>
-                    {commissions.length > 1
-                      ? `${commissions.length} lançamentos`
-                      : "1 lançamento"}
-                  </td>
-                  <td>
-                    {commissions.length && commissions[0].dueDate
-                      ? formatDate(commissions[0].dueDate)
-                      : "-"}
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className={styles.metricHint}>
-          {canSale
-            ? "Unidade ainda não vendida - confirme a venda para compor o valor."
-            : "Sem composição registrada para esta unidade."}
-        </p>
-      )}
-      {documentations.length ? (
-        <div className={styles.tableWrapper}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th>Documentação</th>
-                <th>Valor</th>
-              </tr>
-            </thead>
-            <tbody>
-              {documentations.map((documentation) => (
-                <tr key={documentation.id}>
-                  <td>{documentation.name}</td>
-                  <td>{formatMoney(documentation.amount)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
 function UnitInstallmentsPanel({
   unit,
   plan,
@@ -6539,10 +6471,7 @@ function UnitInstallmentsPanel({
   const paymentPlan = composition.paymentPlan ?? {}
   const documentations = composition.documentations ?? []
   const installments = paymentPlan.installments ?? []
-  // Saldo zerado significa que tudo que o comprador deve ja esta lancado.
-  // Cobrar mais exigiria um valor que a venda nao tem, entao a acao some em vez
-  // de deixar o usuario montar a cobranca e levar recusa no final.
-  const hasBalanceToCharge = unit.status !== "sold" || Number(composition.balanceTotal ?? 0) > 0
+  const chargeDisabledReason = getChargeDisabledReason(plan)
   const canCreateAdjustment = Boolean(paymentPlan.contractId)
   const rows = buildInstallmentRows(paymentPlan)
   const hasBankSlips = rows.some((row) => row.bankSlips?.length)
@@ -6656,11 +6585,11 @@ function UnitInstallmentsPanel({
                 bankSlips.setHistory(null); bankSlips.setFailed([]); setAllBankSlipsOpen(true)
               }}>Ver boletos</button>}
             {canCreateAdjustment ? (
-              <span title={hasBalanceToCharge ? undefined : NOTHING_LEFT_TO_CHARGE}>
+              <span title={chargeDisabledReason}>
                 <button
                   type="button"
                   className={`${installmentStyles.actionButton} ${installmentStyles.adjustmentAction}`}
-                  disabled={!hasBalanceToCharge}
+                  disabled={Boolean(chargeDisabledReason)}
                   onClick={onCreateAdjustment}
                 >
                   <Plus size={16} />
@@ -6669,11 +6598,11 @@ function UnitInstallmentsPanel({
               </span>
             ) : null}
             {paymentPlan.receivableId ? (
-              <span title={hasBalanceToCharge ? undefined : NOTHING_LEFT_TO_CHARGE}>
+              <span title={chargeDisabledReason}>
                 <button
                   type="button"
                   className={`${installmentStyles.actionButton} ${installmentStyles.installmentAction}`}
-                  disabled={!hasBalanceToCharge}
+                  disabled={Boolean(chargeDisabledReason)}
                   onClick={() => onCreateInstallment({ receivableId: null, installments })}
                 >
                   <Plus size={16} />
@@ -6721,12 +6650,7 @@ function UnitInstallmentsPanel({
             Não foi possível consultar o ERP agora: {paymentPlan.erpUnavailableReason}
           </p>
         ) : null}
-        {!hasBalanceToCharge ? (
-          <p className={styles.metricHint}>
-            Saldo devedor zerado: tudo que o comprador deve já está lançado, então não há parcela nem
-            aditivo a incluir. Para cobrar a mais, aumente o preço da venda ou inclua uma documentação.
-          </p>
-        ) : null}
+        {chargeDisabledReason && <p className={styles.metricHint}>{chargeDisabledReason}</p>}
         {rows.length ? (
           <div className={styles.tableWrapper}>
             <table className={`${styles.table} ${installmentStyles.table}`}>
@@ -7589,10 +7513,7 @@ function UnitCommissionsPanel({
     ...(composition.historicalCommissions ?? []).map((commission) => ({ ...commission, historical: true })),
   ]
   const personNameById = Object.fromEntries((people ?? []).map((person) => [person.id, person.name]))
-  // Antes da venda nao ha composicao, e o sinal costuma ser lancado justamente
-  // nessa fase. Depois de vendida, saldo zerado quer dizer que nao sobrou o que
-  // cobrar do comprador.
-  const hasBalanceToCharge = unit.status !== "sold" || Number(composition.balanceTotal ?? 0) > 0
+  const chargeDisabledReason = getChargeDisabledReason(plan)
 
   return (
     <div className={styles.integrationPanel}>
@@ -7621,14 +7542,15 @@ function UnitCommissionsPanel({
             <p className={styles.metricHint}>
               O sinal é pago pelo comprador direto ao corretor, então não passa pelo caixa da
               construtora e não vira conta a receber. Ele <strong>sempre compõe o valor da venda</strong>:
-              ao ser lançado, já reduz o saldo que o comprador ainda deve.
+              ao ser lançado, reduz o saldo sem cobrança. Depois de pago, reduz o saldo devedor.
             </p>
+            {chargeDisabledReason && <p className={styles.metricHint}>{chargeDisabledReason}</p>}
           </div>
-          <span title={hasBalanceToCharge ? undefined : NOTHING_LEFT_TO_CHARGE}>
+          <span title={chargeDisabledReason}>
             <button
               type="button"
               className={styles.primaryButton}
-              disabled={!hasBalanceToCharge}
+              disabled={Boolean(chargeDisabledReason)}
               onClick={onCreate}
             >
               <Plus size={16} />

@@ -48,6 +48,7 @@ from app.domain.events.constants import (
     EventProducer,
 )
 from app.domain.events.contracts import EventEnvelope
+from app.domain.services.construction_contract_context_service import ConstructionContractContextService
 from app.domain.services.construction_integration_dispatcher import ConstructionIntegrationDispatchResult
 from app.domain.services.construction_service_template_parser import parse_service_template_spreadsheet
 from app.domain.services.subcontract_service import SubcontractService
@@ -80,6 +81,7 @@ from app.infrastructure.database.models import (
 )
 from app.infrastructure.repository.construction_repository import ConstructionRepository
 from app.infrastructure.repository.event_repository import EventRepository
+from app.schemas.construction.unit_contract import ConstructionUnitSummaryContextResponse
 from app.schemas.construction import (
     ConstructionBlockCreate,
     ConstructionDocumentationTypeCreate,
@@ -5418,6 +5420,11 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             self.to_commission_response(commission) for commission in historical_commissions
         ]
         composition["payment_plan"] = plan
+        try:
+            composition["has_balance_to_charge"] = await self._has_balance_to_charge(company_id, unit, user_id)
+        except ConstructionDomainError as exc:
+            composition["has_balance_to_charge"] = None
+            composition["charge_availability_error"] = exc.message
         return composition
 
     async def update_unit_installment(
@@ -5465,32 +5472,42 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                 fallback_message="Não foi possível editar a parcela no ERP.",
             ) from request_error
 
-    async def _refuse_when_nothing_left_to_charge(self, *, company_id: UUID, unit_id: UUID) -> None:
-        """Recusa cobranca nova quando o saldo devedor ja esta zerado.
+    async def _has_balance_to_charge(self, company_id, unit, user_id):
+        if unit.status not in (ConstructionUnitStatus.SOLD, ConstructionUnitStatus.DELIVERED):
+            return True
 
-        O saldo e o que ainda falta compor a venda. Zerado, tudo que o comprador
-        deve ja esta lancado -- em parcela, sinal ou aditivo -- e uma cobranca a
-        mais nao teria de onde sair: cobraria do comprador um valor que a venda
-        nao tem.
+        if self.erp_client is None:
+            raise ConstructionDomainError(message="Não foi possível verificar o saldo para cobrança no ERP.", status_code=503)
 
-        So vale para unidade vendida. Antes da venda nao existe composicao, e o
-        saldo zero ali significa "ainda nao ha venda", nao "nao ha o que cobrar"
-        -- o sinal costuma ser lancado justamente nessa fase.
-        """
-        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
-        if unit.status != ConstructionUnitStatus.SOLD:
+        data = await ConstructionContractContextService(self.repository).build_summary_context(
+            company_id, unit, unit.current_sale_id,
+        )
+        try:
+            payload = ConstructionUnitSummaryContextResponse.model_validate(data).model_dump(mode="json")
+            return await self.erp_client.has_unit_balance_to_charge(company_id, unit.id, unit.current_sale_id, user_id, payload)
+        except (httpx.HTTPError, KeyError, RuntimeError, TypeError, ValueError) as exc:
+            _logger.warning(
+                "[unit_charge_availability] falhou: company_id=%s unit_id=%s sale_id=%s tipo=%s",
+                company_id, unit.id, unit.current_sale_id, type(exc).__name__,
+            )
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 403:
+                raise ConstructionDomainError(
+                    message="Você não tem acesso a todos os registros necessários para verificar o saldo para cobrança.",
+                    status_code=403,
+                ) from exc
+            raise ConstructionDomainError(
+                message="Não foi possível verificar o saldo para cobrança no ERP. Tente novamente.", status_code=503,
+            ) from exc
+
+    async def _refuse_when_nothing_left_to_charge(self, company_id, unit, user_id):
+        if await self._has_balance_to_charge(company_id, unit, user_id):
             return
-
-        composition = await self.build_unit_sale_composition(company_id=company_id, unit_id=unit_id)
-        balance = Decimal(str(composition.get("balance_total") or 0))
-        if balance > Decimal("0"):
-            return
-
+        _logger.info(
+            "[unit_charge_availability] recusado: company_id=%s unit_id=%s sale_id=%s",
+            company_id, unit.id, unit.current_sale_id,
+        )
         raise ConstructionInvalidValueError(
-            message=(
-                "O saldo devedor desta unidade está zerado: não há valor a cobrar do comprador. "
-                "Para cobrar a mais, aumente o preço da venda ou lance uma documentação."
-            ),
+            message="Não há saldo sem cobrança lançada. O valor da venda já está coberto por pagamentos ou cobranças.",
             error_code="CONSTRUCTION_UNIT_WITHOUT_BALANCE_TO_CHARGE",
         )
 
@@ -5509,8 +5526,8 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         reescreve o que esta em aberto. Cobranca que precisa sobreviver a isso
         e aditivo, que tem documento proprio.
         """
-        await self._editable_transfer_unit(company_id, unit_id)
-        await self._refuse_when_nothing_left_to_charge(company_id=company_id, unit_id=unit_id)
+        unit = await self._editable_transfer_unit(company_id, unit_id)
+        await self._refuse_when_nothing_left_to_charge(company_id, unit, user_id)
         unit, target_receivable_id = await self._resolve_unit_receivable_target(
             company_id=company_id,
             unit_id=unit_id,
@@ -5729,9 +5746,8 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         agora, e nao lido dela na emissao: trocar o modelo da obra depois nao
         pode reescrever o que ja foi lancado.
         """
-        await self._editable_transfer_unit(company_id, unit_id)
-        await self._refuse_when_nothing_left_to_charge(company_id=company_id, unit_id=unit_id)
-        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        unit = await self._editable_transfer_unit(company_id, unit_id)
+        await self._refuse_when_nothing_left_to_charge(company_id, unit, actor_user_id)
         await self._require_company_people(
             company_id=company_id,
             actor_user_id=actor_user_id,
@@ -5921,9 +5937,8 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         ``replace_open_installments``, que refaz as parcelas em aberto e
         destruiria o aditivo.
         """
-        await self._editable_transfer_unit(company_id, unit_id)
-        await self._refuse_when_nothing_left_to_charge(company_id=company_id, unit_id=unit_id)
-        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        unit = await self._editable_transfer_unit(company_id, unit_id)
+        await self._refuse_when_nothing_left_to_charge(company_id, unit, user_id)
 
         if unit.external_contract_id is None:
             raise ConstructionDomainError(
