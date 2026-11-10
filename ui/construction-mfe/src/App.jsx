@@ -5234,6 +5234,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       {isProcurementModalOpen ? (
         <ProcurementModal
           bridge={bridge}
+          projectId={activeProjectId}
           mode={procurementModalMode}
           procurementForm={procurementForm}
           people={personSummaries}
@@ -8717,7 +8718,13 @@ function ProcurementList({
   )
 }
 
-function ProcurementModal({ bridge, mode, procurementForm, people, schedulePhases, units, onClose, onChange, onItemsChange, onSubmit, loading }) {
+function ProcurementModal({ bridge, projectId, mode, procurementForm, people, schedulePhases, units, onClose,
+  onChange, onItemsChange, onSubmit, loading: submitting }) {
+  const [catalogPending, setCatalogPending] = useState(false)
+  const loading = submitting || catalogPending
+  const CatalogPicker = bridge?.components?.ProductSearchCombobox
+  const canEditCatalog = projectId && (mode === "create"
+    ? bridge?.canCreate?.("construction_procurement") : bridge?.canUpdate?.("construction_procurement"))
   const subtotalCents = procurementSubtotalCents(procurementForm.items)
   const discountCents = currencyCents(procurementForm.discountAmount)
   const subtotal = Number(subtotalCents) / 100
@@ -8806,7 +8813,17 @@ function ProcurementModal({ bridge, mode, procurementForm, people, schedulePhase
               />
             </label>
             <section className={`${styles.spanTwoColumns} ${styles.procurementSection}`} aria-label="Itens da requisição">
-              <ProductPicker bridge={bridge} onSelect={addProduct} disabled={loading} />
+              {CatalogPicker && canEditCatalog ? (
+                <>
+                  <span>Produtos da requisição *</span>
+                  <CatalogPicker token={bridge.token} companyId={bridge.companyContext?.companyId} projectId={projectId}
+                    onChange={(product) => {
+                      if (product) addProduct({ ...product, unitOfMeasure: product.unit_of_measure_code, costPrice: product.cost_price })
+                    }}
+                    disabled={submitting} launchContext="construction-requisition" ariaLabel="Produtos da requisição"
+                    onLaunchError={bridge.feedback?.error} onCreatePendingChange={setCatalogPending} />
+                </>
+              ) : <ProductPicker bridge={bridge} onSelect={addProduct} disabled={loading} />}
               {procurementForm.items?.length ? (
                 <div className={styles.procurementItems}>
                   {procurementForm.items.map((item) => {
