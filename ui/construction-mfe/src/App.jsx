@@ -8821,7 +8821,7 @@ function ProcurementModal({ bridge, projectId, mode, procurementForm, people, sc
                       if (product) addProduct({ ...product, unitOfMeasure: product.unit_of_measure_code, costPrice: product.cost_price })
                     }}
                     disabled={submitting} launchContext="construction-requisition" ariaLabel="Produtos da requisição"
-                    onLaunchError={bridge.feedback?.error} onCreatePendingChange={setCatalogPending} />
+                    selectOnEnter onLaunchError={bridge.feedback?.error} onCreatePendingChange={setCatalogPending} />
                 </>
               ) : <ProductPicker bridge={bridge} onSelect={addProduct} disabled={loading} />}
               {procurementForm.items?.length ? (
