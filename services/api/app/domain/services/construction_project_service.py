@@ -5101,6 +5101,11 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         """
         if not items:
             return []
+        if any(item.amount > MAX_UNIT_SALE_AMOUNT for item in items):
+            raise ConstructionInvalidValueError(
+                message="O valor máximo por taxa de documentação é R$ 999.999.999.999,99.",
+                error_code="CONSTRUCTION_UNIT_DOCUMENTATION_AMOUNT_LIMIT",
+            )
 
         if current_documentations is None:
             current_documentations = await self.repository.list_unit_documentations(

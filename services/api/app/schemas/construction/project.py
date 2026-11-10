@@ -8,7 +8,6 @@ from uuid import UUID
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.constants import (
-    MAX_UNIT_SALE_AMOUNT,
     ConstructionBlockStatus,
     ConstructionProjectStatus,
     ConstructionProjectType,
@@ -383,7 +382,7 @@ class ConstructionUnitSaleDocumentation(BaseModel):
 
     documentation_type_id: UUID | None = None
     name: str | None = Field(default=None, min_length=1, max_length=100)
-    amount: Decimal = Field(..., gt=0, le=MAX_UNIT_SALE_AMOUNT)
+    amount: Decimal = Field(..., gt=0)
 
     @model_validator(mode="after")
     def validate_type_reference(self) -> "ConstructionUnitSaleDocumentation":
