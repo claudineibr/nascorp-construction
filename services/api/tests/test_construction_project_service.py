@@ -25,6 +25,7 @@ from app.domain.services import construction_project_service
 from app.infrastructure.database.models.unit_buyer_history import ConstructionUnitBuyerHistory
 from app.infrastructure.database.models import (
     ConstructionDocumentationType,
+    ConstructionUnitDeliveryAudit,
     ConstructionMeasurement,
     ConstructionMeasurementItem,
     ConstructionMeasurementItemInspection,
@@ -693,6 +694,9 @@ class FakeConstructionRepository:
 
         if isinstance(entity, ConstructionMeasurementItemOccurrence):
             self.occurrences[(entity.company_id, entity.id)] = entity
+            return
+
+        if isinstance(entity, ConstructionUnitDeliveryAudit):
             return
 
         if isinstance(entity, ConstructionUnitBuyerHistory):

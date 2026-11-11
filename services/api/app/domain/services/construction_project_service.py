@@ -10,8 +10,10 @@ from uuid import UUID, uuid4
 
 import httpx
 
-from app.domain.business_clock import BRAZIL_TIMEZONES, current_business_timezone, get_business_today
+from app.domain.business_clock import BRAZIL_TIMEZONES, current_business_timezone, get_business_now, get_business_today
 from app.domain.project_schedule_status import project_schedule_status
+from app.domain.unit_delivery_date import delivery_calendar_date, delivery_timestamp
+from app.infrastructure.database.models.unit_delivery_audit import ConstructionUnitDeliveryAudit
 from app.domain.constants import (
     MAX_UNIT_SALE_AMOUNT,
     ConstructionInspectionRoundSource,
@@ -894,14 +896,18 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             typology=request.typology.strip() if request.typology else None,
             floor=request.floor,
             ideal_fraction=request.ideal_fraction,
-            delivered_at=datetime.now(UTC) if request.status == ConstructionUnitStatus.DELIVERED else None,
+            delivered_at=self._resolve_unit_delivery_date(
+                status=request.status, delivery_date=request.delivery_date, status_changed=True,
+            ),
             terminated_at=datetime.now(UTC) if request.status == ConstructionUnitStatus.TERMINATED else None,
             private_area=request.private_area,
             total_area=request.total_area,
             sale_price=request.sale_price,
             status=request.status,
         )
+        unit.delivery_date = request.delivery_date or delivery_calendar_date(unit.delivered_at)
         await self.repository.add(unit)
+        await self._record_unit_delivery_change(unit, None, actor_user_id, "CREATED")
         unit_created_event = self._build_unit_created_event(
             unit=unit,
             project=project,
@@ -913,6 +919,8 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
 
         await self.repository.commit()
         await self.repository.refresh(unit)
+        _logger.info(f"[unit_delivery] created: company_id={company_id} unit_id={unit.id} "
+                     f"actor_id={actor_user_id} date_present={unit.delivered_at is not None}")
         return unit
 
     async def list_units(self, *, company_id: UUID, project_id: UUID) -> list[ConstructionUnit]:
@@ -930,13 +938,21 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         request: ConstructionUnitUpdate,
         actor_user_id: UUID | None = None,
     ) -> ConstructionUnit:
-        await self._editable_transfer_unit(company_id, unit_id)
-        unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
+        unit = await self._editable_transfer_unit(company_id, unit_id)
         updates = request.model_dump(exclude_unset=True)
-        if "status" in updates:
-            unit = await self.repository.lock_unit(company_id=company_id, unit_id=unit_id)
-            if unit is None:
-                raise ConstructionNotFoundError(resource_name="a unidade")
+        expected_updated_at = updates.pop("expected_updated_at", None)
+        requested_delivery_date = updates.pop("delivery_date", None)
+        if (
+            expected_updated_at is not None and expected_updated_at != unit.updated_at
+            or requested_delivery_date is not None and expected_updated_at is None
+        ):
+            _logger.warning(f"[unit_delivery] stale_edit: company_id={company_id} unit_id={unit_id} "
+                            f"actor_id={actor_user_id} has_version={expected_updated_at is not None}")
+            raise ConstructionResourceInUseError(
+                message="A unidade foi atualizada. Recarregue e confira a data de entrega antes de salvar.",
+                error_code="CONSTRUCTION_UNIT_DELIVERY_CONFLICT",
+            )
+        previous_delivery_date = unit.delivery_date
 
         if unit.status == ConstructionUnitStatus.DELIVERED and "sale_price" in updates:
             if updates.pop("sale_price") != unit.sale_price:
@@ -992,6 +1008,23 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             if existing_unit and existing_unit.id != unit.id:
                 raise ConstructionDuplicateCodeError(resource_name="a unidade", code=next_code)
 
+        previous_status = unit.status
+        unit.delivered_at = self._resolve_unit_delivery_date(
+            status=next_status or previous_status,
+            delivery_date=requested_delivery_date,
+            current_value=unit.delivered_at,
+            current_date=unit.delivery_date,
+            status_changed=next_status is not None and next_status != previous_status,
+        )
+        if requested_delivery_date is not None:
+            unit.delivery_date = requested_delivery_date
+        elif next_status == ConstructionUnitStatus.DELIVERED and next_status != previous_status:
+            unit.delivery_date = delivery_calendar_date(unit.delivered_at)
+        await self._record_unit_delivery_change(unit, previous_delivery_date, actor_user_id, "UPDATED")
+        if "delivery_date" in request.model_fields_set:
+            _logger.info(f"[unit_delivery] resolved: company_id={company_id} unit_id={unit.id} "
+                         f"actor_id={actor_user_id} date_present={unit.delivered_at is not None}")
+
         if "description" in updates:
             current_description = unit.original_description if unit.original_description is not None else unit.description
             if (updates["description"] or "").strip() == (current_description or "").strip():
@@ -1004,9 +1037,6 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                 )
                 updates["description"] = unit.description
 
-        previous_status = unit.status
-        if next_status and next_status != previous_status and next_status == ConstructionUnitStatus.DELIVERED:
-            unit.delivered_at = datetime.now(UTC)
         reclassify = next_status is not None and next_status != previous_status and "delivered" in {
             previous_status, next_status,
         }
@@ -1035,7 +1065,43 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         self._apply_updates(entity=unit, updates=updates)
         await self.repository.commit()
         await self.repository.refresh(unit)
+        _logger.info(f"[unit_delivery] completed: company_id={company_id} unit_id={unit.id} "
+                     f"actor_id={actor_user_id} date_present={unit.delivered_at is not None}")
         return unit
+
+    async def _record_unit_delivery_change(self, unit, previous_date, actor_user_id, reason):
+        if previous_date == unit.delivery_date:
+            return
+        await self.repository.add(ConstructionUnitDeliveryAudit(
+            company_id=unit.company_id,
+            unit_id=unit.id,
+            actor_user_id=actor_user_id,
+            previous_date=previous_date,
+            delivery_date=unit.delivery_date,
+            reason=reason,
+        ))
+        _logger.info(f"[unit_delivery] audit_queued: company_id={unit.company_id} unit_id={unit.id} "
+                     f"actor_id={actor_user_id} reason={reason}")
+
+    @staticmethod
+    def _resolve_unit_delivery_date(*, status, delivery_date, current_value=None, current_date=None, status_changed=False):
+        if delivery_date is not None:
+            if status != ConstructionUnitStatus.DELIVERED:
+                raise ConstructionInvalidValueError(
+                    message="A data de entrega só pode ser informada para uma unidade com status Entregue.",
+                    error_code="CONSTRUCTION_UNIT_DELIVERY_STATUS_REQUIRED",
+                )
+            if delivery_date > get_business_today(current_business_timezone()):
+                raise ConstructionInvalidValueError(
+                    message="A data de entrega não pode ser futura.",
+                    error_code="CONSTRUCTION_UNIT_DELIVERY_DATE_FUTURE",
+                )
+            if delivery_date == current_date:
+                return current_value
+            return delivery_timestamp(delivery_date)
+        if status == ConstructionUnitStatus.DELIVERED and status_changed:
+            return get_business_now(current_business_timezone()).astimezone(UTC)
+        return current_value
 
     @staticmethod
     def _ensure_status_change_without_termination(*, current_status: str, next_status: str) -> None:
@@ -1570,6 +1636,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             unit.cost_sale_history = [*(unit.cost_sale_history or []),
                 {"sold_at": unit.sold_at.isoformat(), "terminated_at": terminated_at.isoformat()}]
         sale.delivered_at = unit.delivered_at
+        sale.delivery_date = unit.delivery_date
         sale.external_contract_status = unit.external_contract_status
         sale.external_receivable_status = unit.external_receivable_status
         sale.termination_snapshot = self._json_safe({
@@ -1592,6 +1659,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         })
         unit.terminated_at = terminated_at
         unit.delivered_at = None
+        unit.delivery_date = None
         return terminated_at
 
     async def _release_terminated_unit(self, unit):
@@ -1900,6 +1968,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         )
         snapshot = dict(sale.termination_snapshot or {})
         unit.delivered_at = sale.delivered_at or unit.delivered_at
+        unit.delivery_date = sale.delivery_date or unit.delivery_date
         previous_status = snapshot.get("unit_status")
         if previous_status in {ConstructionUnitStatus.SOLD, ConstructionUnitStatus.DELIVERED}:
             unit.status = previous_status

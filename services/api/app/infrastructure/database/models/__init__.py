@@ -28,9 +28,11 @@ from app.infrastructure.database.models.event import DeadLetterEvent, OutboxEven
 
 
 from app.infrastructure.database.models.project_document import ConstructionProjectDocument
+from app.infrastructure.database.models.unit_delivery_audit import ConstructionUnitDeliveryAudit
 
 
 __all__ = [
+    "ConstructionUnitDeliveryAudit",
     "ConstructionProjectDocument",
     "ConstructionUnitBuyerHistory",
     "ConstructionBlock",

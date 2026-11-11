@@ -15,7 +15,8 @@ from app.schemas.construction.project import ConstructionUnitUpdate
 @pytest.mark.parametrize("previous,status", [("sold", "delivered"), ("delivered", "sold")])
 async def test_status_transition_persists_event_before_unit_commit(previous, status, monkeypatch):
     unit = SimpleNamespace(
-        id=uuid4(), company_id=uuid4(), project_id=uuid4(), status=previous, description="", analytic_cost_center_id=None
+        id=uuid4(), company_id=uuid4(), project_id=uuid4(), status=previous, description="", analytic_cost_center_id=None,
+        delivered_at=None, delivery_date=None
     )
     repository, events = AsyncMock(), AsyncMock()
     repository.get_unit.return_value = unit

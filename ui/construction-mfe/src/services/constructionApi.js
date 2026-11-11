@@ -128,6 +128,7 @@ const toUnitView = (unit) => ({
   floor: unit.floor ?? "",
   idealFraction: unit.ideal_fraction ?? null,
   deliveredAt: unit.delivered_at ?? null,
+  deliveryDate: unit.delivery_date ?? null,
   terminatedAt: unit.terminated_at ?? null,
   privateArea: unit.private_area ?? null,
   totalArea: unit.total_area ?? null,
@@ -565,6 +566,10 @@ const toUnitPayload = (unitData = {}) => ({
   total_area: toNullableNumber(unitData.totalArea),
   sale_price: toNullableNumber(unitData.salePrice),
   status: unitData.status,
+  ...(unitData.originalUpdatedAt ? { expected_updated_at: unitData.originalUpdatedAt } : {}),
+  ...(unitData.status === "delivered"
+    && (!unitData.originalUpdatedAt || unitData.deliveryDate !== unitData.originalDeliveryDate)
+    ? { delivery_date: toNullableString(unitData.deliveryDate) } : {}),
 })
 
 const toMeasurementPayload = (measurementData = {}) => ({

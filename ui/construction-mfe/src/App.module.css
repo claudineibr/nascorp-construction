@@ -1149,6 +1149,14 @@
   padding: 1rem 1.1rem 1.2rem;
 }
 
+.formFieldset {
+  box-sizing: border-box;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
 .formGrid {
   display: grid;
   gap: 0.9rem;

@@ -484,6 +484,7 @@ const defaultUnitForm = {
   privateArea: "",
   totalArea: "",
   salePrice: "",
+  deliveryDate: "",
   status: "available",
 }
 
@@ -918,6 +919,9 @@ function toFormUnit(unit) {
     privateArea: unit.privateArea === null || unit.privateArea === undefined ? "" : String(unit.privateArea),
     totalArea: unit.totalArea === null || unit.totalArea === undefined ? "" : String(unit.totalArea),
     salePrice: formatCurrencyFromNumber(unit.salePrice),
+    deliveryDate: unit.deliveryDate ?? "",
+    originalDeliveryDate: unit.deliveryDate ?? "",
+    originalUpdatedAt: unit.updatedAt,
     status: unit.status ?? "available",
   }
 }
@@ -5646,7 +5650,6 @@ function OverviewPanel({
           />
         </div>
         {summary?.purchaseTotalsUnavailableReason && <p role="status">{summary.purchaseTotalsUnavailableReason}</p>}
-        <p>Pedidos migrados sem saldo apurado: {summary?.legacyUnknownAmount == null ? "Indisponível" : formatCurrencyFromNumber(summary.legacyUnknownAmount)}</p>
         {summary?.purchasePhases?.length > 0 && <details><summary>Valores por etapa</summary>
           <div className={styles.tableWrapper}><table className={styles.table}><thead><tr>
             <th>Etapa</th><th>Requisitado aprovado</th><th>Comprometido</th><th>Realizado</th>
@@ -6340,7 +6343,7 @@ function UnitDetailPanel({
           <article className={styles.integrationCard}>
             <h3>Fração ideal</h3>
             <p className={styles.metricValue}>{unit.idealFraction == null ? "Não informada" : Number(unit.idealFraction).toFixed(10)}</p>
-            <p className={styles.metricHint}>Data de entrega: {formatDate(unit.deliveredAt)}</p>
+            <p className={styles.metricHint}>Data de entrega: {formatDate(unit.deliveryDate)}</p>
             <p className={styles.metricHint}>Data de distrato: {formatDate(unit.terminatedAt)}</p>
           </article>
           <article className={styles.integrationCard}>
@@ -9830,6 +9833,8 @@ function BlockModal({ mode, blockForm, onClose, onChange, onSubmit, loading }) {
 }
 
 function UnitModal({ mode, unitForm, blocks, units, editingUnitId, onClose, onChange, onSubmit, loading }) {
+  const bridge = useBridge()
+  const formId = useId()
   const otherUnits = units.filter((unit) => unit.id !== editingUnitId)
   const fractionTotal = otherUnits.reduce((total, unit) => total + Number(unit.idealFraction || 0), 0) + Number(unitForm.idealFraction || 0) * (mode === "create" ? Number(unitForm.quantity || 1) : 1)
   const areaTotal = otherUnits.reduce((total, unit) => total + Number(unit.privateArea || 0), 0) + Number(unitForm.privateArea || 0) * (mode === "create" ? Number(unitForm.quantity || 1) : 1)
@@ -9844,22 +9849,22 @@ function UnitModal({ mode, unitForm, blocks, units, editingUnitId, onClose, onCh
   const codeIsLocked = mode !== "create"
   const salePriceLocked = mode === "edit" && units.some((unit) => unit.id === editingUnitId && unit.status === "delivered")
 
+  const footer = (
+    <>
+      <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
+        Cancelar
+      </button>
+      <button type="submit" form={formId} className={styles.primaryButton} disabled={loading}>
+        {loading ? "Salvando..." : mode === "create" ? submitLabel : "Salvar alterações"}
+      </button>
+    </>
+  )
+
   return (
-    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
-      <section
-        className={styles.modalCard}
-        role="dialog"
-        aria-modal="true"
-        aria-label={mode === "create" ? "Nova unidade" : "Editar unidade"}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header className={styles.modalHeader}>
-          <h3>{mode === "create" ? "Nova unidade" : "Editar unidade"}</h3>
-          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
-            Fechar
-          </button>
-        </header>
-        <form className={styles.modalBody} onSubmit={onSubmit}>
+    <UnitBankSlipDialogFrame bridge={bridge} title={mode === "create" ? "Nova unidade" : "Editar unidade"}
+      onClose={loading ? undefined : onClose} footer={footer} dialogMaxWidth={880}>
+        <form id={formId} className={styles.modalBody} onSubmit={onSubmit}>
+          <fieldset className={styles.formFieldset} disabled={loading}>
           <div className={styles.formGrid}>
             {mode === "create" ? (
               <>
@@ -10000,6 +10005,16 @@ function UnitModal({ mode, unitForm, blocks, units, editingUnitId, onClose, onCh
               )}
             </label>
             <label className={styles.filterControl}>
+              <span>Data de entrega <InfoTip floating label="Sobre a data de entrega">
+                Data em que a unidade foi entregue ao comprador. Exemplo: 22/05/2026.
+                Informe com status Entregue; a data não pode ser futura.
+                Em branco, a entrega nova usa a data atual da empresa e uma data já registrada é preservada.
+              </InfoTip></span>
+              <input type="date" value={unitForm.deliveryDate} max={brazilTodayISO()}
+                disabled={unitForm.status !== "delivered"}
+                onChange={(event) => onChange("deliveryDate", event.target.value)} />
+            </label>
+            <label className={styles.filterControl}>
               <span>Status*</span>
               <select value={unitForm.status} onChange={(event) => onChange("status", event.target.value)} required>
                 {unitStatusOptions
@@ -10012,17 +10027,9 @@ function UnitModal({ mode, unitForm, blocks, units, editingUnitId, onClose, onCh
               </select>
             </label>
           </div>
-          <footer className={styles.modalFooter}>
-            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
-              Cancelar
-            </button>
-            <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Salvando..." : mode === "create" ? submitLabel : "Salvar alterações"}
-            </button>
-          </footer>
+          </fieldset>
         </form>
-      </section>
-    </div>
+    </UnitBankSlipDialogFrame>
   )
 }
 

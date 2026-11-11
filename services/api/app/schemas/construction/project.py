@@ -302,10 +302,12 @@ class ConstructionUnitCreate(BaseModel):
     private_area: Decimal | None = Field(default=None, ge=0)
     total_area: Decimal | None = Field(default=None, ge=0)
     sale_price: Decimal | None = Field(default=None, ge=0)
+    delivery_date: date | None = None
     status: str = ConstructionUnitStatus.AVAILABLE
 
 
 class ConstructionUnitUpdate(BaseModel):
+    expected_updated_at: datetime | None = None
     code: str | None = Field(default=None, min_length=1, max_length=50)
     description: str | None = None
     unit_type: str | None = Field(default=None, min_length=1, max_length=80)
@@ -316,6 +318,7 @@ class ConstructionUnitUpdate(BaseModel):
     private_area: Decimal | None = Field(default=None, ge=0)
     total_area: Decimal | None = Field(default=None, ge=0)
     sale_price: Decimal | None = Field(default=None, ge=0)
+    delivery_date: date | None = None
     status: str | None = None
 
 
@@ -334,6 +337,7 @@ class ConstructionUnitResponse(BaseModel):
     floor: str | None = None
     ideal_fraction: Decimal | None = None
     delivered_at: datetime | None = None
+    delivery_date: date | None = None
     terminated_at: datetime | None = None
     private_area: Decimal | None = None
     total_area: Decimal | None = None
