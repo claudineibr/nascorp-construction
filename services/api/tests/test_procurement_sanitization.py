@@ -26,7 +26,10 @@ def scenario(status="draft"):
     dispatcher = SimpleNamespace(dispatch=AsyncMock())
     service = ConstructionProjectService(repository=repository, erp_client=client,
                                          integration_dispatcher=dispatcher)
-    service.get_project = AsyncMock(return_value=SimpleNamespace(code="OB-1", name="Obra"))
+    service.get_project = AsyncMock(return_value=SimpleNamespace(
+        code="OB-1", name="Obra", status="active", planned_start_date=None, start_date=None,
+        expected_end_date=None, actual_end_date=None, estimated_cost=None,
+    ))
     return service, repository, client, dispatcher, request
 
 

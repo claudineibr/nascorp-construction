@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 import httpx
 
 from app.domain.business_clock import BRAZIL_TIMEZONES, current_business_timezone, get_business_today
+from app.domain.project_schedule_status import project_schedule_status
 from app.domain.constants import (
     MAX_UNIT_SALE_AMOUNT,
     ConstructionInspectionRoundSource,
@@ -5277,7 +5278,11 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         Comercial e custo saem do proprio modulo; recebido e a receber vem do
         ERP, que e quem tem as baixas.
         """
-        await self.get_project(company_id=company_id, project_id=project_id)
+        project = await self.get_project(company_id=company_id, project_id=project_id)
+        schedule_status = project_schedule_status(project, today=get_business_today(current_business_timezone()))
+        _logger.info(
+            f"[project_summary] started: company_id={company_id} project_id={project_id} schedule_status={schedule_status}"
+        )
         units = await self.repository.list_units(company_id=company_id, project_id=project_id)
         measurements = await self.repository.list_measurements(company_id=company_id, project_id=project_id)
         procurement_requests = await self.repository.list_procurement_requests(
@@ -5317,6 +5322,9 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         )
 
         summary: dict[str, Any] = {
+            "schedule_status": schedule_status,
+            "estimated_cost_amount": project.estimated_cost,
+            "remaining_estimated_cost_amount": None,
             "units_count": len(units),
             "units_sold_count": len(sold_units),
             "units_reserved_count": sum(
@@ -5361,7 +5369,14 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             summary["planned_cost_amount"] = summary["approved_requisition_amount"]
             summary["measured_cost_amount"] = Decimal(str(purchases["measured_amount"]))
             summary["purchase_phases"] = purchases.get("phases", [])
-        except Exception:
+            if project.estimated_cost is not None:
+                realized_cost = summary["realized_amount"].quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                summary["remaining_estimated_cost_amount"] = project.estimated_cost - realized_cost
+        except Exception as error:
+            _logger.warning(
+                f"[project_summary] costs_unavailable: company_id={company_id} project_id={project_id} "
+                f"error_type={type(error).__name__}"
+            )
             summary["purchase_totals_unavailable_reason"] = "Não foi possível consultar os compromissos no ERP agora."
         if receivable_ids and self.erp_client is not None:
             try:
@@ -5380,6 +5395,10 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                 # O resumo comercial e de custo continua util mesmo sem o ERP.
                 summary["erp_unavailable_reason"] = _describe_erp_failure(request_error)
 
+        _logger.info(
+            f"[project_summary] completed: company_id={company_id} project_id={project_id} "
+            f"costs_available={summary['realized_amount'] is not None}"
+        )
         return summary
 
     async def build_unit_payment_plan(self, *, company_id: UUID, unit_id: UUID, user_id: UUID | None = None) -> dict[str, Any]:

@@ -204,8 +204,14 @@ const defaultFilters = {
 const projectPageSizeOptions = [10, 20, 50, 100]
 const defaultProjectPageSize = 100
 
-const isProjectDelayed = (project) => Boolean(project.expectedEndDate && !project.actualEndDate
-  && project.expectedEndDate < brazilTodayISO())
+const projectSituation = (project) => project.scheduleStatus || project.status
+const isProjectDelayed = (project) => projectSituation(project) === "delayed"
+const projectSituationClass = (situation) => ({
+  delayed: styles.projectDelayed,
+  on_time: styles.projectActive,
+  not_started: styles.statusdraft,
+  no_deadline: styles.statusdraft,
+}[situation] || styles[`status${situation}`] || "")
 
 const statusLabel = {
   draft: "Rascunho",
@@ -214,6 +220,14 @@ const statusLabel = {
   completed: "Concluída",
   cancelled: "Cancelada",
   canceled: "Cancelada",
+}
+
+const projectSituationLabel = {
+  ...statusLabel,
+  delayed: "Atrasada",
+  not_started: "Não iniciada",
+  on_time: "No prazo",
+  no_deadline: "Sem previsão de término",
 }
 
 const projectTypeOptions = [
@@ -1469,6 +1483,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [serviceTemplatesRestricted, setServiceTemplatesRestricted] = useState(false)
   const [loadingServiceTemplates, setLoadingServiceTemplates] = useState(false)
   const [importingServiceTemplates, setImportingServiceTemplates] = useState(false)
+  const projectSummaryRequest = useRef(0)
+  const projectSummaryContext = useRef(null)
+  projectSummaryContext.current = `${companyId}:${activeProjectId}`
   const [projectSummary, setProjectSummary] = useState(null)
   const [loadingProjectSummary, setLoadingProjectSummary] = useState(false)
   const [projectSummaryError, setProjectSummaryError] = useState(null)
@@ -1668,9 +1685,10 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const hasActiveFilters = Object.values(filters).some(Boolean)
 
   const summaryItems = useMemo(() => {
-    const activeProjects = projects.filter((project) => project.status === "active").length
+    const onTimeProjects = projects.filter((project) => projectSituation(project) === "on_time").length
+    const notStartedProjects = projects.filter((project) => projectSituation(project) === "not_started").length
     const delayedProjects = projects.filter(isProjectDelayed).length
-    const completedProjects = projects.filter((project) => project.status === "completed").length
+    const completedProjects = projects.filter((project) => projectSituation(project) === "completed").length
 
     return [
       {
@@ -1680,10 +1698,16 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         tone: "muted",
       },
       {
-        label: "Ativas",
-        value: activeProjects,
+        label: "No prazo",
+        value: onTimeProjects,
         icon: CheckCircle,
         tone: "projectActiveMetric",
+      },
+      {
+        label: "Não iniciadas",
+        value: notStartedProjects,
+        icon: Clock,
+        tone: "muted",
       },
       {
         label: "Obras em atraso",
@@ -1801,23 +1825,39 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
   const loadProjectSummary = useCallback(
     async (projectId) => {
-      if (!projectId) {
+      const contextKey = `${companyId}:${projectId}`
+      if (!projectId || contextKey !== projectSummaryContext.current) {
         return
       }
 
+      const requestId = ++projectSummaryRequest.current
       setLoadingProjectSummary(true)
+      setProjectSummary(null)
       setProjectSummaryError(null)
       try {
-        setProjectSummary(await getConstructionProjectSummary({ bridge, projectId }))
+        const result = await getConstructionProjectSummary({ bridge, projectId })
+        if (requestId === projectSummaryRequest.current && contextKey === projectSummaryContext.current) {
+          setProjectSummary({ ...result, projectId, companyId })
+        }
       } catch (requestError) {
-        setProjectSummary(null)
-        setProjectSummaryError(requestError?.message ?? "Não foi possível carregar o resumo da obra.")
+        if (requestId === projectSummaryRequest.current && contextKey === projectSummaryContext.current) {
+          setProjectSummaryError(requestError?.message ?? "Não foi possível carregar o resumo da obra.")
+        }
       } finally {
-        setLoadingProjectSummary(false)
+        if (requestId === projectSummaryRequest.current && contextKey === projectSummaryContext.current) {
+          setLoadingProjectSummary(false)
+        }
       }
     },
-    [bridge]
+    [bridge, companyId]
   )
+
+  useEffect(() => {
+    ++projectSummaryRequest.current
+    setProjectSummary(null)
+    setProjectSummaryError(null)
+    setLoadingProjectSummary(false)
+  }, [activeProjectId, companyId])
 
   const loadProcurementRequests = useCallback(async () => {
     if (!activeProjectId) {
@@ -2106,6 +2146,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
     setProjectDetailRevision((value) => value + 1)
     await Promise.all([
+      loadProjectSummary(projectId),
       loadProjects(),
       loadBlocks(),
       loadSchedulePhases(),
@@ -2345,6 +2386,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         })
         setRestoredProject((current) => current?.id === updatedProject.id ? updatedProject : current)
         if (contractDraft) setProjectDetailRevision((value) => value + 1)
+        if (activeProjectId === updatedProject.id) await loadProjectSummary(updatedProject.id)
         bridge?.feedback?.success?.(`Obra atualizada com sucesso.${coordinateNotice}`)
       }
 
@@ -4810,7 +4852,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                   schedulePhases={schedulePhases}
                   measurements={measurements}
                   procurementRequests={procurementRequests}
-                  summary={projectSummary}
+                  summary={projectSummary?.projectId === selectedProject.id && projectSummary?.companyId === companyId
+                    ? projectSummary : null}
                   loadingSummary={loadingProjectSummary}
                   summaryError={projectSummaryError}
                   onRetrySummary={() => loadProjectSummary(selectedProject.id)}
@@ -5435,13 +5478,36 @@ function DomainCard({ title, subtitle, content, renderContent, footer = null, ac
   )
 }
 
-function SummaryMetric({ label, value, hint, tone = null }) {
+const SUMMARY_FIELD_HELP = {
+  situation: [
+    "A situação usa as datas da obra e o dia no fuso da empresa.",
+    "Início previsto vencido sem início real ou término previsto vencido indicam atraso.",
+    "Antes do início real, a obra aparece como Não iniciada.",
+    "Obra iniciada com término futuro ou para hoje está No prazo.",
+    "Confira essas datas em Editar obra > Prazos.",
+  ].join(" "),
+  estimatedCost: [
+    "Custo estimado informado em Editar obra > Prazos. Exemplo: R$ 500.000,00.",
+    "Use como referência para comparar os gastos da obra.",
+  ].join(" "),
+  remainingCost: [
+    "Custo estimado menos o Realizado, que soma os títulos pelos rateios dos centros de custo da obra e das unidades.",
+    "Inclui valores pagos e a pagar.",
+    "Exemplo: R$ 500.000,00 menos R$ 150.000,00 resulta em R$ 350.000,00.",
+    "Um saldo negativo indica que os gastos superaram a estimativa.",
+  ].join(" "),
+}
+
+function SummaryMetric({ label, value, hint, help, tone = null }) {
   const toneClass =
     tone === "positive" ? styles.summaryValuePositive : tone === "negative" ? styles.summaryValueNegative : ""
 
   return (
     <article className={styles.integrationCard}>
-      <h3>{label}</h3>
+      <h3 className={styles.summaryMetricLabel}>
+        {label}
+        {help && <InfoTip floating label={`Sobre ${label}`}>{help}</InfoTip>}
+      </h3>
       <p className={`${styles.metricValue} ${toneClass}`}>{value}</p>
       <p className={styles.metricHint}>{hint}</p>
     </article>
@@ -5525,6 +5591,9 @@ function OverviewPanel({
   const receivableTotal = Number(summary?.receivableTotalAmount ?? 0)
   const receivedAmount = Number(summary?.receivedAmount ?? 0)
   const receivedShare = receivableTotal > 0 ? Math.round((receivedAmount / receivableTotal) * 100) : 0
+  const situation = summary?.scheduleStatus || projectSituation(selectedProject)
+  const estimatedCost = summary?.estimatedCostAmount
+  const remainingCost = summary?.remainingEstimatedCostAmount
 
   return (
     <div className={styles.integrationPanel}>
@@ -5548,6 +5617,19 @@ function OverviewPanel({
       <div className={styles.summaryGroup}>
         <span className={styles.summaryGroupTitle}>Custo</span>
         <div className={styles.integrationGrid}>
+          <SummaryMetric
+            label="Custo estimado"
+            value={estimatedCost == null ? "Não informado" : formatCurrencyFromNumber(estimatedCost)}
+            help={SUMMARY_FIELD_HELP.estimatedCost}
+          />
+          <SummaryMetric
+            label="Saldo do custo estimado"
+            value={estimatedCost == null ? "Não informado"
+              : remainingCost == null ? "Indisponível" : formatCurrencyFromNumber(remainingCost)}
+            hint="custo estimado menos o realizado"
+            help={SUMMARY_FIELD_HELP.remainingCost}
+            tone={remainingCost != null && Number(remainingCost) < 0 ? "negative" : null}
+          />
           <SummaryMetric
             label="Requisitado aprovado"
             value={summary?.approvedRequisitionAmount == null ? "Indisponível" : formatCurrencyFromNumber(summary.approvedRequisitionAmount)}
@@ -5612,6 +5694,12 @@ function OverviewPanel({
       <div className={styles.summaryGroup}>
         <span className={styles.summaryGroupTitle}>Execução</span>
         <div className={styles.integrationGrid}>
+          <SummaryMetric
+            label="Situação da obra"
+            value={projectSituationLabel[situation] ?? situation}
+            help={SUMMARY_FIELD_HELP.situation}
+            tone={situation === "delayed" ? "negative" : null}
+          />
           <SummaryMetric
             label="Cronograma"
             value={`${scheduleAverage}%`}
@@ -5799,7 +5887,8 @@ function ProjectDetailHeader({ project, units, schedulePhases }) {
     : null
   const finishedPhases = phases.filter((phase) => phase.status === "completed").length
 
-  const startLabel = formatDate(project.startDate)
+  const situation = projectSituation(project)
+  const startLabel = formatDate(project.plannedStartDate || project.startDate)
   const endLabel = formatDate(project.expectedEndDate)
   const periodLabel =
     startLabel && endLabel
@@ -5813,8 +5902,8 @@ function ProjectDetailHeader({ project, units, schedulePhases }) {
         <div className={styles.detailTitleBlock}>
           <div className={styles.detailTitleRow}>
             <h2>{project.name}</h2>
-            <span className={`${styles.statusPill} ${styles[`status${project.status}`] || ""}`}>
-              {statusLabel[project.status] ?? project.status}
+            <span className={`${styles.statusPill} ${projectSituationClass(situation)}`}>
+              {projectSituationLabel[situation] ?? situation}
             </span>
             {project.analyticCostCenterId ? null : (
               <span className={styles.badgeMuted} title="A obra ainda não tem centro de custo no ERP">
@@ -5910,9 +5999,8 @@ function ProjectList({
         </thead>
         <tbody>
           {projects.map((project) => {
-            const isDelayed = isProjectDelayed(project)
-            const projectStatusClass = isDelayed ? styles.projectDelayed
-              : project.status === "active" ? styles.projectActive : styles[`status${project.status}`] || ""
+            const situation = projectSituation(project)
+            const projectStatusClass = projectSituationClass(situation)
             return (
               <tr key={project.id}>
                 <td className={styles.projectCodeCell} data-label="Código">{project.code}</td>
@@ -5946,7 +6034,7 @@ function ProjectList({
                 ) : null}
                 <td className={styles.projectStatusCell} data-label="Status">
                   <span className={`${styles.statusPill} ${projectStatusClass}`}>
-                    {isDelayed ? "Atrasada" : statusLabel[project.status] ?? project.status}
+                    {projectSituationLabel[situation] ?? situation}
                   </span>
                 </td>
                 <td className={styles.projectActionsCell}>

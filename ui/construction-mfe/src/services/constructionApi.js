@@ -53,6 +53,7 @@ const toProjectView = (project) => ({
   name: project.name,
   description: project.description ?? "",
   status: project.status,
+  scheduleStatus: project.schedule_status ?? project.status,
   projectType: project.project_type,
   developmentType: project.development_type ?? "",
   customerPersonId: project.customer_person_id ?? null,
@@ -1421,6 +1422,9 @@ export async function getConstructionProjectSummary({ bridge, projectId }) {
   })
 
   return {
+    scheduleStatus: payload.schedule_status ?? null,
+    estimatedCostAmount: payload.estimated_cost_amount ?? null,
+    remainingEstimatedCostAmount: payload.remaining_estimated_cost_amount ?? null,
     unitsCount: payload.units_count ?? 0,
     unitsSoldCount: payload.units_sold_count ?? 0,
     unitsReservedCount: payload.units_reserved_count ?? 0,

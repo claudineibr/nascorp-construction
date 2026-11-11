@@ -16,6 +16,8 @@ from app.domain.constants import (
     ConstructionUnitStatus,
 )
 from app.domain.unit_commission_status import unit_commission_status
+from app.domain.business_clock import current_business_timezone, get_business_today
+from app.domain.project_schedule_status import project_schedule_status
 
 
 class ConstructionTerminationDeduction(BaseModel):
@@ -213,6 +215,15 @@ class ConstructionProjectResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     buyer_units: list[ConstructionProjectBuyerUnit] = Field(default_factory=list)
+    completion_history: list[dict[str, str | None]] | None = Field(default=None, exclude=True)
+    schedule_status: str = ""
+
+    @model_validator(mode="after")
+    def resolve_schedule_status(self):
+        self.schedule_status = project_schedule_status(
+            self, today=get_business_today(current_business_timezone())
+        )
+        return self
 
 
 class ConstructionProjectListResponse(BaseModel):
