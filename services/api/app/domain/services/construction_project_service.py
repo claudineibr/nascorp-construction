@@ -312,6 +312,8 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             customer_person_id=request.customer_person_id,
             cnpj_spe=cnpj_spe,
             address_json=request.address_json,
+            estimated_cost=request.estimated_cost,
+            planned_start_date=request.planned_start_date,
             start_date=request.start_date,
             expected_end_date=request.expected_end_date,
             actual_end_date=request.actual_end_date,
@@ -647,6 +649,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         project_id: UUID,
         request: ConstructionProjectUpdate,
         actor_user_id: UUID | None = None,
+        source_document=None,
     ) -> ConstructionProject:
         updates = request.model_dump(exclude_unset=True)
         expected_updated_at = updates.pop("expected_updated_at", None)
@@ -744,6 +747,8 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         self._apply_updates(entity=project, updates=updates)
         if "fiscal_work_code" in updates:
             await self.repository.flush_project_fiscal_code(project)
+        if source_document is not None:
+            await self.repository.add(source_document)
         await self.repository.commit()
         if status_changed:
             _logger.info(f"[project_status] updated: company_id={company_id} project_id={project_id} "

@@ -53,10 +53,6 @@
   min-width: 0;
 }
 
-.panel h3 {
-  margin: 0;
-}
-
 .tableWrapper {
   composes: tableWrapper from "../../App.module.css";
 }
@@ -72,8 +68,51 @@
   text-align: right;
 }
 
+.sortButton {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sortButton:disabled {
+  cursor: default;
+}
+
+.sortButton:hover:not(:disabled),
+.table th[aria-sort] .sortButton {
+  color: var(--color-primary);
+}
+
+.sortButton:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.sortButton svg {
+  flex-shrink: 0;
+}
+
 .fileName {
   overflow-wrap: anywhere;
+}
+
+.fileName small {
+  display: block;
+  margin-top: .25rem;
+  color: var(--color-text-muted);
+}
+
+.table .tableMessage {
+  width: auto;
+  text-align: left;
+  white-space: normal;
 }
 
 .paginationSlot {

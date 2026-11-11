@@ -102,8 +102,8 @@ import { CreditOffsetModal } from "./features/unitTermination/CreditOffsetModal.
 import { ServiceTemplatesPanel } from "./features/serviceTemplates/ServiceTemplatesPanel.jsx"
 import { ProjectServicesPanel } from "./features/projectServices/ProjectServicesPanel.jsx"
 import { ProjectFilesPanel } from "./features/projectFiles/ProjectFilesPanel.jsx"
-import { phaseDeadline, ProjectDocumentModal, ProjectScheduleSummary } from "./features/projectDocuments/ProjectDocuments.jsx"
-import { toProjectView } from "./services/constructionApi.js"
+import { phaseDeadline, ProjectScheduleSummary } from "./features/projectDocuments/ProjectDocuments.jsx"
+import { ProjectContractSection } from "./features/projectDocuments/ProjectContractSection.jsx"
 import { SubcontractsCardTitle, SubcontractsPanel } from "./features/subcontracts/SubcontractsPanel.jsx"
 import { SharedPayablesCardTitle, SharedPayablesSection } from "./features/sharedPayables/SharedPayablesSection.jsx"
 import { ContractMeasurementFields } from "./features/subcontracts/ContractMeasurementFields.jsx"
@@ -412,6 +412,8 @@ const defaultProjectForm = {
   customerPersonId: "",
   cnpjSpe: "",
   originalCnpjSpe: "",
+  estimatedCost: "",
+  plannedStartDate: "",
   startDate: "",
   expectedEndDate: "",
   actualEndDate: "",
@@ -839,6 +841,8 @@ function toFormProject(project) {
     customerPersonId: project.customerPersonId ?? "",
     cnpjSpe: project.cnpjSpe ?? "",
     originalCnpjSpe: project.cnpjSpe ?? "",
+    estimatedCost: project.estimatedCost ?? "",
+    plannedStartDate: project.plannedStartDate ?? "",
     startDate: project.startDate ? String(project.startDate).slice(0, 10) : "",
     expectedEndDate: project.expectedEndDate ? String(project.expectedEndDate).slice(0, 10) : "",
     actualEndDate,
@@ -952,6 +956,8 @@ function toApiProject(formProject) {
     developmentType: formProject.developmentType,
     customerPersonId: formProject.customerPersonId,
     cnpjSpe: formProject.cnpjSpe,
+    estimatedCost: formProject.estimatedCost,
+    plannedStartDate: formProject.plannedStartDate,
     startDate: formProject.startDate,
     expectedEndDate: formProject.expectedEndDate,
     actualEndDate: formProject.actualEndDate,
@@ -1390,7 +1396,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [error, setError] = useState(null)
 
   const [isProjectModalOpen, setIsProjectModalOpen] = useState(false)
-  const [contractImportCompany, setContractImportCompany] = useState(null)
+  const [contractDraft, setContractDraft] = useState(null)
+  const [contractReading, setContractReading] = useState(false)
+  const [focusContractImport, setFocusContractImport] = useState(false)
   const [projectModalMode, setProjectModalMode] = useState("create")
   const [projectDetailRevision, setProjectDetailRevision] = useState(0)
   const [editingProjectId, setEditingProjectId] = useState(null)
@@ -2107,16 +2115,19 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     ])
   }
 
-  const openCreateProject = () => {
+  const openCreateProject = (fromContract = false) => {
     if (!personSummaries.length) {
       void loadPersonSummaries()
     }
 
     void loadReceiptTemplates()
     setProjectModalMode("create")
+    setContractDraft(null)
+    setContractReading(false)
+    setFocusContractImport(fromContract)
     setEditingProjectId(null)
     projectZipRequest.current += 1
-    setProjectForm(defaultProjectForm)
+    setProjectForm(fromContract ? { ...defaultProjectForm, developmentType: "CONTRACT_WORK" } : defaultProjectForm)
     setProjectZipLookup({ loading: false, error: null })
     setIsProjectModalOpen(true)
   }
@@ -2128,6 +2139,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
     void loadReceiptTemplates()
     setProjectModalMode("edit")
+    setContractDraft(null)
+    setContractReading(false)
+    setFocusContractImport(false)
     setEditingProjectId(project.id)
     projectZipRequest.current += 1
     setProjectForm(toFormProject(project))
@@ -2137,6 +2151,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
   const resetProjectModal = useCallback(() => {
     setIsProjectModalOpen(false)
+    setContractDraft(null)
+    setContractReading(false)
     setEditingProjectId(null)
     projectZipRequest.current += 1
     setProjectForm(defaultProjectForm)
@@ -2191,6 +2207,10 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     if (field === "cnpjSpe") nextValue = maskSpeCnpj(value)
     if (projectForm[field] === nextValue) return
 
+    if (field === "developmentType" && nextValue !== "CONTRACT_WORK") {
+      setContractDraft(null)
+      setContractReading(false)
+    }
     if (field === "addressZipCode") {
       projectZipRequest.current += 1
       setProjectZipLookup({ loading: false, error: null })
@@ -2277,7 +2297,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
   const handleProjectSubmit = async (event) => {
     event.preventDefault()
-    if (submittingProject || projectZipLookup.loading) return
+    if (submittingProject || projectZipLookup.loading || contractReading) return
 
     const validationError = requiredProjectFieldError(projectForm) ?? terminationTermsError(projectForm.terminationDefaults)
     if (validationError) {
@@ -2299,7 +2319,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       }
       const coordinateNotice = geocoding?.notice ? ` ${geocoding.notice}` : ""
       if (projectModalMode === "create") {
-        const createdProject = await createConstructionProject({ bridge, projectData })
+        const createdProject = await createConstructionProject({ bridge, projectData, contractDraft })
         setProjects((currentProjects) => [
           createdProject,
           ...currentProjects.filter((project) => project.id !== createdProject.id),
@@ -2315,14 +2335,16 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         const updatedProject = await updateConstructionProject({
           bridge,
           projectId: editingProjectId,
+          contractDraft,
           projectData: {
             ...projectData,
             status: statusChanged ? projectData.status : undefined,
-            expectedUpdatedAt: statusChanged || actualEndDateChanged ? projectForm.originalUpdatedAt : undefined,
+            expectedUpdatedAt: statusChanged || actualEndDateChanged || contractDraft ? projectForm.originalUpdatedAt : undefined,
             actualEndDate: actualEndDateChanged ? projectData.actualEndDate : undefined,
           },
         })
         setRestoredProject((current) => current?.id === updatedProject.id ? updatedProject : current)
+        if (contractDraft) setProjectDetailRevision((value) => value + 1)
         bridge?.feedback?.success?.(`Obra atualizada com sucesso.${coordinateNotice}`)
       }
 
@@ -4565,12 +4587,12 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           </div>
           {viewMode === "projects" ? (
             <div className={styles.heroActions}>
-              <button type="button" className={styles.primaryButton} onClick={openCreateProject}>
+              <button type="button" className={styles.primaryButton} onClick={() => openCreateProject()}>
                 <Plus size={18} />
                 Nova obra
               </button>
               {bridge.canRead?.("construction_projects") && bridge.canCreate?.("construction_projects") && (
-                <button type="button" className={styles.secondaryButton} onClick={() => setContractImportCompany(companyId)}>
+                <button type="button" className={styles.secondaryButton} onClick={() => openCreateProject(true)}>
                   Criar empreitada pelo contrato
                 </button>
               )}
@@ -4760,11 +4782,17 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
           {projectDetailTab === "files" ? (
             <DomainCard
-              title="Arquivos da obra"
-              subtitle={selectedProject.developmentType === "CONTRACT_WORK"
-                ? "Envie anexos, vincule o contrato e importe boletins da empreitada."
-                : "Envie um ou mais arquivos de até 20 MB cada."}
-              renderContent={(renderActions) => <ProjectFilesPanel key={`${companyId}-${selectedProject.id}`}
+              title={
+                <>
+                  Arquivos da obra
+                  <InfoTip floating label="Sobre os arquivos da obra">
+                    {selectedProject.developmentType === "CONTRACT_WORK"
+                      ? "Consulte o contrato e use Enviar arquivos para anexar aditivos ou importar boletins de medição."
+                      : "Envie um ou mais arquivos de até 20 MB cada e consulte os anexos nesta lista."}
+                  </InfoTip>
+                </>
+              }
+              renderContent={(renderActions) => <ProjectFilesPanel key={`${companyId}-${selectedProject.id}`} reloadRevision={projectDetailRevision}
                 bridge={bridge} projectId={selectedProject.id} RowActionsMenu={RowActionsMenu}
                 contractWork={selectedProject.developmentType === "CONTRACT_WORK"} onImported={loadSchedulePhases}
                 ConfirmModal={ConfirmModal} renderActions={renderActions} />}
@@ -4947,6 +4975,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
               content={
                 selectedProject.developmentType === "CONTRACT_WORK" ? (
                   <ProjectScheduleSummary key={`${companyId}-${selectedProject.id}`} bridge={bridge}
+                    reloadRevision={projectDetailRevision}
                     projectId={selectedProject.id}>
                     {renderSchedule}
                   </ProjectScheduleSummary>
@@ -5067,23 +5096,16 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         />
       ) : null}
 
-      {contractImportCompany && contractImportCompany === companyId && (
-        <ProjectDocumentModal bridge={bridge} mode="create" onClose={() => setContractImportCompany(null)}
-          onComplete={(result) => {
-            const project = toProjectView(result)
-            setProjects((current) => [project, ...current.filter((item) => item.id !== project.id)])
-            setRestoredProject(project)
-            setActiveProjectId(project.id)
-            setProjectDetailTab(bridge.canRead?.("construction_schedule") ? "schedule" : "overview")
-            setViewMode("projectDetail")
-            setContractImportCompany(null)
-            void loadProjects()
-          }} />
-      )}
       {isProjectModalOpen ? (
         <ProjectModal
           bridge={bridge}
           mode={projectModalMode}
+          projectId={editingProjectId}
+          contractDraft={contractDraft}
+          contractReading={contractReading}
+          focusContractImport={focusContractImport}
+          onContractDraft={setContractDraft}
+          onContractReading={setContractReading}
           canConfigureNfseReceivables={canConfigureNfseReceivables}
           projectForm={projectForm}
           people={personSummaries}
@@ -9168,6 +9190,21 @@ const PROJECT_FIELD_HELP = {
     "Se a SPE é a Residencial Ipê SPE Ltda., informe o CNPJ dela, como 12.345.678/0001-95.",
     "Identifica a SPE da obra, mesmo quando outra empresa contratou a construção.",
   ],
+  estimatedCost: [
+    "Informe o valor de referência previsto para a obra. Para uma empreitada migrada, o dado pode corresponder ao valor do contrato no sistema de origem.",
+    "Para um valor de quatro milhões, quatrocentos e noventa e nove mil reais, informe 4.499.000,00.",
+    "O valor fica no cadastro da obra como referência.",
+  ],
+  plannedStartDate: [
+    "Informe a data prevista para começar a obra.",
+    "Se a previsão é começar em 8 de junho de 2026, informe 08/06/2026.",
+    "Permite comparar a previsão com a data em que os trabalhos começaram.",
+  ],
+  deliveryDate: [
+    "Informe a data em que a obra foi entregue ao contratante. Deixe em branco até a entrega.",
+    "Se a entrega ocorreu em 25 de junho de 2027, informe 25/06/2027.",
+    "Registra a data efetiva de entrega da empreitada.",
+  ],
   startDate: [
     "Informe o dia em que a execução começou. Se ainda não começou, deixe em branco.",
     "Se os trabalhos começaram em 2 de fevereiro de 2027, informe 02/02/2027.",
@@ -9243,6 +9280,12 @@ const PROJECT_FIELD_HELP = {
 function ProjectModal({
   bridge,
   mode,
+  projectId,
+  contractDraft,
+  contractReading,
+  focusContractImport,
+  onContractDraft,
+  onContractReading,
   canConfigureNfseReceivables,
   projectForm,
   people,
@@ -9271,7 +9314,7 @@ function ProjectModal({
       <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
         Cancelar
       </button>
-      <button type="submit" form={formId} className={styles.primaryButton} disabled={loading || zipLookup?.loading}>
+      <button type="submit" form={formId} className={styles.primaryButton} disabled={loading || zipLookup?.loading || contractReading}>
         {loading ? "Salvando..." : mode === "create" ? "Criar obra" : "Salvar alterações"}
       </button>
     </div>
@@ -9359,19 +9402,37 @@ function ProjectModal({
             </div>
           </section>
 
+          {projectForm.developmentType === "CONTRACT_WORK" && bridge.canRead?.("construction_projects")
+            && (projectId ? bridge.canUpdate?.("construction_projects") : bridge.canCreate?.("construction_projects")) && (
+              <ProjectContractSection key={`${bridge.companyContext?.companyId}-${projectId ?? "create"}`}
+                bridge={bridge} projectId={projectId} projectForm={projectForm} people={people}
+                draft={contractDraft} reading={contractReading} focusImport={focusContractImport}
+                onDraft={onContractDraft} onReading={onContractReading} onChange={onChange} />
+            )}
+
           <section className={styles.projectFormSection} aria-labelledby={formId + "-dates"}>
             <h4 id={formId + "-dates"} className={styles.sectionTitle}>Prazos</h4>
             <div className={`${styles.formGrid} ${styles.projectIdentityGrid}`}>
               <label className={styles.filterControl}>
-                {fieldLabel("startDate", "Data de início")}
+                {fieldLabel("estimatedCost", "Custo estimado")}
                 <input
-                  type="date"
-                  value={projectForm.startDate}
-                  onChange={(event) => onChange("startDate", event.target.value)}
+                  type="text"
+                  inputMode="decimal"
+                  maxLength={18}
+                  value={projectForm.estimatedCost}
+                  onChange={(event) => onChange("estimatedCost", formatCurrencyInput(event.target.value))}
                 />
               </label>
               <label className={styles.filterControl}>
-                {fieldLabel("expectedEndDate", "Data prevista de fim")}
+                {fieldLabel("plannedStartDate", "Previsão de início")}
+                <input
+                  type="date"
+                  value={projectForm.plannedStartDate}
+                  onChange={(event) => onChange("plannedStartDate", event.target.value)}
+                />
+              </label>
+              <label className={styles.filterControl}>
+                {fieldLabel("expectedEndDate", "Previsão de término")}
                 <input
                   type="date"
                   value={projectForm.expectedEndDate}
@@ -9379,7 +9440,17 @@ function ProjectModal({
                 />
               </label>
               <label className={styles.filterControl}>
-                {fieldLabel("actualEndDate", "Data real de fim")}
+                {fieldLabel("startDate", "Data real de início")}
+                <input
+                  type="date"
+                  value={projectForm.startDate}
+                  onChange={(event) => onChange("startDate", event.target.value)}
+                />
+              </label>
+              <label className={styles.filterControl}>
+                {projectForm.developmentType === "CONTRACT_WORK"
+                  ? fieldLabel("deliveryDate", "Data de entrega")
+                  : fieldLabel("actualEndDate", "Data real de fim")}
                 <input
                   type="date"
                   value={projectForm.actualEndDate}

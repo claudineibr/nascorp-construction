@@ -60,6 +60,8 @@ const toProjectView = (project) => ({
   nfseReceivableDueDays: project.nfse_receivable_due_days ?? null,
   cnpjSpe: project.cnpj_spe ?? "",
   address: project.address_json ?? null,
+  estimatedCost: project.estimated_cost == null ? "" : currencyFromNumber(project.estimated_cost),
+  plannedStartDate: project.planned_start_date ?? null,
   startDate: project.start_date ?? null,
   expectedEndDate: project.expected_end_date ?? null,
   actualEndDate: project.actual_end_date ?? null,
@@ -475,6 +477,12 @@ const toProjectPayload = (projectData = {}) => ({
   nfse_receivable_due_days: projectData.nfseReceivableDueDays,
   cnpj_spe: toNullableString(projectData.cnpjSpe),
   address_json: toAddressPayload(projectData.address),
+  ...(projectData.estimatedCost !== undefined && {
+    estimated_cost: projectData.estimatedCost ? currencyDecimal(projectData.estimatedCost) : null,
+  }),
+  ...(projectData.plannedStartDate !== undefined && {
+    planned_start_date: toNullableString(projectData.plannedStartDate),
+  }),
   start_date: toNullableString(projectData.startDate),
   expected_end_date: toNullableString(projectData.expectedEndDate),
   actual_end_date: projectData.actualEndDate === undefined ? undefined : toNullableString(projectData.actualEndDate),
@@ -895,23 +903,39 @@ export async function getConstructionProject({ bridge, projectId, signal }) {
   return toProjectView(await requestJson({ bridge, path: "/v1/construction/projects/" + projectId, signal }))
 }
 
-export async function createConstructionProject({ bridge, projectData }) {
+function projectContractBody(contractDraft, projectData) {
+  const body = new FormData()
+  if (contractDraft.sourceFileId) body.append("source_file_id", contractDraft.sourceFileId)
+  else body.append("file", contractDraft.file)
+  if (projectData) body.append("project_data", JSON.stringify(toProjectPayload(projectData)))
+  return body
+}
+
+export function previewProjectContract({ bridge, projectId, contractDraft, signal }) {
+  const body = projectContractBody(contractDraft)
+  body.append("kind", "contract")
+  if (projectId) body.append("project_id", projectId)
+  return requestJson({ bridge, path: "/v1/construction/project-documents/preview", method: "POST", body, signal })
+}
+
+export async function createConstructionProject({ bridge, projectData, contractDraft }) {
   const payload = await requestJson({
     bridge,
-    path: "/v1/construction/projects",
+    path: contractDraft ? "/v1/construction/projects/from-contract" : "/v1/construction/projects",
     method: "POST",
-    body: toProjectPayload(projectData),
+    body: contractDraft ? projectContractBody(contractDraft, projectData) : toProjectPayload(projectData),
   })
 
   return toProjectView(payload)
 }
 
-export async function updateConstructionProject({ bridge, projectId, projectData }) {
+export async function updateConstructionProject({ bridge, projectId, projectData, contractDraft }) {
+  const path = `/v1/construction/projects/${projectId}`
   const payload = await requestJson({
     bridge,
-    path: `/v1/construction/projects/${projectId}`,
+    path: contractDraft ? `${path}/from-contract` : path,
     method: "PATCH",
-    body: toProjectPayload(projectData),
+    body: contractDraft ? projectContractBody(contractDraft, projectData) : toProjectPayload(projectData),
   })
 
   return toProjectView(payload)

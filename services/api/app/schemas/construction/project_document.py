@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -14,6 +14,7 @@ class ProjectDocumentPreview(BaseModel):
 class ProjectDocumentResponse(ProjectDocumentPreview):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
+    created_at: datetime | None = None
 
 
 class ProjectDocumentHistory(BaseModel):

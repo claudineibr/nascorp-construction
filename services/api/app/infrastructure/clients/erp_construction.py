@@ -1,12 +1,18 @@
 import logging
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from urllib.parse import unquote
 from uuid import UUID, uuid4
 
 import httpx
 
 from app.core.config import settings
-from app.domain.exceptions import ConstructionDomainError, ConstructionPersonOutsideCompanyError
+from app.domain.exceptions import (
+    ConstructionDomainError,
+    ConstructionInvalidValueError,
+    ConstructionNotFoundError,
+    ConstructionPersonOutsideCompanyError,
+)
 from app.domain.events.constants import ConstructionAggregateType, ConstructionEventType, ErpEventType, EventProducer
 from app.domain.events.contracts import EventEnvelope
 from app.infrastructure.events.json_event_serializer import JsonEventSerializer
@@ -46,6 +52,31 @@ class ErpConstructionClient:
 
     def __init__(self) -> None:
         self.serializer = JsonEventSerializer()
+
+    async def read_project_file(self, *, company_id, project_id, file_id, authorization, max_bytes):
+        context = f"company_id={company_id} project_id={project_id} file_id={file_id}"
+        logger.info(f"[project_documents] read_project_file: {context}")
+        headers = {"Authorization": authorization, "X-Company-ID": str(company_id)}
+        path = f"/v1/construction-project-files/{project_id}/{file_id}/download"
+        try:
+            async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=20) as client:
+                async with client.stream("GET", path, headers=headers) as response:
+                    if response.status_code in (403, 404):
+                        logger.info(f"[project_documents] project_file_refused: {context} status={response.status_code}")
+                        raise ConstructionNotFoundError(resource_name="o arquivo da obra")
+                    response.raise_for_status()
+                    content = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        if len(content) + len(chunk) > max_bytes:
+                            raise ConstructionInvalidValueError(message="Selecione um documento de até 8 MB.")
+                        content.extend(chunk)
+                    filename = unquote(response.headers.get("content-disposition", "").partition("filename*=UTF-8''")[2])
+        except httpx.HTTPError as exc:
+            upstream = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+            logger.warning(f"[project_documents] project_file_read_failed: {context} upstream_status={upstream} error={type(exc).__name__}")
+            raise ConstructionDomainError(message="Não foi possível abrir o arquivo da obra.", status_code=502) from exc
+        logger.info(f"[project_documents] project_file_read: {context} bytes={len(content)}")
+        return filename or "Documento", bytes(content)
 
     async def geocode_address(self, address, *, company_id, actor_user_id, project_id=None):
         trace_id = uuid4().hex

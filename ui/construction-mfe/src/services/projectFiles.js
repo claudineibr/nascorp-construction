@@ -7,6 +7,29 @@ export const listProjectFiles = (bridge, projectId, page, pageSize, signal) => r
   bridge, baseUrl: baseUrl(bridge), path: `${pathFor(projectId)}?page=${page}&page_size=${pageSize}`, signal,
 })
 
+export async function listAllProjectFiles(bridge, projectId, signal) {
+  const pageSize = 100
+  const firstPage = await listProjectFiles(bridge, projectId, 1, pageSize, signal)
+  const files = new Map(firstPage.items.map((file) => [file.id, file]))
+  for (let page = 2; page <= firstPage.total_pages; page += 1) {
+    const result = await listProjectFiles(bridge, projectId, page, pageSize, signal)
+    for (const file of result.items) files.set(file.id, file)
+  }
+  return { items: [...files.values()] }
+}
+
+export async function checkProjectFileAvailability(bridge, projectId, fileId, signal) {
+  try {
+    await requestJson({
+      bridge, baseUrl: baseUrl(bridge), path: `${pathFor(projectId)}/${fileId}/download`, method: "HEAD", signal,
+    })
+    return true
+  } catch (error) {
+    if (error.status === 404) return false
+    throw error
+  }
+}
+
 export const deleteProjectFile = (bridge, projectId, fileId) => requestJson({
   bridge, baseUrl: baseUrl(bridge), path: `${pathFor(projectId)}/${fileId}`, method: "DELETE",
 })
@@ -63,7 +86,7 @@ export async function uploadProjectFile(bridge, projectId, file, { signal, onPro
   return response.json()
 }
 
-export async function readProjectFile(bridge, projectId, fileId) {
+async function readProjectFile(bridge, projectId, fileId) {
   const response = await fileRequest(bridge, `${pathFor(projectId)}/${fileId}/download`)
   return response.blob()
 }

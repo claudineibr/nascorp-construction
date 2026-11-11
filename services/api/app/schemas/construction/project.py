@@ -106,6 +106,8 @@ class ConstructionProjectCreate(ConstructionProjectAddressInput):
     fiscal_work_code: FiscalWorkCode = None
     nfse_receivable_due_days: int | None = Field(default=None, ge=0, le=365, strict=True)
     cnpj_spe: str | None = Field(default=None, max_length=18)
+    estimated_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    planned_start_date: date | None = None
     start_date: date | None = None
     expected_end_date: date | None = None
     actual_end_date: date | None = None
@@ -132,6 +134,8 @@ class ConstructionProjectUpdate(ConstructionProjectAddressInput):
     fiscal_work_code: FiscalWorkCode = None
     nfse_receivable_due_days: int | None = Field(default=None, ge=0, le=365, strict=True)
     cnpj_spe: str | None = Field(default=None, max_length=18)
+    estimated_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    planned_start_date: date | None = None
     start_date: date | None = None
     expected_end_date: date | None = None
     actual_end_date: date | None = None
@@ -191,6 +195,8 @@ class ConstructionProjectResponse(BaseModel):
     nfse_receivable_due_days: int | None = None
     cnpj_spe: str | None = None
     address_json: dict[str, Any] | None = None
+    estimated_cost: Decimal | None = Field(default=None, ge=0, max_digits=14, decimal_places=2)
+    planned_start_date: date | None = None
     start_date: date | None = None
     expected_end_date: date | None = None
     actual_end_date: date | None = None

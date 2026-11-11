@@ -71,6 +71,8 @@ class ConstructionProject(PreservedHistory, Base):
     customer_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     cnpj_spe: Mapped[str | None] = mapped_column(String(18), nullable=True)
     address_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    planned_start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     expected_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     actual_end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
