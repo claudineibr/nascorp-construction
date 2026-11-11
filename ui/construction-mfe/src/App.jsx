@@ -2231,6 +2231,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       setViewMode("projectDetail")
       const requestedTab = bridge.initialProjectTab
       const canRestoreTab = requestedTab === "units" ||
+        (requestedTab === "purchaseOrders" && ProjectPurchaseOrders) ||
         (requestedTab === "accountsPayable" && ProjectAccountsPayable) ||
         (requestedTab === "accountsReceivable" && ProjectAccountsReceivable)
       setProjectDetailTab(canRestoreTab ? requestedTab : "overview")
@@ -2239,7 +2240,14 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     })
 
     return () => controller.abort()
-  }, [bridge, handleProjectDetailError, initialProjectId, ProjectAccountsPayable, ProjectAccountsReceivable])
+  }, [
+    bridge,
+    handleProjectDetailError,
+    initialProjectId,
+    ProjectAccountsPayable,
+    ProjectAccountsReceivable,
+    ProjectPurchaseOrders,
+  ])
 
   const closeProjectModal = () => {
     if (!submittingProject) resetProjectModal()
