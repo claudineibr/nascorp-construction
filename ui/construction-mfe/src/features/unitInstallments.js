@@ -80,6 +80,7 @@ export function buildInstallmentActions({
   creditAvailable = false,
   canUpdate = false,
   canDelete = false,
+  onDeletePaidInstallment,
   icons = {},
 }) {
   const isPaid = installment.status === "PAID"
@@ -153,6 +154,10 @@ export function buildInstallmentActions({
     })
   }
 
+  if (onDeletePaidInstallment && (isPaid || hasPayments || Number(installment.paidAmount) > 0)) {
+    actions.push({ key: "reverse-and-delete", label: "Estornar e excluir parcela paga", icon: icons.Trash2,
+      danger: true, onSelect: () => onDeletePaidInstallment(installment) })
+  }
   if (hasPayments) {
     actions.push({
       key: "reverse",

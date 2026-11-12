@@ -40,6 +40,7 @@ class DocumentationContractData(BaseModel):
 
 
 class ConstructionUnitContractContextResponse(BaseModel):
+    financial_deletion_allowed: bool = False
     unit: UnitContractData
     project: ProjectContractData
     signals: list[SignalContractData]

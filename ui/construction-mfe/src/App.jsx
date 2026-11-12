@@ -6911,6 +6911,12 @@ function UnitInstallmentsPanel({
                           onPayInstallment,
                           onChangeDueDate: setDueDateRow,
                           onDeleteInstallment,
+                          onDeletePaidInstallment: canDelete && canUpdate
+                            && bridge?.canUpdate?.("receivable")
+                            && bridge?.canSpecial?.("receivable_paid_installment_delete")
+                            && bridge?.openFinancialDeletion
+                            ? (item) => bridge.openFinancialDeletion({ kind: "receivable", titleId: item.receivableId,
+                              number: item.installmentNumber, onDone: onRetry }) : null,
                           onDeleteAdjustment,
                           onInstallmentReceipt,
                           receiptBusy: receiptBusyId === row.id,

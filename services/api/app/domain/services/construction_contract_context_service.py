@@ -15,6 +15,7 @@ class ConstructionContractContextService:
         context = await self.repository.contract_context(company_id, unit_id)
         if context is None:
             raise ConstructionNotFoundError(resource_name="a unidade nesta empresa")
+        context["financial_deletion_allowed"] = await self.repository.pending_unit_transfer(company_id, unit_id) is None
         return context
 
     async def get_summary_context(self, company_id, unit_id, sale_id):
