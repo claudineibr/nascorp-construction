@@ -337,12 +337,16 @@ async def test_clearing_a_required_field_is_refused_instead_of_breaking_the_row(
         ),
     )
 
+    commissions[0].updated_at = datetime(2026, 3, 10, tzinfo=UTC)
+
     for field_name in ("beneficiary_person_id", "amount", "due_date"):
         with pytest.raises(ConstructionInvalidValueError) as error:
             await service.update_unit_commission(
                 company_id=company_id,
                 commission_id=commissions[0].id,
-                request=ConstructionUnitCommissionUpdate.model_validate({field_name: None}),
+                request=ConstructionUnitCommissionUpdate.model_validate({
+                    field_name: None, "expected_updated_at": commissions[0].updated_at,
+                }),
             )
 
         assert error.value.error_code == "CONSTRUCTION_UNIT_COMMISSION_REQUIRED_FIELD"
@@ -352,7 +356,9 @@ async def test_clearing_a_required_field_is_refused_instead_of_breaking_the_row(
     updated = await service.update_unit_commission(
         company_id=company_id,
         commission_id=commissions[0].id,
-        request=ConstructionUnitCommissionUpdate(document_number=None, notes=None),
+        request=ConstructionUnitCommissionUpdate(
+            document_number=None, notes=None, expected_updated_at=commissions[0].updated_at,
+        ),
     )
     assert updated.document_number is None
     assert updated.amount == Decimal("5000.00")

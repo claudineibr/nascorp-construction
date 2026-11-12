@@ -4636,17 +4636,22 @@ async def test_commission_beneficiary_from_another_company_is_refused_but_stored
         unit_id=unit.id,
         request=ConstructionUnitCommissionCreate(beneficiary_person_id=beneficiary_id, **request),
     )
+    created[0].updated_at = datetime(2026, 6, 10, tzinfo=UTC)
     with pytest.raises(ConstructionPersonOutsideCompanyError):
         await service.update_unit_commission(
             company_id=company_id,
             commission_id=created[0].id,
-            request=ConstructionUnitCommissionUpdate(beneficiary_person_id=foreign_id),
+            request=ConstructionUnitCommissionUpdate(
+                beneficiary_person_id=foreign_id, expected_updated_at=created[0].updated_at,
+            ),
         )
     erp_client.foreign_person_ids = {foreign_id, beneficiary_id}
     kept = await service.update_unit_commission(
         company_id=company_id,
         commission_id=created[0].id,
-        request=ConstructionUnitCommissionUpdate(beneficiary_person_id=beneficiary_id, notes="Histórico"),
+        request=ConstructionUnitCommissionUpdate(
+            beneficiary_person_id=beneficiary_id, notes="Histórico", expected_updated_at=created[0].updated_at,
+        ),
     )
     assert kept.beneficiary_person_id == beneficiary_id
 

@@ -5887,42 +5887,63 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         request: ConstructionUnitCommissionUpdate,
         actor_user_id: UUID | None = None,
     ) -> ConstructionUnitCommissionModel:
-        commission = await self._editable_transfer_commission(company_id, commission_id)
-        updates = request.model_dump(exclude_unset=True)
+        log_context = f"company_id={company_id} commission_id={commission_id} actor_user_id={actor_user_id}"
+        _logger.info(f"[commission_update] solicitada: {log_context}")
+        stage = "carregar"
+        try:
+            commission = await self._editable_transfer_commission(company_id, commission_id)
+            stage = "validar"
+            self._check_commission_version(commission, request.expected_updated_at, log_context)
+            updates = request.model_dump(exclude_unset=True, exclude={"expected_updated_at"})
 
-        # `_apply_updates` e um setattr cru, e `exclude_unset` so diz que a chave
-        # veio -- nao que veio preenchida. A tela manda as seis chaves sempre
-        # (`updateConstructionUnitCommission`), entao limpar um campo obrigatorio
-        # no formulario chegava aqui como `None` e ia direto para uma coluna
-        # NOT NULL: IntegrityError, 500 generico, e o usuario sem saber o que
-        # deu errado.
-        for field_name in ("beneficiary_person_id", "amount", "due_date"):
-            if field_name in updates and updates[field_name] is None:
-                raise ConstructionInvalidValueError(
-                    message=f"O campo '{field_name}' do sinal não pode ficar em branco.",
-                    error_code="CONSTRUCTION_UNIT_COMMISSION_REQUIRED_FIELD",
+            # `_apply_updates` e um setattr cru, e `exclude_unset` so diz que a chave
+            # veio -- nao que veio preenchida. A tela manda as seis chaves sempre
+            # (`updateConstructionUnitCommission`), entao limpar um campo obrigatorio
+            # no formulario chegava aqui como `None` e ia direto para uma coluna
+            # NOT NULL: IntegrityError, 500 generico, e o usuario sem saber o que
+            # deu errado.
+            for field_name in ("beneficiary_person_id", "amount", "due_date"):
+                if field_name in updates and updates[field_name] is None:
+                    raise ConstructionInvalidValueError(
+                        message=f"O campo '{field_name}' do sinal não pode ficar em branco.",
+                        error_code="CONSTRUCTION_UNIT_COMMISSION_REQUIRED_FIELD",
+                    )
+
+            if "beneficiary_person_id" in updates and updates["beneficiary_person_id"] != commission.beneficiary_person_id:
+                if commission.payment_date:
+                    raise ConstructionInvalidValueError(message="Estorne a baixa antes de alterar o favorecido do sinal.")
+                await self._require_company_people(
+                    company_id=company_id,
+                    actor_user_id=actor_user_id,
+                    people={"O beneficiário do sinal": updates["beneficiary_person_id"]},
                 )
 
-        if "beneficiary_person_id" in updates and updates["beneficiary_person_id"] != commission.beneficiary_person_id:
-            if commission.payment_date:
-                raise ConstructionInvalidValueError(message="Estorne a baixa antes de alterar o favorecido do sinal.")
-            await self._require_company_people(
-                company_id=company_id,
-                actor_user_id=actor_user_id,
-                people={"O beneficiário do sinal": updates["beneficiary_person_id"]},
+            if updates.get("amount") is not None:
+                updates["amount"] = Decimal(str(updates["amount"])).quantize(Decimal("0.01"))
+
+            for field_name in ("document_number", "notes"):
+                if field_name in updates:
+                    updates[field_name] = (updates[field_name] or "").strip() or None
+
+            changed_fields = ",".join(sorted(updates))
+            _logger.info(f"[commission_update] validada: {log_context} fields={changed_fields}")
+            stage = "gravar"
+            self._apply_updates(entity=commission, updates=updates)
+            await self.repository.commit()
+            _logger.info(f"[commission_update] confirmada: {log_context} fields={changed_fields}")
+            stage = "atualizar_resposta"
+            await self.repository.refresh(commission)
+            return commission
+        except ConstructionDomainError as error:
+            _logger.info(
+                f"[commission_update] recusada: {log_context} stage={stage} error_code={error.error_code} "
+                f"status_code={error.status_code}"
             )
+            raise
+        except Exception as error:
+            _logger.error(f"[commission_update] falha: {log_context} stage={stage} error_type={type(error).__name__}")
+            raise
 
-        if updates.get("amount") is not None:
-            updates["amount"] = Decimal(str(updates["amount"])).quantize(Decimal("0.01"))
-
-        for field_name in ("document_number", "notes"):
-            if field_name in updates:
-                updates[field_name] = (updates[field_name] or "").strip() or None
-
-        self._apply_updates(entity=commission, updates=updates)
-        await self.repository.commit()
-        await self.repository.refresh(commission)
-        return commission
 
     async def settle_unit_commission(
         self,

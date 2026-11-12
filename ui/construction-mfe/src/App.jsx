@@ -134,6 +134,7 @@ import {
   createConstructionUnit,
   createConstructionUnitAdjustment,
   createConstructionUnitCommissions,
+  updateConstructionUnitCommission,
   createConstructionUnitInstallments,
   deleteConstructionUnitAdjustment,
   deleteConstructionBlock,
@@ -1512,6 +1513,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [confirmRequest, setConfirmRequest] = useState(null)
   const [confirmRunning, setConfirmRunning] = useState(false)
   const [isCommissionModalOpen, setIsCommissionModalOpen] = useState(false)
+  const [editingCommission, setEditingCommission] = useState(null)
   const [commissionForm, setCommissionForm] = useState(defaultCommissionForm)
   const [submittingCommission, setSubmittingCommission] = useState(false)
   const [isAdjustmentModalOpen, setIsAdjustmentModalOpen] = useState(false)
@@ -3517,7 +3519,22 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     }
   }
 
+  const openEditCommission = (commission) => {
+    if (!bridge?.canUpdate?.("construction_units") || commission.historical || selectedUnit?.id !== commission.unitId) return
+    if (!personSummaries.length) void loadPersonSummaries()
+    setEditingCommission(commission)
+    setCommissionForm({
+      beneficiaryPersonId: commission.beneficiaryPersonId,
+      amount: formatCurrencyFromNumber(commission.amount),
+      dueDate: commission.dueDate,
+      documentNumber: commission.documentNumber ?? "",
+      notes: commission.notes ?? "",
+    })
+    setIsCommissionModalOpen(true)
+  }
+
   const openCommissionModal = () => {
+    setEditingCommission(null)
     if (!personSummaries.length) {
       void loadPersonSummaries()
     }
@@ -3532,6 +3549,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     }
 
     setIsCommissionModalOpen(false)
+    setEditingCommission(null)
     setCommissionForm(defaultCommissionForm)
   }
 
@@ -3546,6 +3564,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       return
     }
 
+    if (editingCommission && (!bridge?.canUpdate?.("construction_units") || editingCommission.unitId !== selectedUnit.id)) return
+
     if (!commissionForm.beneficiaryPersonId) {
       bridge?.feedback?.warning?.("Informe o corretor favorecido do sinal.")
       return
@@ -3553,17 +3573,27 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
     setSubmittingCommission(true)
     try {
-      await createConstructionUnitCommissions({
-        bridge,
-        unitId: selectedUnit.id,
-        commissionData: commissionForm,
-      })
-      bridge?.feedback?.success?.("Sinal lançado.")
+      if (editingCommission) {
+        await updateConstructionUnitCommission({
+          bridge,
+          commissionId: editingCommission.id,
+          commissionData: commissionForm,
+          expectedUpdatedAt: editingCommission.updatedAt,
+        })
+      } else {
+        await createConstructionUnitCommissions({
+          bridge,
+          unitId: selectedUnit.id,
+          commissionData: commissionForm,
+        })
+      }
+      bridge?.feedback?.success?.(editingCommission ? "Sinal atualizado." : "Sinal lançado.")
+      setEditingCommission(null)
       setIsCommissionModalOpen(false)
       setCommissionForm(defaultCommissionForm)
       await loadUnitPaymentPlan(selectedUnit.id)
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível incluir o sinal.")
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível salvar o sinal.")
     } finally {
       setSubmittingCommission(false)
     }
@@ -4961,6 +4991,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                     people={personSummaries}
                     onEnsurePeople={ensurePeopleLoaded}
                     onCreateCommission={openCommissionModal}
+                    onEditCommission={bridge?.canUpdate?.("construction_units") ? openEditCommission : null}
                     onSettleCommission={setSettlingCommission}
                     onReverseCommission={bridge?.canUpdate?.("construction_units") ? (
                       (commission) => handleSettleCommission(commission, null, null)
@@ -5350,6 +5381,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         <CommissionModal
           unit={selectedUnit}
           commissionForm={commissionForm}
+          editingCommission={editingCommission}
           people={personSummaries}
           loadingPeople={loadingPersonSummaries}
           personLookupError={personLookupError}
@@ -6214,6 +6246,7 @@ function UnitDetailPanel({
   people,
   onEnsurePeople,
   onCreateCommission,
+  onEditCommission,
   onSettleCommission,
   onReverseCommission,
   onDeleteCommission,
@@ -6454,6 +6487,7 @@ function UnitDetailPanel({
           error={paymentPlanError}
           onRetry={() => onRetryPaymentPlan(unit.id)}
           onCreate={onCreateCommission}
+          onEdit={onEditCommission}
           onSettle={onSettleCommission}
           canSettle={bridge?.canUpdate?.("construction_units")}
           canComplete={bridge?.canUpdate?.("construction_units") || bridge?.canRead?.("receipt")}
@@ -7598,6 +7632,7 @@ function UnitCommissionsPanel({
   error,
   onRetry,
   onCreate,
+  onEdit,
   onSettle,
   canSettle,
   canComplete,
@@ -7721,6 +7756,12 @@ function UnitCommissionsPanel({
                         busy={receiptBusyId === commission.id}
                         busyLabel="Recibo..."
                         actions={[
+                          ...(onEdit && !commission.historical ? [{
+                            key: "edit",
+                            label: "Editar sinal",
+                            icon: Pencil,
+                            onSelect: () => onEdit(commission),
+                          }] : []),
                           ...(onReceipt ? [{
                             key: "receipt",
                             label: "Baixar recibo",
@@ -7832,6 +7873,7 @@ function CommissionSettlementDialog({ bridge, commission, saving, onClose, onSav
 function CommissionModal({
   unit,
   commissionForm,
+  editingCommission,
   people,
   personLookupError,
   onClose,
@@ -7845,11 +7887,11 @@ function CommissionModal({
         className={styles.modalCard}
         role="dialog"
         aria-modal="true"
-        aria-label="Incluir sinal"
+        aria-label={editingCommission ? "Editar sinal" : "Incluir sinal"}
         onClick={(event) => event.stopPropagation()}
       >
         <header className={styles.modalHeader}>
-          <h3>Incluir sinal{unit ? ` - unidade ${unit.code}` : ""}</h3>
+          <h3>{editingCommission ? "Editar sinal" : "Incluir sinal"}{unit ? ` - unidade ${unit.code}` : ""}</h3>
           <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
             Fechar
           </button>
@@ -7859,6 +7901,7 @@ function CommissionModal({
             <PersonPicker
               label="Corretor favorecido*"
               value={commissionForm.beneficiaryPersonId}
+              disabled={loading || Boolean(editingCommission?.paymentDate)}
               onChange={(value) => onChange("beneficiaryPersonId", value)}
               knownPeople={people}
               required
@@ -7878,7 +7921,7 @@ function CommissionModal({
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Primeiro vencimento*</span>
+              <span>{editingCommission ? "Vencimento*" : "Primeiro vencimento*"}</span>
               <input
                 type="date"
                 value={commissionForm.dueDate}
@@ -7886,7 +7929,7 @@ function CommissionModal({
                 required
               />
             </label>
-            <label className={styles.filterControl}>
+            {editingCommission ? null : <label className={styles.filterControl}>
               <span>Repetir</span>
               <input
                 type="number"
@@ -7896,7 +7939,7 @@ function CommissionModal({
                 onChange={(event) => onChange("installments", event.target.value)}
               />
               <small className={styles.fieldHint}>gera uma parcela por mês a partir do vencimento</small>
-            </label>
+            </label>}
             <label className={styles.filterControl}>
               <span>Documento</span>
               <input
@@ -7920,7 +7963,7 @@ function CommissionModal({
               Cancelar
             </button>
             <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Incluindo..." : "Incluir sinal"}
+              {loading ? "Salvando..." : editingCommission ? "Salvar alterações" : "Incluir sinal"}
             </button>
           </footer>
         </form>

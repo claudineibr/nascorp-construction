@@ -657,6 +657,7 @@ class ConstructionUnitCommissionCreate(BaseModel):
 
 
 class ConstructionUnitCommissionUpdate(BaseModel):
+    expected_updated_at: datetime
     beneficiary_person_id: UUID | None = None
     amount: Decimal | None = Field(default=None, gt=0)
     due_date: date | None = None

@@ -1616,12 +1616,13 @@ export async function createConstructionUnitCommissions({ bridge, unitId, commis
   }
 }
 
-export async function updateConstructionUnitCommission({ bridge, commissionId, commissionData }) {
+export async function updateConstructionUnitCommission({ bridge, commissionId, commissionData, expectedUpdatedAt }) {
   const payload = await requestJson({
     bridge,
     path: `/v1/construction/commissions/${commissionId}`,
     method: "PATCH",
     body: {
+      expected_updated_at: expectedUpdatedAt,
       beneficiary_person_id: toNullableString(commissionData.beneficiaryPersonId),
       amount: toNullableNumber(commissionData.amount),
       due_date: toNullableString(commissionData.dueDate),
