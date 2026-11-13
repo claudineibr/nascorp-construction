@@ -5724,6 +5724,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         reason,
         receivable_id: UUID | None = None,
         user_id: UUID | None = None,
+        notification_batch_id=None,
     ) -> None:
         await self._editable_transfer_unit(company_id, unit_id)
         unit, target_receivable_id = await self._resolve_unit_receivable_target(
@@ -5738,7 +5739,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                 construction_unit_id=unit.id,
                 receivable_id=target_receivable_id,
                 installment_number=installment_number,
-                reason=reason,
+                reason=reason, notification_batch_id=notification_batch_id,
             )
         except httpx.HTTPStatusError as request_error:
             raise self._erp_domain_error(

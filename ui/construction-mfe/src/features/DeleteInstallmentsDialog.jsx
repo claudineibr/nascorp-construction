@@ -15,13 +15,14 @@ export function DeleteInstallmentsDialog({ bridge, unitId, installments, onClose
     if (busy || reason.trim().length < 10) return
     setBusy(true)
     const failures = []
+    const notificationBatchId = installments.length > 1 ? crypto.randomUUID() : null
     let deleted = 0
     for (const [index, installment] of installments.entries()) {
       setProgress(index + 1)
       try {
         await deleteConstructionUnitInstallment({ bridge, unitId,
           installmentNumber: installment.installmentNumber, receivableId: installment.receivableId,
-          reason: reason.trim() })
+          reason: reason.trim(), notificationBatchId })
         deleted += 1
       } catch (error) {
         failures.push(`${installment.typeLabel ?? "Parcela"} ${installment.installmentNumber}: ${error.message}`)
@@ -33,13 +34,13 @@ export function DeleteInstallmentsDialog({ bridge, unitId, installments, onClose
     onClose()
     const message = `${deleted} de ${installments.length} parcela(s) excluída(s).`
     if (failures.length) bridge?.feedback?.warning?.(`${message} Falhas ou exclusões não confirmadas: ${failures.join("; ")}. Confira a lista atualizada antes de repetir.`)
-    else bridge?.feedback?.success?.(`${message} Os administradores da empresa foram notificados.`)
+    else bridge?.feedback?.success?.(`${message} Os administradores da empresa receberam um único aviso com o resumo.`)
   }
 
   const ConfirmDialog = bridge?.components?.ConfirmDialog
   if (ConfirmDialog) return <ConfirmDialog isOpen variant="danger"
     title={`Excluir ${installments.length} parcela(s)`}
-    message="Confirma excluir as parcelas selecionadas e desfazer seus lançamentos? Havendo boleto, a parcela só será excluída após a confirmação da baixa no banco. Se a baixa falhar ou ficar pendente, a parcela será preservada. O motivo será auditado e os administradores da empresa serão notificados."
+    message="Confirma excluir as parcelas selecionadas e desfazer seus lançamentos? Havendo boleto, a parcela só será excluída após a confirmação da baixa no banco. Se a baixa falhar ou ficar pendente, a parcela será preservada. O motivo será auditado e os administradores da empresa receberão um único aviso com o resumo das parcelas excluídas."
     reasonLabel="Motivo da exclusão *" reasonValue={reason} onReasonChange={(value) => { if (!busy) setReason(value) }}
     reasonPlaceholder="Descreva o motivo (mínimo de 10 caracteres)" reasonMinLength={10} reasonMaxLength={1000}
     confirmLabel="Confirmar exclusão" confirmDisabled={reason.trim().length < 10} loading={busy}
@@ -59,7 +60,7 @@ export function DeleteInstallmentsDialog({ bridge, unitId, installments, onClose
       <p>Confirma excluir as parcelas selecionadas? Os lançamentos contábeis serão desfeitos.
         Havendo boleto, a parcela só será excluída após a confirmação da baixa no banco.
         Se a baixa falhar ou continuar pendente, a parcela será preservada.</p>
-      <p>A exclusão e o motivo ficarão na auditoria. Os administradores da empresa receberão uma notificação.</p>
+      <p>A exclusão e o motivo ficarão na auditoria. Os administradores da empresa receberão um único aviso com o resumo das parcelas excluídas.</p>
       <label className={styles.field}>Motivo da exclusão *
         <textarea required minLength={10} maxLength={1000} rows={3} value={reason} disabled={busy}
           placeholder="Descreva o motivo (mínimo de 10 caracteres)"

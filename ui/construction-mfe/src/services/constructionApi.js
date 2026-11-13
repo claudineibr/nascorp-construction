@@ -1393,8 +1393,10 @@ export async function deleteConstructionUnitInstallment({
   installmentNumber,
   reason,
   receivableId = null,
+  notificationBatchId = null,
 }) {
   const params = new URLSearchParams({ reason })
+  if (notificationBatchId) params.set("notification_batch_id", notificationBatchId)
   if (receivableId) {
     params.set("receivable_id", String(receivableId))
   }

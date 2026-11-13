@@ -1141,6 +1141,7 @@ async def reverse_unit_installment(
 async def delete_unit_installment(
     unit_id: UUID,
     installment_number: int,
+    notification_batch_id: UUID | None = Query(default=None),
     reason: str = Query(..., min_length=10, max_length=1000),
     receivable_id: UUID | None = Query(default=None),
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.DELETE)),
@@ -1153,7 +1154,7 @@ async def delete_unit_installment(
             installment_number=installment_number,
             receivable_id=receivable_id,
             user_id=ctx.user_id,
-            reason=reason,
+            reason=reason, notification_batch_id=notification_batch_id,
         )
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except ConstructionDomainError as exc:

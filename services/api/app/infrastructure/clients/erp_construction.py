@@ -566,6 +566,7 @@ class ErpConstructionClient:
         receivable_id: UUID,
         installment_number: int,
         reason,
+        notification_batch_id=None,
     ) -> None:
         if not settings.erp_service_key:
             raise RuntimeError("ERP service key is not configured for Construction payment plan integration.")
@@ -579,6 +580,7 @@ class ErpConstructionClient:
                     "receivable_id": str(receivable_id),
                     "installment_number": installment_number,
                     "reason": reason,
+                    **({"notification_batch_id": str(notification_batch_id)} if notification_batch_id else {}),
                 },
             )
             response.raise_for_status()
