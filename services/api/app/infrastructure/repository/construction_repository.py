@@ -97,6 +97,48 @@ class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository)
         self.session = session
         self.scope = scope
 
+    async def dwelling_report(self, company_id, project_id=None, correspondent=None, client_situation=None, process_status=None, search=None):
+        unit = ConstructionUnit
+        project = ConstructionProject
+        columns = [unit.id.label("unit_id"), unit.project_id, project.name.label("project_name"),
+                   unit.code, unit.description, unit.buyer_person_id]
+        columns.extend(getattr(unit, name) for name in ("correspondent", "correspondent_date", "client_situation", "client_situation_date", "process_status", "process_status_date"))
+        statement = select(*columns).join(project, and_(project.id == unit.project_id, project.company_id == unit.company_id)).where(
+            unit.company_id == company_id, unit.deleted_at.is_(None), project.deleted_at.is_(None),
+            project.development_type == "INCORPORATION",
+            *scope_conditions(unit, self.scope),
+        )
+        for column, value in ((unit.project_id, project_id), (unit.correspondent, correspondent), (unit.client_situation, client_situation), (unit.process_status, process_status)):
+            if value is not None:
+                statement = statement.where(column == value)
+        if search:
+            statement = statement.where(project.name.ilike(f"%{search}%"))
+        return (await self.session.execute(statement.order_by(project.name, project.id, unit.code, unit.id))).mappings().all()
+
+    async def dwelling_correspondent_options(self, company_id, search=None):
+        unit = ConstructionUnit
+        statement = select(unit.correspondent.label("id"), unit.correspondent.label("name")).join(
+            ConstructionProject, and_(ConstructionProject.id == unit.project_id, ConstructionProject.company_id == unit.company_id),
+        ).where(unit.company_id == company_id, unit.deleted_at.is_(None),
+                ConstructionProject.deleted_at.is_(None), ConstructionProject.development_type == "INCORPORATION",
+                unit.correspondent.is_not(None),
+                *scope_conditions(unit, self.scope))
+        if search:
+            statement = statement.where(unit.correspondent.ilike(f"%{search}%"))
+        return (await self.session.execute(statement.distinct().order_by(unit.correspondent).limit(100))).mappings().all()
+
+    async def dwelling_project_options(self, company_id, search=None):
+        project = ConstructionProject
+        unit = ConstructionUnit
+        statement = select(project.id, project.name).join(unit, and_(unit.project_id == project.id, unit.company_id == project.company_id)).where(
+            project.company_id == company_id, project.deleted_at.is_(None), unit.deleted_at.is_(None),
+            project.development_type == "INCORPORATION",
+            *scope_conditions(unit, self.scope),
+        )
+        if search:
+            statement = statement.where(project.name.ilike(f"%{search}%"))
+        return (await self.session.execute(statement.distinct().order_by(project.name, project.id).limit(100))).mappings().all()
+
     async def add(self, entity: object) -> None:
         self.session.add(entity)
 

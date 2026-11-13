@@ -6,6 +6,7 @@ import {
   reconcilableBankSlip,
   retryableBankSlip,
 } from "./features/UnitBankSlipOperations.jsx"
+import { UnitTrackingFields } from "./features/UnitTrackingFields.jsx"
 import { CashRegisterPicker } from "./components/CashRegisterPicker.jsx"
 import { DeleteInstallmentsDialog } from "./features/DeleteInstallmentsDialog.jsx"
 import { InstallmentDueDateDialog } from "./features/InstallmentDueDateDialog.jsx"
@@ -921,6 +922,12 @@ function toFormUnit(unit) {
     totalArea: unit.totalArea === null || unit.totalArea === undefined ? "" : String(unit.totalArea),
     salePrice: formatCurrencyFromNumber(unit.salePrice),
     deliveryDate: unit.deliveryDate ?? "",
+    correspondent: unit.correspondent ?? "",
+    correspondentDate: unit.correspondentDate ?? "",
+    clientSituation: unit.clientSituation ?? "",
+    clientSituationDate: unit.clientSituationDate ?? "",
+    processStatus: unit.processStatus ?? "",
+    processStatusDate: unit.processStatusDate ?? "",
     originalDeliveryDate: unit.deliveryDate ?? "",
     originalUpdatedAt: unit.updatedAt,
     status: unit.status ?? "available",
@@ -10071,6 +10078,7 @@ function UnitModal({ mode, unitForm, blocks, units, editingUnitId, onClose, onCh
                 disabled={unitForm.status !== "delivered"}
                 onChange={(event) => onChange("deliveryDate", event.target.value)} />
             </label>
+            {mode === "edit" ? <UnitTrackingFields values={unitForm} onChange={onChange} className={styles.filterControl} /> : null}
             <label className={styles.filterControl}>
               <span>Status*</span>
               <select value={unitForm.status} onChange={(event) => onChange("status", event.target.value)} required>

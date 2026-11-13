@@ -307,6 +307,17 @@ class ConstructionUnitCreate(BaseModel):
 
 
 class ConstructionUnitUpdate(BaseModel):
+    @field_validator("correspondent", mode="before")
+    @classmethod
+    def normalize_correspondent(cls, value):
+        return value.strip() or None if isinstance(value, str) else value
+
+    correspondent: str | None = Field(default=None, max_length=120)
+    correspondent_date: date | None = None
+    client_situation: str | None = Field(default=None, max_length=40)
+    client_situation_date: date | None = None
+    process_status: str | None = Field(default=None, max_length=40)
+    process_status_date: date | None = None
     expected_updated_at: datetime | None = None
     code: str | None = Field(default=None, min_length=1, max_length=50)
     description: str | None = None
@@ -323,6 +334,12 @@ class ConstructionUnitUpdate(BaseModel):
 
 
 class ConstructionUnitResponse(BaseModel):
+    correspondent: str | None = None
+    correspondent_date: date | None = None
+    client_situation: str | None = None
+    client_situation_date: date | None = None
+    process_status: str | None = None
+    process_status_date: date | None = None
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID

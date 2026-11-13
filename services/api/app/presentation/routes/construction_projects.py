@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import Header, APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.schemas.construction.dwelling_report import DwellingReportResponse, DwellingReportOptions
 from app.core.context import ConstructionContext
 from app.core.security import get_construction_context, require_permission, require_service_key
 from app.domain.exceptions import ConstructionDomainError
@@ -116,6 +117,46 @@ from app.schemas.construction import (
 
 
 router = APIRouter(prefix="/construction", tags=["construction"])
+
+
+@router.get("/dwelling-report/correspondents", response_model=DwellingReportOptions)
+async def dwelling_report_correspondents(
+    search: str | None = Query(default=None, max_length=120),
+    ctx: ConstructionContext = Depends(require_permission("report_dwellings", PermissionAction.READ)),
+    session: AsyncSession = Depends(get_session),
+):
+    from app.domain.services.dwelling_report_service import DwellingReportService
+    return await DwellingReportService(ConstructionRepository(session, scope=ctx.project_scope)).correspondents(ctx.company_id, search)
+
+
+@router.get("/dwelling-report/projects", response_model=DwellingReportOptions)
+async def dwelling_report_projects(
+    search: str | None = Query(default=None, max_length=120),
+    ctx: ConstructionContext = Depends(require_permission("report_dwellings", PermissionAction.READ)),
+    session: AsyncSession = Depends(get_session),
+):
+    from app.domain.services.dwelling_report_service import DwellingReportService
+    return await DwellingReportService(ConstructionRepository(session, scope=ctx.project_scope)).projects(ctx.company_id, search)
+
+
+@router.get("/dwelling-report", response_model=DwellingReportResponse)
+async def dwelling_report(
+    project_id: UUID | None = None,
+    correspondent: str | None = Query(default=None, max_length=120),
+    client_situation: str | None = Query(default=None, max_length=40),
+    process_status: str | None = Query(default=None, max_length=40),
+    ctx: ConstructionContext = Depends(require_permission("report_dwellings", PermissionAction.READ)),
+    session: AsyncSession = Depends(get_session),
+):
+    from app.domain.services.dwelling_report_service import DwellingReportService
+    try:
+        return await DwellingReportService(ConstructionRepository(session, scope=ctx.project_scope)).build(
+            ctx.company_id, project_id=project_id, correspondent=correspondent,
+            client_situation=client_situation, process_status=process_status,
+        )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
 
 @router.get("/internal/units/{unit_id}/contract-context", response_model=ConstructionUnitContractContextResponse, dependencies=[Depends(require_service_key)])
 async def unit_contract_context(unit_id: UUID, company_id: UUID = Header(alias="X-Company-ID"), session=Depends(get_session)):

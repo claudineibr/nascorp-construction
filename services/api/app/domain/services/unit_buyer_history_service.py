@@ -97,6 +97,15 @@ class UnitBuyerHistoryService:
         )
         if sync_cost_center and description != unit.description:
             await self._rename_unit_cost_center(unit, description, actor_user_id)
+        if unit.buyer_person_id != buyer_id and (
+            unit.client_situation is not None or unit.client_situation_date is not None
+        ):
+            unit.client_situation = None
+            unit.client_situation_date = None
+            logger.info(
+                f'[unit_tracking] situacao_cliente_limpa: company_id={unit.company_id} '
+                f'unit_id={unit.id} actor_id={actor_user_id}'
+            )
         unit.original_description = base
         unit.description = description
         logger.info(f'[unit_name] atualizado: unit_id={unit.id} buyer_id={buyer_id} sync_cost_center={sync_cost_center}')

@@ -1,3 +1,4 @@
+from app.domain.unit_process_tracking import CLIENT_SITUATIONS, PROCESS_STATUSES, TRACKING_FIELDS
 import calendar
 import hashlib
 import json
@@ -940,6 +941,14 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
     ) -> ConstructionUnit:
         unit = await self._editable_transfer_unit(company_id, unit_id)
         updates = request.model_dump(exclude_unset=True)
+        tracking_changed = any(name in updates and updates[name] != getattr(unit, name) for name in TRACKING_FIELDS)
+        if tracking_changed:
+            _logger.info(f"[unit_tracking] editar: company_id={company_id} unit_id={unit_id} actor_id={actor_user_id}")
+            for name, allowed in (("client_situation", CLIENT_SITUATIONS), ("process_status", PROCESS_STATUSES)):
+                if updates.get(name) is not None and updates[name] not in allowed:
+                    raise ConstructionInvalidValueError(message="Situação do cliente ou processo inválido.")
+            if request.expected_updated_at is None:
+                raise ConstructionInvalidValueError(message="Reabra a unidade antes de alterar o acompanhamento.")
         expected_updated_at = updates.pop("expected_updated_at", None)
         requested_delivery_date = updates.pop("delivery_date", None)
         if (
@@ -1065,6 +1074,8 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         self._apply_updates(entity=unit, updates=updates)
         await self.repository.commit()
         await self.repository.refresh(unit)
+        if tracking_changed:
+            _logger.info(f"[unit_tracking] concluido: company_id={company_id} unit_id={unit.id} actor_id={actor_user_id}")
         _logger.info(f"[unit_delivery] completed: company_id={company_id} unit_id={unit.id} "
                      f"actor_id={actor_user_id} date_present={unit.delivered_at is not None}")
         return unit
