@@ -28,7 +28,16 @@ export const observationEditHint = (installment, canUpdate) => installment.hasIs
   ? RECEIPT_ISSUED_HINT
   : canUpdate ? "" : "Seu perfil não pode alterar unidades."
 
-export const installmentDeletionReason = (installment) => {
+export const installmentRequiresReversal = (installment) => installment.status === "PAID"
+  || Number(installment.paidAmount ?? 0) > 0 || Boolean(installment.payments?.length)
+
+export const installmentDeletionReason = (installment, { canDeletePaid = false } = {}) => {
+  if (!["OPEN", "OVERDUE", "PAID"].includes(installment.status)) {
+    return "Esta parcela não está ativa para exclusão."
+  }
+  if (installmentRequiresReversal(installment)) {
+    return canDeletePaid ? "" : "Parcela com recebimentos exige autorização especial para estornar e excluir."
+  }
   if (!["OPEN", "OVERDUE"].includes(installment.status) || installmentOutstanding(installment) <= 0) {
     return "Só é possível excluir parcelas com saldo em aberto."
   }

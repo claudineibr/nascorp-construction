@@ -6562,6 +6562,11 @@ function UnitInstallmentsPanel({
   }
   const canUpdate = Boolean(bridge?.canUpdate?.("construction_units"))
   const canDelete = Boolean(bridge?.canDelete?.("construction_units") && bridge?.canDelete?.("receivable"))
+  const canDeletePaid = Boolean(canDelete && canUpdate && bridge?.canUpdate?.("receivable")
+    && bridge?.canSpecial?.("receivable_paid_installment_delete")
+    && bridge?.previewFinancialDeletionBatch && bridge?.executeFinancialDeletionBatch)
+  useEffect(() => { setDeletionSelected(new Map()) }, [canDeletePaid])
+  const deletionReason = (row) => installmentDeletionReason(row, { canDeletePaid })
   const canOffsetCredit = Boolean(bridge?.canUpdate?.("customer_credit") && bridge?.canUpdate?.("receivable"))
   const [buyerCredit, setBuyerCredit] = useState(null)
   useEffect(() => {
@@ -6647,13 +6652,13 @@ function UnitInstallmentsPanel({
   const generationMode = !deletionMode && bankSlipSelectionMode(batchAction, bankSlipOperations.canCreate, hasBankSlips) === "GENERATE"
   const deletionSelection = {
     selected: deletionSelected, busy: false,
-    entries: (items) => items.filter((row) => !installmentDeletionReason(row)).map((row) => [row.id, row]),
+    entries: (items) => items.filter((row) => !deletionReason(row)).map((row) => [row.id, row]),
     selectPage: (entries) => setDeletionSelected((current) => toggleSelectionPage(current, entries)),
     toggle: (row) => setDeletionSelected((current) => toggleSelectionPage(current, [[row.id, row]])),
   }
   const selection = deletionMode ? deletionSelection : generationMode ? bankSlipOperations : bankSlips
   const selectionId = (row) => deletionMode || generationMode ? row.id : row.bankSlips?.[0]?.id
-  const selectionReason = (row) => deletionMode ? installmentDeletionReason(row)
+  const selectionReason = (row) => deletionMode ? deletionReason(row)
     : generationMode ? bankSlipGenerationReason(row) : row.bankSlips?.length ? "" : "Esta parcela não possui boleto para imprimir."
   const selectionPurpose = deletionMode ? "excluir parcela" : generationMode ? "gerar boleto" : "imprimir boleto"
   const selectionEntries = selection.entries(rows)
@@ -6715,7 +6720,9 @@ function UnitInstallmentsPanel({
                 extra de quando o financiamento sai abaixo do previsto. Cada tipo tem a sua própria numeração,
                 e o aditivo é um documento separado no contas a receber - editar a venda não mexe nele.</span>
               {(bankSlips.allowed || canDelete) && <span>
-                {deletionMode ? "Selecione parcelas em aberto e sem recebimentos para excluir. Excluir selecionadas pede motivo e confirmação; havendo boleto, a exclusão depende da baixa confirmada pelo banco."
+                {deletionMode ? (canDeletePaid
+                  ? "Selecione parcelas abertas ou com recebimentos. As pagas exigem conferência prévia, cancelamento dos recibos e estornos contábeis; as demais mantêm a confirmação de baixa dos boletos."
+                  : "Selecione parcelas em aberto e sem recebimentos para excluir. Parcelas pagas exigem autorização especial. Havendo boleto, a exclusão depende da baixa confirmada pelo banco.")
                   : generationMode ? "Selecione parcelas em aberto e sem boleto ativo para gerar boletos. Sem seleção, Gerar boletos considera todas as parcelas elegíveis da unidade."
                   : "Selecione parcelas com boleto para imprimir. A impressão não gera novas cobranças."}
               </span>}
