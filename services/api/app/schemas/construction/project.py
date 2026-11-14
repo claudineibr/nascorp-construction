@@ -163,6 +163,10 @@ class FiscalProjectResponse(BaseModel):
     customer_person_id: UUID | None
 
 
+class FiscalProjectLookupRequest(BaseModel):
+    project_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
 class FiscalProjectPage(BaseModel):
     items: list[FiscalProjectResponse]
     total: int

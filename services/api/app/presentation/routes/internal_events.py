@@ -11,7 +11,7 @@ from app.infrastructure.database.session import get_session
 from app.infrastructure.repository.construction_repository import ConstructionRepository
 from app.infrastructure.repository.event_repository import EventRepository
 from app.schemas.construction import ConstructionMeasurementResponse, ConstructionProjectResponse, ConstructionUnitResponse
-from app.schemas.construction.project import FiscalProjectPage
+from app.schemas.construction.project import FiscalProjectLookupRequest, FiscalProjectPage
 from app.schemas.events import EventEnvelopeRequest
 from app.schemas.construction import ConstructionProcurementRequestResponse
 
@@ -45,6 +45,19 @@ async def fiscal_projects(
     items, total = await service.list_fiscal_projects(company_id, project_id, page, page_size)
     return FiscalProjectPage(
         items=items, total=total, page=page, page_size=page_size, total_pages=ceil(total / page_size),
+    )
+
+
+@router.post("/fiscal-projects/lookup", response_model=FiscalProjectPage)
+async def lookup_fiscal_projects(
+    request: FiscalProjectLookupRequest,
+    company_id: UUID = Header(alias="X-Company-ID"),
+    _: None = Depends(require_service_key),
+    service: ConstructionProjectService = Depends(get_project_service),
+):
+    items = await service.fiscal_projects_by_ids(company_id, request.project_ids)
+    return FiscalProjectPage(
+        items=items, total=len(items), page=1, page_size=len(request.project_ids), total_pages=1 if items else 0,
     )
 
 

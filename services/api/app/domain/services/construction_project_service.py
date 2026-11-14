@@ -276,6 +276,12 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             raise ConstructionInvalidValueError(message="Informe o CNPJ SPE completo, com os dois dígitos verificadores.")
         return cnpj or None
 
+    async def fiscal_projects_by_ids(self, company_id, project_ids):
+        _logger.info(f"[fiscal_projects] lookup: company_id={company_id} requested={len(project_ids)}")
+        items = await self.repository.fiscal_projects_by_ids(company_id, project_ids)
+        _logger.info(f"[fiscal_projects] lookup_completed: company_id={company_id} returned={len(items)}")
+        return items
+
     async def list_fiscal_projects(self, company_id, project_id, page, page_size):
         return await self.repository.list_fiscal_projects(company_id, project_id, page, page_size)
 

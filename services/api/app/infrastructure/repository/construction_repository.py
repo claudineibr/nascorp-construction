@@ -239,6 +239,13 @@ class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository)
             await self.rollback()
             raise ConstructionDuplicateCodeError(resource_name="outra obra", code=code, code_label="CNO") from exc
 
+    async def fiscal_projects_by_ids(self, company_id, project_ids):
+        result = await self.session.scalars(select(ConstructionProject).where(
+            ConstructionProject.company_id == company_id, ConstructionProject.deleted_at.is_(None),
+            ConstructionProject.id.in_(project_ids),
+        ).order_by(ConstructionProject.id))
+        return result.all()
+
     async def list_fiscal_projects(self, company_id, project_id, page, page_size):
         conditions = [ConstructionProject.company_id == company_id, ConstructionProject.deleted_at.is_(None)]
         if project_id is not None:

@@ -315,9 +315,9 @@ const projectDetailTabs = [
   { id: "purchaseOrders", label: "Compras", icon: ShoppingCart },
   { id: "accountsPayable", label: "Contas a pagar", icon: HandCoins },
   { id: "accountsReceivable", label: "Contas a receber", icon: HandCoins },
+  { id: "serviceInvoices", label: "Notas fiscais", icon: FileText },
   { id: "subcontracts", label: "Empreitada", icon: FileText },
   { id: "files", label: "Arquivos", icon: Paperclip },
-  { id: "serviceInvoices", label: "Notas fiscais", icon: FileText },
   { id: "reports", label: "Relatórios", icon: BarChart3 },
 ]
 
