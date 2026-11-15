@@ -1435,12 +1435,20 @@ export async function deleteConstructionUnitAdjustment({ bridge, unitId, receiva
 }
 
 export async function getConstructionProjectSummary({ bridge, projectId }) {
-  const payload = await requestJson({
-    bridge,
-    path: `/v1/construction/projects/${projectId}/summary`,
-  })
+  const results = await Promise.allSettled([
+    requestJson({ bridge, path: `/v1/construction/projects/${projectId}/summary` }),
+    bridge?.canRead?.("fiscal_documents")
+      ? requestJson({ bridge, baseUrl: bridge?.erpApiBaseUrl || import.meta.env.VITE_ERP_API_URL || DEFAULT_ERP_API_URL,
+        path: `/v1/construction-service-invoices/projects/${projectId}/summary` })
+      : Promise.resolve(null),
+  ])
+  if (results[0].status === "rejected") throw results[0].reason
+  const payload = results[0].value
 
   return {
+    invoices: results[1].status === "fulfilled" ? results[1].value : null,
+    invoicesError: results[1].status === "rejected"
+      ? results[1].reason?.message || "Não foi possível consultar o faturamento da obra." : "",
     scheduleStatus: payload.schedule_status ?? null,
     estimatedCostAmount: payload.estimated_cost_amount ?? null,
     remainingEstimatedCostAmount: payload.remaining_estimated_cost_amount ?? null,

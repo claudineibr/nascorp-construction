@@ -34,6 +34,7 @@ import { InstallmentObservationModal } from "./features/InstallmentObservationMo
 import { formatUnitType, unitTypeOptions } from "./features/unitTypes.js"
 import { commissionStatusLabel } from "./features/unitCommissions.js"
 import { UnitFinancialSummary } from "./features/UnitFinancialSummary.jsx"
+import { ProjectSummaryDashboard } from "./features/ProjectSummaryDashboard.jsx"
 import { brazilTodayISO, setBusinessTimezone, formatBusinessDate } from "./utils/brazilDate.js"
 import { Pagination as StandalonePagination } from "./components/Pagination.jsx"
 import {
@@ -5648,6 +5649,7 @@ function OverviewPanel({
 
   return (
     <div className={styles.integrationPanel}>
+      <ProjectSummaryDashboard summary={summary} schedulePhases={schedulePhases} />
       <div className={styles.summaryGroup}>
         <span className={styles.summaryGroupTitle}>Unidades</span>
         <div className={styles.integrationGrid}>
