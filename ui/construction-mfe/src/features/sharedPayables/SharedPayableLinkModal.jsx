@@ -146,16 +146,18 @@ export function SharedPayableLinkModal({ bridge, projectId, initialPayable = nul
   const confirm = async () => {
     if (blockReason) return
     if (creating) {
-      bridge.navigate("/accounts-payable/new?" + new URLSearchParams({
+      const launch = bridge.openPayable ?? bridge.navigate
+      launch("/accounts-payable/new?" + new URLSearchParams({
         project_id: projectId,
         return_to: "/construction?" + new URLSearchParams({ project_id: projectId, tab: "subcontracts" }),
-      }), { state: { constructionPayable: {
+      }), { onSaved: onLinked, state: { constructionPayable: {
         companyId: bridge.companyContext?.companyId,
         projectId,
         subcontractId: contract.id,
         supplierPersonId: supplierId,
         measurementIds: [...selected],
       } } })
+      onClose()
       return
     }
     setSaving(true)

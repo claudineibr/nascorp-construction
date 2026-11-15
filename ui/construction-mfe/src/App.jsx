@@ -8710,7 +8710,7 @@ function MeasurementsList({
                         icon: FilePlus2,
                         visible: canLinkPayable(measurement) && canCreatePayable,
                         dividerBefore: true,
-                        onSelect: () => bridge?.navigate?.(newMeasurementPayablePath(measurement)),
+                        onSelect: () => (bridge.openPayable ?? bridge.navigate)?.(newMeasurementPayablePath(measurement), { onSaved: loadMeasurements }),
                       },
                       {
                         key: "link-payable",
@@ -8727,7 +8727,7 @@ function MeasurementsList({
                         visible: Boolean(measurement.externalAccountsPayableId) && canReadPayable,
                         dividerBefore: true,
                         onSelect: () =>
-                          window.open(`/accounts-payable/${measurement.externalAccountsPayableId}/edit`, "_blank", "noopener"),
+                          (bridge.openPayable ?? bridge.navigate)?.(`/accounts-payable/${measurement.externalAccountsPayableId}/edit?${new URLSearchParams({ project_id: measurement.projectId })}`, { onSaved: loadMeasurements }),
                       },
                       {
                         key: "delete",

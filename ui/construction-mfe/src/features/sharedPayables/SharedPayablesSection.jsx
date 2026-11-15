@@ -9,7 +9,11 @@ import { listSharedPayables, unlinkSharedPayable } from "../../services/construc
 import { SharedPayableLinkModal, money } from "./SharedPayableLinkModal"
 import { ZeroValueOrders, day } from "./ZeroValueOrders"
 
-const openPayable = (payable) => window.open(`/accounts-payable/${payable.id}/edit`, "_blank", "noopener")
+const openPayable = (bridge, payable, onSaved, projectId) => {
+  const path = `/accounts-payable/${payable.id}/edit?${new URLSearchParams({ project_id: projectId })}`
+  if (bridge.openPayable) bridge.openPayable(path, { onSaved })
+  else window.open(path, "_blank", "noopener")
+}
 
 function SharedPayableOrdersModal({ bridge, projectId, payable, canUpdate, onClose, onChanged }) {
   const canRemove = canUpdate && !payable.globalCoveredCount
@@ -258,7 +262,7 @@ export function SharedPayablesSection({ bridge, projectId, renderActions }) {
                         <button
                           type="button"
                           className={styles.iconButton}
-                          onClick={() => openPayable(row)}
+                          onClick={() => openPayable(bridge, row, load, projectId)}
                           title="Ver título no ERP"
                           aria-label={`Ver o título ${row.documentNumber ?? ""} no ERP`}
                         >
