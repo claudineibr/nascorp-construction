@@ -157,6 +157,7 @@ class FiscalProjectResponse(BaseModel):
     id: UUID
     name: str
     code: str
+    development_type: str | None = None
     fiscal_work_code: str | None
     nfse_receivable_due_days: int | None = None
     analytic_cost_center_id: UUID | None

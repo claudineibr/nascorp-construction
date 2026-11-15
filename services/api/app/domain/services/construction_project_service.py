@@ -382,21 +382,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             if not should_process_event:
                 return project
 
-        synthetic_cost_center_id = self._read_uuid_payload(payload=event.payload, field_name="synthetic_cost_center_id")
-        analytic_cost_center_id = self._read_uuid_payload(payload=event.payload, field_name="analytic_cost_center_id")
-        self._ensure_external_id_can_be_applied(
-            current_id=project.synthetic_cost_center_id,
-            next_id=synthetic_cost_center_id,
-            field_name="synthetic_cost_center_id",
-        )
-        self._ensure_external_id_can_be_applied(
-            current_id=project.analytic_cost_center_id,
-            next_id=analytic_cost_center_id,
-            field_name="analytic_cost_center_id",
-        )
-
-        project.synthetic_cost_center_id = synthetic_cost_center_id
-        project.analytic_cost_center_id = analytic_cost_center_id
+        self._apply_cost_center_snapshot_from_event(project=project, event=event)
         await self.repository.commit()
         await self.repository.refresh(project)
         return project
@@ -440,6 +426,13 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
 
         project.synthetic_cost_center_id = synthetic_cost_center_id
         project.analytic_cost_center_id = analytic_cost_center_id
+
+        inherited_due_days = event.payload.get("nfse_receivable_due_days")
+        if inherited_due_days is not None and project.development_type == "CONTRACT_WORK" and project.nfse_receivable_due_days is None:
+            if type(inherited_due_days) is not int or not 0 <= inherited_due_days <= 365:
+                raise ConstructionInvalidValueError(message="O prazo padrão de recebimento da empresa é inválido.")
+            project.nfse_receivable_due_days = inherited_due_days
+            _logger.info(f"[project_nfse_receivable] inherited: company_id={project.company_id} project_id={project.id} due_days={inherited_due_days}")
 
     async def list_projects(
         self,
@@ -6605,6 +6598,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             "project_code": project.code,
             "project_name": project.name,
             "project_type": project.project_type,
+            "development_type": project.development_type,
             "customer_person_id": str(project.customer_person_id) if project.customer_person_id else None,
             "cnpj_spe": project.cnpj_spe,
             "address": project.address_json,
