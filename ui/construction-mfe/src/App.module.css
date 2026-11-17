@@ -317,7 +317,7 @@
 .projectTabButton::after {
   background: transparent;
   border-radius: 3px 3px 0 0;
-  bottom: -2px;
+  bottom: 0;
   content: "";
   height: 3px;
   left: 0;

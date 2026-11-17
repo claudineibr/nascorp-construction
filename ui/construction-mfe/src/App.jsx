@@ -1390,6 +1390,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [activeProjectId, setActiveProjectId] = useState(null)
   const projectDetailRequest = useRef(null)
   const dismissedInitialProjectId = useRef(null)
+  const restoredInitialRoute = useRef(null)
   const initialProjectId = bridge.initialProjectId
   useEffect(() => () => projectDetailRequest.current?.abort(), [activeProjectId])
 
@@ -2229,7 +2230,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }, [bridge, clearProjectDetail, loadProjects, resetProjectModal])
 
   useEffect(() => {
-    if (!initialProjectId || dismissedInitialProjectId.current === initialProjectId) return
+    const routeKey = `${companyId}:${initialProjectId}:${bridge.initialProjectTab ?? ""}`
+    if (!initialProjectId || dismissedInitialProjectId.current === initialProjectId
+      || restoredInitialRoute.current === routeKey) return
 
     projectDetailRequest.current?.abort()
     const controller = new AbortController()
@@ -2242,9 +2245,12 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       setViewMode("projectDetail")
       const requestedTab = bridge.initialProjectTab
       const canRestoreTab = requestedTab === "units" ||
+        (requestedTab === "schedule" && bridge.canRead?.("construction_schedule")) ||
+        (requestedTab === "serviceInvoices" && ProjectServiceInvoices) ||
         (requestedTab === "purchaseOrders" && ProjectPurchaseOrders) ||
         (requestedTab === "accountsPayable" && ProjectAccountsPayable) ||
         (requestedTab === "accountsReceivable" && ProjectAccountsReceivable)
+      if (canRestoreTab || !requestedTab || requestedTab === "overview") restoredInitialRoute.current = routeKey
       setProjectDetailTab(canRestoreTab ? requestedTab : "overview")
     }).catch((error) => {
       if (!controller.signal.aborted) handleProjectDetailError(error, initialProjectId)
