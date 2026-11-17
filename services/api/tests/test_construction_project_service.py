@@ -1032,6 +1032,15 @@ class FakeErpMeasurementClient(FakeErpPeopleDirectory):
             company_id=company_id, user_id=user_id, person_id=person_id
         )
 
+    async def has_unit_balance_to_charge(self, company_id, unit_id, sale_id, user_id, data):
+        total = Decimal(data["sale_price"]) + sum(
+            (Decimal(row["amount"]) for row in data["documentation"]), Decimal("0"),
+        ) - Decimal(data["discount"] or "0")
+        total -= sum((Decimal(data["sources"].get(key, "0")) for key in
+                      ("down_payment", "government_subsidy", "fgts", "financing")), Decimal("0"))
+        total -= sum((Decimal(row["amount"]) for row in data["signals"] if row["composes_sale_price"]), Decimal("0"))
+        return total > 0
+
     async def get_person_qualification_status(self, *, company_id, user_id, person_id):
         return "none"
 

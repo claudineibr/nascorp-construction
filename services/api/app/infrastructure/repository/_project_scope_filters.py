@@ -59,8 +59,13 @@ from app.infrastructure.database.models.assistance import AssistanceRequest, Ass
 
 from app.infrastructure.database.models.unit_buyer_history import ConstructionUnitBuyerHistory
 
+from app.infrastructure.database.models.unit_sale_value_audit import ConstructionUnitSaleValueAudit
+from app.infrastructure.database.models.unit_delivery_audit import ConstructionUnitDeliveryAudit
+
 _CAMINHO = {
     ConstructionUnitBuyerHistory: (ConstructionUnit, "unit_id"),
+    ConstructionUnitSaleValueAudit: (ConstructionUnit, "unit_id"),
+    ConstructionUnitDeliveryAudit: (ConstructionUnit, "unit_id"),
     AssistanceContact: (AssistanceRequest, "request_id"),
     AssistanceComplaint: (AssistanceRequest, "request_id"),
     AssistanceService: (AssistanceRequest, "request_id"),

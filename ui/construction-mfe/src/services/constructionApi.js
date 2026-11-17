@@ -1122,6 +1122,11 @@ export async function releaseConstructionUnitReservation({ bridge, unitId }) {
   return toUnitView(payload)
 }
 
+export async function listUnitSaleValueHistory({ bridge, unitId, page = 1, pageSize = 20, direction = "desc" }) {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize), direction })
+  return requestJson({ bridge, path: `/v1/construction/units/${unitId}/sale-value-history?${query}` })
+}
+
 export async function updateDeliveredSale({ bridge, unitId, saleId, saleData }) {
   const salePrice = toNullableNumber(saleData.salePrice)
   return requestJson({
@@ -1130,6 +1135,8 @@ export async function updateDeliveredSale({ bridge, unitId, saleId, saleData }) 
     method: "POST",
     body: {
       sale_id: saleId,
+      change_reason: toNullableString(saleData.changeReason),
+      expected_updated_at: saleData.expectedUpdatedAt ?? null,
       ...(salePrice != null ? { sale_price: salePrice } : {}),
       broker_person_id: toNullableString(saleData.brokerPersonId),
       discount_amount: toNullableNumber(saleData.discountAmount) ?? 0,

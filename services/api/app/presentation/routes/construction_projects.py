@@ -3,6 +3,7 @@ from datetime import date
 from decimal import Decimal
 from math import ceil
 from uuid import UUID
+from typing import Literal
 
 from fastapi import Header, APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,7 @@ from app.schemas.construction.unit_contract import (
     ConstructionUnitSummaryContextResponse,
 )
 from app.schemas.construction.unit_buyer_history import UnitBuyerHistoryList
+from app.schemas.construction.unit_sale_value_audit import UnitSaleValueAuditListResponse
 from app.schemas.construction.unit_transfer import (
     ConstructionUnitTransferRequest, ConstructionUnitTransferResponse, ConstructionUnitTransferList,
     ConstructionUnitTransferTargetList,
@@ -581,8 +583,26 @@ async def confirm_unit_sale(
             unit_id=unit_id,
             request=request_data,
             actor_user_id=ctx.user_id,
+            actor_person_id=ctx.person_id,
         )
         return ConstructionUnitResponse.model_validate(unit)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/units/{unit_id}/sale-value-history", response_model=UnitSaleValueAuditListResponse)
+async def list_unit_sale_value_history(
+    unit_id: UUID,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    direction: Literal["asc", "desc"] = "desc",
+    ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.UNITS, PermissionAction.READ)),
+    service: ConstructionProjectService = Depends(get_project_service),
+):
+    try:
+        return await service.list_unit_sale_value_audits(
+            company_id=ctx.company_id, unit_id=unit_id, page=page, page_size=page_size, direction=direction,
+        )
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 

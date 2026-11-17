@@ -571,6 +571,7 @@ const defaultSaleUnitForm = {
   financingDate: "",
   contractSignatureDate: "",
   saleNotes: "",
+  changeReason: "",
   downPaymentAmount: "",
   downPaymentDueDate: "",
   downPaymentInstallments: "1",
@@ -2834,6 +2835,15 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     void loadDocumentationTypes()
     const request = Symbol()
     saleEditorRequest.current = request
+    if (unit.status === "delivered") {
+      try {
+        unit = await getConstructionUnit({ bridge, unitId: unit.id })
+      } catch (error) {
+        bridge?.feedback?.error?.(error.message ?? "Não foi possível carregar os dados atuais da moradia.")
+        return
+      }
+      if (saleEditorRequest.current !== request) return
+    }
     setSaleTargetUnit(unit)
     setSaleUnitForm({
       ...defaultSaleUnitForm,
@@ -3759,6 +3769,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           saleData: {
             ...saleUnitForm,
             salePrice: saleTargetUnit.salePrice == null ? saleUnitForm.salePrice : null,
+            expectedUpdatedAt: saleTargetUnit.updatedAt,
             bankSources: paymentSources.filter((source) => !SALE_INSTALLMENT_SOURCE_TYPES.includes(source.sourceType)),
             documentations,
           },
@@ -10510,6 +10521,13 @@ function SaleUnitModal({
                 </div>
               </div>
             ))}
+            {isDelivered && (
+              <p className={styles.rowSecondaryText}>
+                Atualize os valores conforme a documentação do banco chegar. Simulação e pré-aprovação
+                podem mudar até o contrato definitivo registrado. Salvar não registra recebimento nem
+                altera cobranças ou lançamentos contábeis.
+              </p>
+            )}
             <div className={styles.saleFinancingStatus} role="group" aria-label="Conclusão do financiamento">
               <label className={styles.saleFinancingCompleted}>
                 <input
@@ -10647,6 +10665,18 @@ function SaleUnitModal({
           </div>
           )}
 
+          {isDelivered && (
+            <label className={styles.filterControl}>
+              <span>Motivo da alteração dos valores *</span>
+              <textarea rows={3} maxLength={2000} value={saleForm.changeReason ?? ""}
+                onChange={(event) => onChange("changeReason", event.target.value)}
+                placeholder="Ex.: atualização conforme contrato definitivo do banco" />
+              <span className={styles.rowSecondaryText}>
+                Obrigatório quando houver alteração de valores. A mudança fica no Histórico da moradia.
+              </span>
+            </label>
+          )}
+
           <label className={styles.filterControl}>
             <span>Observação</span>
             <textarea
@@ -10691,8 +10721,10 @@ function SaleUnitModal({
                   </tr>
                   <tr>
                     <td>
-                      <strong>Saldo devedor</strong>
-                      <div className={styles.rowSecondaryText}>ainda sem cobrança lançada</div>
+                      <strong>{isDelivered ? "Saldo da composição" : "Saldo devedor"}</strong>
+                      <div className={styles.rowSecondaryText}>
+                        {isDelivered ? "valor calculado; as cobranças existentes permanecem iguais" : "ainda sem cobrança lançada"}
+                      </div>
                     </td>
                     <td className={styles.textRight}>
                       <strong>{isDelivered && grossSalePrice <= 0 ? "-" : formatMoney(Math.max(balance, 0))}</strong>
@@ -10700,7 +10732,7 @@ function SaleUnitModal({
                   </tr>
                   <tr>
                     <td>
-                      <strong>Total devido pelo comprador (entrada + sinal + saldo)</strong>
+                      <strong>{isDelivered ? "Composição do comprador (entrada + sinal + saldo)" : "Total devido pelo comprador (entrada + sinal + saldo)"}</strong>
                       <div className={styles.rowSecondaryText}>
                         {!isDelivered && (installmentCount ? `${installmentCount} parcela(s) no total` : "nenhuma parcela")}
                       </div>
@@ -10716,8 +10748,10 @@ function SaleUnitModal({
               {grossSalePrice <= 0
                 ? (isDelivered ? "Preço da venda não informado" : "Informe o preço da venda")
                 : exceedsPrice
-                  ? `Composição excede o preço mais a documentação em ${formatMoney(Math.abs(balance))}`
-                  : `Cobrança do comprador: ${formatMoney(receivableTotal)}`}
+                  ? (isDelivered
+                    ? `Diferença de composição para conferência: ${formatMoney(Math.abs(balance))}. Não impede salvar nem gera ajuste financeiro automático.`
+                    : `Composição excede o preço mais a documentação em ${formatMoney(Math.abs(balance))}`)
+                  : `${isDelivered ? "Composição do comprador" : "Cobrança do comprador"}: ${formatMoney(receivableTotal)}`}
             </span>
           </div>
 

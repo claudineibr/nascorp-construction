@@ -49,6 +49,8 @@ from app.infrastructure.database.models import (
     ConstructionUnit,
 )
 
+from app.infrastructure.repository.unit_sale_value_audit_repository import UnitSaleValueAuditRepository
+
 BUYER_HOLDING_UNIT_STATUSES = (
     ConstructionUnitStatus.RESERVED,
     ConstructionUnitStatus.SOLD,
@@ -69,7 +71,7 @@ def _buyer_unit_conditions(buyer_person_id: UUID) -> list:
 logger = logging.getLogger(__name__)
 
 
-class ConstructionRepository(UnitTransferRepository, UnitBuyerHistoryRepository):
+class ConstructionRepository(UnitSaleValueAuditRepository, UnitTransferRepository, UnitBuyerHistoryRepository):
     """As consultas de Obras, ja limitadas as obras que o ator enxerga.
 
     O escopo entra AQUI, e nao nas 79 rotas: `ConstructionProjectService` tem

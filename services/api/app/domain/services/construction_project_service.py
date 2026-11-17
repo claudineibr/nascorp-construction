@@ -57,6 +57,7 @@ from app.domain.services.construction_integration_dispatcher import Construction
 from app.domain.services.construction_service_template_parser import parse_service_template_spreadsheet
 from app.domain.services.subcontract_service import SubcontractService
 from app.domain.services.unit_buyer_history_service import UnitBuyerHistoryService
+from app.domain.services.unit_sale_value_audit_service import UnitSaleValueAuditService
 from app.domain.services.unit_transfer_service import UnitTransferService
 from app.domain.measurement_workflow import assert_measurement_editable, measurement_item_label, measurement_purpose, resolve_measurement_purpose
 from app.domain.unit_commission_status import unit_commission_status
@@ -228,7 +229,7 @@ REINSPECTION_REQUIRED_MESSAGE = (
 )
 
 
-class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
+class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService, UnitBuyerHistoryService):
     @staticmethod
     def to_commission_response(commission):
         from app.schemas.construction.project import ConstructionUnitCommissionResponse
@@ -1255,10 +1256,11 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         unit_id: UUID,
         request: ConstructionUnitSaleConfirmRequest | ConstructionDeliveredSaleUpdateRequest,
         actor_user_id: UUID | None = None,
+        actor_person_id=None,
     ) -> ConstructionUnit:
         unit = await self._editable_transfer_unit(company_id, unit_id)
         if isinstance(request, ConstructionDeliveredSaleUpdateRequest):
-            return await self._update_delivered_sale(unit, request, actor_user_id)
+            return await self._update_delivered_sale(unit, request, actor_user_id, actor_person_id)
         unit = await self._get_unit(company_id=company_id, unit_id=unit_id)
 
         # Unidade ja vendida cai no mesmo caminho de proposito: e assim que a
@@ -1416,7 +1418,7 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         await self.repository.refresh(unit)
         return unit
 
-    async def _update_delivered_sale(self, unit, request, actor_user_id):
+    async def _update_delivered_sale(self, unit, request, actor_user_id, actor_person_id):
         _logger.info(
             f"[delivered_unit_sale] salvar: company_id={unit.company_id} unit_id={unit.id} "
             f"sale_id={request.sale_id} status={unit.status} user={actor_user_id}"
@@ -1434,8 +1436,14 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
                 error_code="CONSTRUCTION_UNIT_SALE_SUPERSEDED",
             )
 
+        if request.expected_updated_at is None or request.expected_updated_at != unit.updated_at:
+            _logger.info(f"[delivered_unit_sale] versao_desatualizada: company_id={unit.company_id} unit_id={unit.id} sale_id={sale.id}")
+            raise ConstructionResourceInUseError(
+                message="Os dados da moradia foram alterados. Feche e reabra a edição para conferir os valores atuais.",
+            )
+        changed_at = datetime.now(UTC)
         changes = request.model_dump(
-            exclude_unset=True, exclude={"sale_id", "documentations", "bank_sources", "termination_terms"},
+            exclude_unset=True, exclude={"sale_id", "documentations", "bank_sources", "termination_terms", "change_reason", "expected_updated_at"},
         )
         requested_price = changes.pop("sale_price", None)
         if requested_price is not None:
@@ -1459,32 +1467,59 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
         documentations = await self._resolve_sale_documentations(
             unit=unit, items=request.documentations, current_documentations=previous_documentations,
         )
+        previous_sources = await self.repository.list_unit_payment_sources(company_id=unit.company_id, unit_id=unit.id)
+        commission_offset = self._sum_composing_commissions(await self.repository.list_unit_commissions(
+            company_id=unit.company_id, unit_id=unit.id, sale_id=sale.id,
+        ))
+        previous_values = self._sale_value_snapshot(
+            sale_price=unit.sale_price, discount=unit.discount_amount,
+            sources=[{"source_type": row.source_type, "amount": row.amount} for row in previous_sources],
+            documentations=[{"documentation_type_id": row.documentation_type_id,
+                             "name": row.documentation_type.name, "amount": row.amount}
+                            for row in previous_documentations], commission_offset=commission_offset,
+        )
         payment_sources = await self._delivered_sale_payment_sources(
             unit, sale, request, documentations,
             sale_price=changes.get("sale_price", unit.sale_price),
-            previous_documentation_total=sum((row.amount for row in previous_documentations), Decimal("0")),
+            existing=previous_sources, commission_offset=commission_offset,
         )
         self._validate_sale_financing_date(changes.get("financing_date", unit.financing_date), payment_sources)
 
+        current_values = self._sale_value_snapshot(
+            sale_price=changes.get("sale_price", unit.sale_price),
+            discount=changes.get("discount_amount", unit.discount_amount), sources=payment_sources,
+            documentations=documentations, commission_offset=commission_offset,
+        )
+        await self._record_sale_value_change(
+            unit=unit, sale=sale, old_data=previous_values, new_data=current_values,
+            reason=request.change_reason, actor_user_id=actor_user_id, actor_person_id=actor_person_id,
+            changed_at=changed_at,
+        )
+        unchanged_fields = all(getattr(unit, field) == value for field, value in changes.items())
+        previous_terms = self._json_safe(sale.termination_terms)
         for field, value in changes.items():
             setattr(unit, field, value)
             setattr(sale, field, value)
         if request.termination_terms is not None:
             project = await self.repository.get_project(company_id=unit.company_id, project_id=unit.project_id)
             self._update_sale_termination_terms(sale, project, request.termination_terms)
+        if previous_values == current_values and unchanged_fields and previous_terms == sale.termination_terms:
+            _logger.info(f"[delivered_unit_sale] sem_alteracao: company_id={unit.company_id} unit_id={unit.id} sale_id={sale.id}")
+            return unit
 
+        unit.updated_at = changed_at
         await self._replace_unit_payment_sources(unit=unit, payment_sources=payment_sources)
         await self._replace_unit_documentations(unit=unit, documentations=documentations)
         sale.payment_sources = self._json_safe(payment_sources)
-        sale.documentations = documentations
+        sale.documentations = self._json_safe(documentations)
         await self.repository.commit()
+        _logger.info(f"[delivered_unit_sale] atualizado: company_id={unit.company_id} unit_id={unit.id} sale_id={sale.id} values_changed={previous_values != current_values}")
         await self.repository.refresh(unit)
         return unit
 
     async def _delivered_sale_payment_sources(
-        self, unit, sale, request, documentations, *, sale_price, previous_documentation_total,
+        self, unit, sale, request, documentations, *, sale_price, existing, commission_offset,
     ):
-        existing = await self.repository.list_unit_payment_sources(company_id=unit.company_id, unit_id=unit.id)
         sources = {
             row.source_type: {
                 "source_type": row.source_type,
@@ -1529,26 +1564,11 @@ class ConstructionProjectService(UnitTransferService, UnitBuyerHistoryService):
             (source["amount"] for key, source in sources.items() if key in ConstructionUnitPaymentSource.INFORMED_SOURCES),
             Decimal("0"),
         )
-        commission_offset = self._sum_composing_commissions(await self.repository.list_unit_commissions(
-            company_id=unit.company_id, unit_id=unit.id, sale_id=sale.id,
-        ))
         balance = sale_price + self._sum_documentations(documentations=documentations) - discount
         balance -= informed_total + commission_offset
         if balance < 0:
-            previous_informed_total = sum(
-                (row.amount for row in existing if row.source_type in ConstructionUnitPaymentSource.INFORMED_SOURCES),
-                Decimal("0"),
-            )
-            previous_balance = (
-                unit.sale_price + previous_documentation_total - previous_discount
-                - previous_informed_total - commission_offset
-            ) if unit.sale_price is not None else Decimal("0")
-            if balance < min(previous_balance, Decimal("0")):
-                raise ConstructionInvalidValueError(
-                    message="Os valores informados excedem o preço mais a documentação ou aumentam a diferença já registrada.",
-                    error_code="CONSTRUCTION_UNIT_PAYMENT_SOURCES_TOTAL_MISMATCH",
-                )
-            return list(sources.values())
+            _logger.info(f"[delivered_unit_sale] diferenca_composicao: company_id={unit.company_id} unit_id={unit.id} sale_id={sale.id} difference={-balance}")
+            balance = Decimal("0")
 
         self._validate_sale_balance_limit(balance)
         previous_balance_source = sources.pop(ConstructionUnitPaymentSource.BALANCE, {})

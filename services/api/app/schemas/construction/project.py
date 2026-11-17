@@ -472,6 +472,8 @@ class ConstructionDeliveredSaleBankSource(BaseModel):
 class ConstructionDeliveredSaleUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sale_id: UUID
+    change_reason: str | None = Field(default=None, max_length=2000)
+    expected_updated_at: datetime | None = None
     documentations: list[ConstructionUnitSaleDocumentation]
     bank_sources: list[ConstructionDeliveredSaleBankSource] | None = None
     sale_price: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)

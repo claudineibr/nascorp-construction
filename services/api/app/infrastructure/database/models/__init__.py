@@ -31,7 +31,11 @@ from app.infrastructure.database.models.project_document import ConstructionProj
 from app.infrastructure.database.models.unit_delivery_audit import ConstructionUnitDeliveryAudit
 
 
+from app.infrastructure.database.models.unit_sale_value_audit import ConstructionUnitSaleValueAudit
+
+
 __all__ = [
+    "ConstructionUnitSaleValueAudit",
     "ConstructionUnitDeliveryAudit",
     "ConstructionProjectDocument",
     "ConstructionUnitBuyerHistory",

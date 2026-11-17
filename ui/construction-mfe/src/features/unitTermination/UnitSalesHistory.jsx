@@ -10,6 +10,7 @@ import {
 import { formatBRL as money } from "../../utils/currencyInput.js"
 import { formatBusinessDateTime } from "../../utils/brazilDate.js"
 import { buildUnitHistoryRows, unitTransferStatusLabels } from "./unitHistory.js"
+import { UnitSaleValueHistory } from "./UnitSaleValueHistory.jsx"
 
 export function findReactivableSale({ sales, unitStatus }) {
   if (unitStatus !== "available" || sales.some((sale) => sale.status === "ACTIVE")) return null
@@ -129,6 +130,7 @@ export function UnitSalesHistory({ bridge, unit, people = [], onEnsurePeople, re
   const rows = buildUnitHistoryRows({ buyers, sales, transfers, unitId: unit.id })
 
   return (
+    <>
     <section className={appStyles.tableCard} aria-label="Histórico da unidade">
       <div className={appStyles.tableWrapper}>
         <table className={styles.historyTable}>
@@ -229,5 +231,7 @@ export function UnitSalesHistory({ bridge, unit, people = [], onEnsurePeople, re
         </table>
       </div>
     </section>
+    <UnitSaleValueHistory key={unit.id} bridge={bridge} unit={unit} />
+    </>
   )
 }
