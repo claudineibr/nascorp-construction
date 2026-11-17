@@ -5077,15 +5077,18 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                   </>}
                 </>
               }
-              content={
-                selectedProject.developmentType === "CONTRACT_WORK" ? (
+              content={<>
+                {selectedProject.developmentType === "CONTRACT_WORK" ? (
                   <ProjectScheduleSummary key={`${companyId}-${selectedProject.id}`} bridge={bridge}
                     reloadRevision={projectDetailRevision}
                     projectId={selectedProject.id}>
                     {renderSchedule}
                   </ProjectScheduleSummary>
-                ) : renderSchedule()
-              }
+                ) : renderSchedule()}
+                {bridge.components?.ProjectPhaseOverview && <bridge.components.ProjectPhaseOverview
+                  key={`${companyId}-${selectedProject.id}-${projectDetailRevision}`}
+                  projectId={selectedProject.id} costCenterId={selectedProject.analyticCostCenterId} />}
+              </>}
             />
           ) : null}
 
