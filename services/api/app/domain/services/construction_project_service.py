@@ -1277,6 +1277,7 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
                 error_code="CONSTRUCTION_UNIT_INVALID_STATUS",
             )
 
+        updating_sale = unit.status == ConstructionUnitStatus.SOLD and unit.current_sale_id is not None
         sale_price = request.sale_price or unit.sale_price
         if sale_price is None or sale_price <= Decimal("0"):
             raise ConstructionInvalidValueError(
@@ -1395,6 +1396,7 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
             actor_user_id=actor_user_id,
             sale=sale,
         )
+        sale_event.payload["update_existing_sale"] = updating_sale
         renamed = unit.description != previous_description and await self._rename_unit_cost_center(
             unit, unit.description, actor_user_id,
         )
@@ -6085,12 +6087,6 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
         unit = await self._editable_transfer_unit(company_id, unit_id)
         await self._refuse_when_nothing_left_to_charge(company_id, unit, user_id)
 
-        if unit.external_contract_id is None:
-            raise ConstructionDomainError(
-                message="A unidade ainda não tem contrato no ERP: confirme a venda antes de lançar um aditivo.",
-                status_code=409,
-            )
-
         if self.erp_client is None:
             raise ConstructionDomainError(
                 message="Integração com o ERP não está configurada.",
@@ -6102,7 +6098,7 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
                 company_id=company_id,
                 user_id=user_id,
                 construction_unit_id=unit.id,
-                contract_id=unit.external_contract_id,
+                construction_sale_id=unit.current_sale_id,
                 amount=request.amount.quantize(Decimal("0.01")),
                 installments=request.installments,
                 first_due_date=request.first_due_date,

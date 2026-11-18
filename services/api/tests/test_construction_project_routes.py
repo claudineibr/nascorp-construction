@@ -118,7 +118,7 @@ class FakeProjectService:
             updated_at=now,
         )
 
-    async def confirm_unit_sale(self, *, company_id: UUID, unit_id: UUID, request, actor_user_id=None):
+    async def confirm_unit_sale(self, *, company_id: UUID, unit_id: UUID, request, actor_user_id=None, actor_person_id=None):
         now = datetime.now(tz=UTC)
         return SimpleNamespace(
             id=unit_id,
@@ -199,6 +199,7 @@ class FakeProjectService:
         reason,
         receivable_id=None,
         user_id=None,
+        notification_batch_id=None,
     ) -> None:
         self.deleted_installments.append(
             {

@@ -25,7 +25,7 @@ class RecordingAdjustmentErpClient(FakeErpMeasurementClient):
         self.adjustments.append(kwargs)
         return {
             "construction_unit_id": str(kwargs["construction_unit_id"]),
-            "contract_id": str(kwargs["contract_id"]),
+            "contract_id": None,
             "receivable_id": str(uuid4()),
             "receivable_status": "OPEN",
             "total_amount": str(kwargs["amount"]),
@@ -453,26 +453,28 @@ async def test_sale_composition_exposes_the_commission_totals() -> None:
     assert len(composition["commissions"]) == 2
 
 
-async def test_adjustment_is_refused_while_the_unit_has_no_contract() -> None:
+async def test_adjustment_without_contract_reaches_the_erp_with_current_sale(monkeypatch):
+    from unittest.mock import AsyncMock
+
     company_id = uuid4()
     repository = FakeConstructionRepository()
     erp_client = RecordingAdjustmentErpClient()
     _, unit = seed_project_and_unit(repository, company_id=company_id)
+    unit.status = "delivered"
+    unit.current_sale_id = uuid4()
     service = ConstructionProjectService(repository=repository, erp_client=erp_client)
+    monkeypatch.setattr(service, "_refuse_when_nothing_left_to_charge", AsyncMock())
 
-    with pytest.raises(ConstructionDomainError):
-        await service.create_unit_adjustment(
-            company_id=company_id,
-            unit_id=unit.id,
-            request=ConstructionUnitAdjustmentCreate(
-                amount=Decimal("8000.00"),
-                installments=2,
-                first_due_date=date(2026, 6, 10),
-                reason="Financiamento aprovado abaixo do previsto",
-            ),
-        )
+    await service.create_unit_adjustment(
+        company_id=company_id, unit_id=unit.id,
+        request=ConstructionUnitAdjustmentCreate(
+            amount=Decimal("8000.00"), installments=2,
+            first_due_date=date(2026, 6, 10), reason="Saldo da venda",
+        ),
+    )
 
-    assert erp_client.adjustments == []
+    assert "contract_id" not in erp_client.adjustments[0]
+    assert erp_client.adjustments[0]["construction_sale_id"] == unit.current_sale_id
 
 
 async def test_adjustment_reaches_the_erp_with_the_unit_contract_and_cost_center() -> None:
@@ -495,7 +497,7 @@ async def test_adjustment_reaches_the_erp_with_the_unit_contract_and_cost_center
     )
 
     dispatched = erp_client.adjustments[0]
-    assert dispatched["contract_id"] == unit.external_contract_id
+    assert "contract_id" not in dispatched
     assert dispatched["cost_center_id"] == unit.analytic_cost_center_id
     assert dispatched["amount"] == Decimal("8000.00")
     assert dispatched["unit_code"] == unit.code

@@ -706,7 +706,7 @@ class ErpConstructionClient:
         company_id: UUID,
         user_id: UUID | None,
         construction_unit_id: UUID,
-        contract_id: UUID,
+        construction_sale_id: UUID,
         amount: Decimal,
         installments: int,
         first_due_date: date,
@@ -726,7 +726,7 @@ class ErpConstructionClient:
 
         payload: dict[str, object] = {
             "construction_unit_id": str(construction_unit_id),
-            "contract_id": str(contract_id),
+            "construction_sale_id": str(construction_sale_id),
             "unit_code": unit_code,
             "amount": format(amount, "f"),
             "installments": installments,

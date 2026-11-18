@@ -6371,7 +6371,7 @@ function UnitDetailPanel({
           value={
             unit.externalContractId
               ? translateErpStatus(erpContractStatusLabel, unit.externalContractStatus, "Vinculado")
-              : "Pendente"
+              : "Não vinculado"
           }
         />
       </div>
@@ -10388,7 +10388,7 @@ function SaleUnitModal({
           )}
           {isEditing && !isDelivered ? (
             <p className={styles.metricHint}>
-              Salvar reescreve o contrato e refaz as parcelas <strong>em aberto</strong> desta unidade. As
+              Salvar atualiza a venda e refaz as parcelas <strong>em aberto</strong> desta unidade. As
               parcelas já pagas são preservadas e o que restar é redistribuído.
             </p>
           ) : null}
