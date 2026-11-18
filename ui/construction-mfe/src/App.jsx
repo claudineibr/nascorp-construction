@@ -1230,7 +1230,7 @@ function saleDocumentationError(formSale) {
   return null
 }
 
-function requiredSaleFieldError(formSale) {
+export function requiredSaleFieldError(formSale, allowCompositionDifference = false) {
   if (!String(formSale.buyerPersonId ?? "").trim()) {
     return "Informe a pessoa compradora para confirmar a venda."
   }
@@ -1277,14 +1277,14 @@ function requiredSaleFieldError(formSale) {
   // O que sobra do preço é o saldo, e o saldo é o que vira parcela. Só é erro
   // quando as fontes informadas passam do preço, nunca quando sobra.
   const balance = grossSalePrice + documentationTotal - discountAmount - sourcesTotal
-  if (grossSalePrice > 0 && balance < -0.01) {
+  if (!allowCompositionDifference && grossSalePrice > 0 && balance < -0.01) {
     return `A composição somada ao desconto excede o preço da venda mais a documentação em ${formatMoney(Math.abs(balance))}.`
   }
 
   const downPaymentTotal = paymentSources
     .filter((paymentSource) => SALE_INSTALLMENT_SOURCE_TYPES.includes(paymentSource.sourceType))
     .reduce((total, paymentSource) => total + paymentSource.amountValue, 0)
-  if (grossSalePrice > 0 && downPaymentTotal + Math.max(balance, 0) <= 0.01) {
+  if (!allowCompositionDifference && grossSalePrice > 0 && downPaymentTotal + Math.max(balance, 0) <= 0.01) {
     return "Não sobrou nada para cobrar do comprador: entrada, desconto e liberações do banco já cobrem o preço mais a documentação."
   }
 
@@ -3757,7 +3757,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       return
     }
 
-    const validationError = (isDelivered ? saleDocumentationError(saleUnitForm) : requiredSaleFieldError(saleUnitForm))
+    const validationError = (isDelivered
+      ? saleDocumentationError(saleUnitForm)
+      : requiredSaleFieldError(saleUnitForm, saleTargetUnit.status === "sold"))
       ?? terminationTermsError(saleUnitForm.terminationTerms)
     if (validationError) {
       bridge?.feedback?.warning?.(validationError)
@@ -10360,7 +10362,7 @@ function SaleUnitModal({
   // das fontes serem persistidas, parcela removida à mão). Salvar realinha os
   // dois, e um salto de valor aqui não pode passar sem o usuário ver.
   const divergesFromReceivable =
-    isEditing && !isDelivered &&
+    isEditing && !isDelivered && downPaymentTotal > 0.01 &&
     composition.status === "ready" &&
     composition.receivableTotal != null &&
     Math.abs(Number(composition.receivableTotal) - receivableTotal) > 0.01
@@ -10388,8 +10390,9 @@ function SaleUnitModal({
           )}
           {isEditing && !isDelivered ? (
             <p className={styles.metricHint}>
-              Salvar atualiza a venda e refaz as parcelas <strong>em aberto</strong> desta unidade. As
-              parcelas já pagas são preservadas e o que restar é redistribuído.
+              {downPaymentTotal > 0.01
+                ? "Salvar atualiza a venda e refaz as parcelas em aberto. As parcelas pagas são preservadas."
+                : "Salvar atualiza a composição da venda e preserva as parcelas existentes, sem gerar cobrança pelo financiamento."}
             </p>
           ) : null}
           {compositionFailed ? (
@@ -10757,8 +10760,8 @@ function SaleUnitModal({
               {grossSalePrice <= 0
                 ? (isDelivered ? "Preço da venda não informado" : "Informe o preço da venda")
                 : exceedsPrice
-                  ? (isDelivered
-                    ? `Diferença de composição para conferência: ${formatMoney(Math.abs(balance))}. Não impede salvar nem gera ajuste financeiro automático.`
+                  ? (isEditing
+                    ? `Diferença de composição para conferência: ${formatMoney(Math.abs(balance))}. Não impede salvar.`
                     : `Composição excede o preço mais a documentação em ${formatMoney(Math.abs(balance))}`)
                   : `${isDelivered ? "Composição do comprador" : "Cobrança do comprador"}: ${formatMoney(receivableTotal)}`}
             </span>

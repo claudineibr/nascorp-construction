@@ -1333,6 +1333,7 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
             discount_amount=discount_amount,
             documentation_total=documentation_total,
             commission_offset=commission_offset,
+            allow_composition_difference=updating_sale,
         )
         # Sem entrada nao ha parcela para gerar, e isso deixou de ser erro: o
         # contrato e criado assim mesmo e o usuario lanca o que cobrar pelo
@@ -1341,7 +1342,7 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
         # inteiro --, porque ai nao existe venda a cobrar.
         receivable_amount = self._sum_installment_sources(payment_sources=payment_sources)
         buyer_charged_amount = self._sum_buyer_charged_sources(payment_sources=payment_sources)
-        if buyer_charged_amount <= Decimal("0"):
+        if buyer_charged_amount <= Decimal("0") and not updating_sale:
             raise ConstructionInvalidValueError(
                 message=(
                     "The sale has nothing left to charge the buyer: entry plus bank sources and discount "
@@ -6773,6 +6774,7 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
         discount_amount: Decimal,
         documentation_total: Decimal = Decimal("0"),
         commission_offset: Decimal = Decimal("0"),
+        allow_composition_difference=False,
     ) -> list[dict[str, Any]]:
         """Monta a composicao da venda no modelo do legado.
 
@@ -6828,12 +6830,15 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
             sale_price + documentation_total - discount_amount - informed_total - commission_offset
         ).quantize(Decimal("0.01"))
 
-        if balance < Decimal("0"):
+        if balance < Decimal("0") and not allow_composition_difference:
             raise ConstructionInvalidValueError(
                 message="As origens de pagamento mais o desconto passam do preço de venda da unidade mais a documentação.",
                 error_code="CONSTRUCTION_UNIT_PAYMENT_SOURCES_TOTAL_MISMATCH",
             )
 
+        if balance < Decimal("0"):
+            _logger.info(f"[unit_sale] composicao_excedente: sale_price={sale_price} excess={-balance}")
+            balance = Decimal("0")
         ConstructionProjectService._validate_sale_balance_limit(balance)
         if balance > Decimal("0"):
             # O saldo entra na composicao para o usuario ver o que ainda falta,
