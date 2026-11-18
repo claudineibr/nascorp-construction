@@ -192,3 +192,5 @@ export function buildInstallmentActions({
   return actions
 }
 
+export const canCreateUnitCharge = (unit, canCreate) => Boolean(canCreate
+  && ["sold", "delivered"].includes(unit.status) && unit.currentSaleId && unit.buyerPersonId)

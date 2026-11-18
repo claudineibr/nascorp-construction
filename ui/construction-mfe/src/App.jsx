@@ -29,6 +29,7 @@ import {
   observationEditHint,
   INSTALLMENT_COLUMNS,
   bankSlipSelectionMode,
+  canCreateUnitCharge,
 } from "./features/unitInstallments.js"
 import { InstallmentObservationModal } from "./features/InstallmentObservationModal.jsx"
 import { formatUnitType, unitTypeOptions } from "./features/unitTypes.js"
@@ -6548,7 +6549,7 @@ function UnitDetailPanel({
 
 // A composicao vive na aba Resumo: ela descreve a venda, nao as parcelas, e
 // ocupava metade da tela de Parcelas empurrando o contas a receber para baixo.
-function UnitInstallmentsPanel({
+export function UnitInstallmentsPanel({
   unit,
   plan,
   loading,
@@ -6660,8 +6661,7 @@ function UnitInstallmentsPanel({
   const paymentPlan = composition.paymentPlan ?? {}
   const documentations = composition.documentations ?? []
   const installments = paymentPlan.installments ?? []
-  const chargeDisabledReason = getChargeDisabledReason(plan)
-  const canCreateAdjustment = Boolean(paymentPlan.contractId)
+  const canCreateAdjustment = canCreateUnitCharge(unit, bridge?.canCreate?.("construction_units"))
   const rows = buildInstallmentRows(paymentPlan)
   const hasBankSlips = rows.some((row) => row.bankSlips?.length)
   const hasOpenInstallments = installments.some((row) => ["OPEN", "OVERDUE"].includes(row.status)
@@ -6776,11 +6776,11 @@ function UnitInstallmentsPanel({
                 bankSlips.setHistory(null); bankSlips.setFailed([]); setAllBankSlipsOpen(true)
               }}>Ver boletos</button>}
             {canCreateAdjustment ? (
-              <span title={chargeDisabledReason}>
+              <span>
                 <button
                   type="button"
                   className={`${installmentStyles.actionButton} ${installmentStyles.adjustmentAction}`}
-                  disabled={Boolean(chargeDisabledReason)}
+                  disabled={!canCreateAdjustment}
                   onClick={onCreateAdjustment}
                 >
                   <Plus size={16} />
@@ -6788,12 +6788,12 @@ function UnitInstallmentsPanel({
                 </button>
               </span>
             ) : null}
-            {paymentPlan.receivableId ? (
-              <span title={chargeDisabledReason}>
+            {paymentPlan.receivableId && canCreateAdjustment ? (
+              <span>
                 <button
                   type="button"
                   className={`${installmentStyles.actionButton} ${installmentStyles.installmentAction}`}
-                  disabled={Boolean(chargeDisabledReason)}
+                  disabled={!canCreateAdjustment}
                   onClick={() => onCreateInstallment({ receivableId: null, installments })}
                 >
                   <Plus size={16} />
@@ -6841,7 +6841,7 @@ function UnitInstallmentsPanel({
             Não foi possível consultar o ERP agora: {paymentPlan.erpUnavailableReason}
           </p>
         ) : null}
-        {chargeDisabledReason && <p className={styles.metricHint}>{chargeDisabledReason}</p>}
+
         {rows.length ? (
           <div className={styles.tableWrapper}>
             <table className={`${styles.table} ${installmentStyles.table}`}>
@@ -7037,8 +7037,8 @@ function CreateInstallmentModal({ unit, form, onClose, onChange, onSubmit, loadi
         <form className={styles.modalBody} onSubmit={onSubmit}>
           <p className={styles.metricHint}>
             A numeração segue a partir do número informado, e um número que já existe na série é
-            recusado. O valor sai do saldo do título que ainda não virou parcela: para cobrar a mais do
-            comprador, o caminho é <strong>incluir aditivo</strong>.
+            recusado. Informe o valor de cada parcela para lançar uma cobrança adicional, inclusive acima
+            do saldo atual. O total do título será atualizado; o preço da venda permanece igual.
           </p>
           {!isAdjustment ? (
             <p className={styles.metricHint}>

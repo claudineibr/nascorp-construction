@@ -5651,8 +5651,7 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
         reescreve o que esta em aberto. Cobranca que precisa sobreviver a isso
         e aditivo, que tem documento proprio.
         """
-        unit = await self._editable_transfer_unit(company_id, unit_id)
-        await self._refuse_when_nothing_left_to_charge(company_id, unit, user_id)
+        await self._editable_transfer_unit(company_id, unit_id)
         unit, target_receivable_id = await self._resolve_unit_receivable_target(
             company_id=company_id,
             unit_id=unit_id,
@@ -6085,7 +6084,6 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
         destruiria o aditivo.
         """
         unit = await self._editable_transfer_unit(company_id, unit_id)
-        await self._refuse_when_nothing_left_to_charge(company_id, unit, user_id)
 
         if self.erp_client is None:
             raise ConstructionDomainError(
