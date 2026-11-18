@@ -135,6 +135,7 @@ def _clause(model, scope):
         select(1)
         .select_from(pai)
         .where(pai.id == getattr(model, coluna), _clause(pai, scope))
+        .correlate(model)
         .exists()
     )
 
