@@ -63,7 +63,6 @@ import {
   CircleX,
   MessageSquareText,
   Home,
-  Layers3,
   ListChecks,
   PackageSearch,
   Paperclip,
@@ -247,7 +246,6 @@ const projectTypeOptions = [
   { value: "industrial", label: "Industrial" },
 ]
 
-const projectTypeLabel = Object.fromEntries(projectTypeOptions.map((option) => [option.value, option.label]))
 
 const blockStatusOptions = [
   { value: "active", label: "Ativo" },
@@ -5482,6 +5480,35 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           title={measurementModalMode === "create" ? "Nova medição" : `Medição ${measurementForm.code}`}
           onClose={submittingMeasurement || savingMeasurementItem || importingServiceTemplates || confirmRequest ? undefined : closeMeasurementModal}
           dialogMaxWidth={1320}
+          scrollResetKey={measurementTab}
+          headerContent={(
+            <div className={styles.measurementTabs} role="tablist" aria-label="Medição"
+              onKeyDown={(event) => {
+                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return
+                event.preventDefault()
+                const tabs = Array.from(event.currentTarget.querySelectorAll('[role="tab"]:not(:disabled)'))
+                const current = tabs.indexOf(event.target)
+                const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+                  : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length
+                tabs[next]?.focus()
+                tabs[next]?.click()
+              }}>
+              <button type="button" role="tab" id="measurement-data-tab" aria-controls="measurement-data-panel"
+                aria-selected={measurementTab === "data"} tabIndex={measurementTab === "data" ? 0 : -1} className={styles.measurementTab}
+                disabled={submittingMeasurement || savingMeasurementItem || importingServiceTemplates || Boolean(confirmRequest)}
+                onClick={() => {
+                  if (measurementTab === "items" && itemsTargetMeasurement) openEditMeasurement(itemsTargetMeasurement)
+                }}>Dados principais</button>
+              <button type="button" role="tab" id="measurement-items-tab" aria-controls="measurement-items-panel"
+                aria-selected={measurementTab === "items"} tabIndex={measurementTab === "items" ? 0 : -1} className={styles.measurementTab}
+                disabled={submittingMeasurement || savingMeasurementItem || importingServiceTemplates || Boolean(confirmRequest)}
+                onClick={() => {
+                  if (measurementTab === "items") return
+                  if (measurementModalMode === "create" || measurementDataDirty) measurementFormRef.current?.requestSubmit()
+                  else setMeasurementTab("items")
+                }}>Itens e FVS</button>
+            </div>
+          )}
           footer={(
             <div className={`${styles.dialogActions} ${styles.measurementDialogActions}`}>
               <button type="button" className={styles.secondaryButton} onClick={closeMeasurementModal}
@@ -5512,32 +5539,6 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           )}
         >
           <div className={styles.measurementWorkspace}>
-            <div className={styles.measurementTabs} role="tablist" aria-label="Medição"
-              onKeyDown={(event) => {
-                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return
-                event.preventDefault()
-                const tabs = Array.from(event.currentTarget.querySelectorAll('[role="tab"]:not(:disabled)'))
-                const current = tabs.indexOf(event.target)
-                const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
-                  : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length
-                tabs[next]?.focus()
-                tabs[next]?.click()
-              }}>
-              <button type="button" role="tab" id="measurement-data-tab" aria-controls="measurement-data-panel"
-                aria-selected={measurementTab === "data"} tabIndex={measurementTab === "data" ? 0 : -1} className={styles.measurementTab}
-                disabled={submittingMeasurement || savingMeasurementItem || importingServiceTemplates || Boolean(confirmRequest)}
-                onClick={() => {
-                  if (measurementTab === "items" && itemsTargetMeasurement) openEditMeasurement(itemsTargetMeasurement)
-                }}>Dados principais</button>
-              <button type="button" role="tab" id="measurement-items-tab" aria-controls="measurement-items-panel"
-                aria-selected={measurementTab === "items"} tabIndex={measurementTab === "items" ? 0 : -1} className={styles.measurementTab}
-                disabled={submittingMeasurement || savingMeasurementItem || importingServiceTemplates || Boolean(confirmRequest)}
-                onClick={() => {
-                  if (measurementTab === "items") return
-                  if (measurementModalMode === "create" || measurementDataDirty) measurementFormRef.current?.requestSubmit()
-                  else setMeasurementTab("items")
-                }}>Itens e FVS</button>
-            </div>
             <div id="measurement-data-panel" role="tabpanel" aria-labelledby="measurement-data-tab" hidden={measurementTab !== "data"}>
               <MeasurementDetailsForm
                 key={editingMeasurementId ?? "new"}

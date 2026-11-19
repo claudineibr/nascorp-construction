@@ -1,19 +1,27 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { bankSlipErpOperation } from "../services/constructionApi.js"
 import { bankSlipStatusLabel, formatBankSlipMoney, SelectPageCheckbox, toggleSelectionPage } from "./UnitBankSlips.jsx"
 import styles from "../App.module.css"
 import dialogStyles from "./UnitInstallmentsPanel.module.css"
 
-export function UnitBankSlipDialogFrame({ bridge, title, onClose, children, footer, dialogMaxWidth = 1040 }) {
+export function UnitBankSlipDialogFrame({
+  bridge, title, onClose, children, footer, headerContent, scrollResetKey, dialogMaxWidth = 1040,
+}) {
+  const bodyRef = useRef(null)
+  useEffect(() => {
+    if (scrollResetKey !== undefined && bodyRef.current) bodyRef.current.scrollTop = 0
+  }, [scrollResetKey])
   const Modal = bridge?.components?.Modal
-  if (Modal) return <Modal isOpen title={title} onClose={onClose} dialogMaxWidth={dialogMaxWidth} footer={footer}>
+  if (Modal) return <Modal isOpen title={title} onClose={onClose} dialogMaxWidth={dialogMaxWidth} footer={footer}
+    headerContent={headerContent} scrollResetKey={scrollResetKey}>
     {children}
   </Modal>
-  return <div className={styles.modalOverlay} role="presentation"><section className={dialogStyles.dialog}
+  return <div className={styles.modalOverlay} role="presentation"><section className={`${dialogStyles.dialog} ${styles.fixedHeaderDialog}`}
     role="dialog" aria-modal="true" aria-label={title}>
     <header className={styles.modalHeader}><h3>{title}</h3>
       <button type="button" className={styles.secondaryButton} onClick={onClose}>Fechar</button></header>
-    <div className={styles.modalBody}>{children}</div>
+    {headerContent && <div className={styles.modalNavigation}>{headerContent}</div>}
+    <div className={styles.modalBody} ref={bodyRef}>{children}</div>
     {footer && <footer className={styles.modalFooter}>{footer}</footer>}
   </section></div>
 }
