@@ -1506,8 +1506,9 @@
 
 .procurementAddRow input,
 .procurementAddRow > button {
-  height: 40px;
-  min-height: 40px;
+  box-sizing: border-box;
+  height: var(--form-control-height, 2.5rem);
+  min-height: var(--form-control-height, 2.5rem);
 }
 
 .procurementSelectedProduct {
@@ -1571,6 +1572,13 @@
 
 .procurementModal .formGrid > label:has(textarea) {
   grid-column: span 2;
+}
+
+.procurementModal input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="hidden"]),
+.procurementModal select {
+  box-sizing: border-box;
+  min-width: 0;
+  height: var(--form-control-height, 2.5rem);
 }
 
 .procurementModal textarea {
