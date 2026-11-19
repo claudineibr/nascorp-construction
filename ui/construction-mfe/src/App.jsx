@@ -9036,6 +9036,10 @@ function ProcurementList({
 function ProcurementModal({ bridge, projectId, mode, procurementForm, people, schedulePhases, units, onClose,
   onChange, onItemsChange, onSubmit, loading: submitting }) {
   const [catalogPending, setCatalogPending] = useState(false)
+  const [product, setProduct] = useState(null)
+  const newQuantityRef = useRef(null)
+  const [newQuantity, setNewQuantity] = useState("1")
+  const [newPrice, setNewPrice] = useState("")
   const loading = submitting || catalogPending
   const CatalogPicker = bridge?.components?.ProductSearchCombobox
   const canEditCatalog = projectId && (mode === "create"
@@ -9046,7 +9050,13 @@ function ProcurementModal({ bridge, projectId, mode, procurementForm, people, sc
   const discount = Number(discountCents) / 100
   const total = Math.max(0, Number(subtotalCents - discountCents) / 100)
 
-  const addProduct = (product) => {
+  const selectProduct = (selected) => {
+    setProduct(selected)
+    setNewPrice(selected ? formatCurrencyFromNumber(selected.costPrice ?? 0) : "")
+  }
+
+  const addProduct = () => {
+    if (!product || !newQuantityRef.current?.reportValidity()) return
     onItemsChange([
       ...(procurementForm.items ?? []),
       {
@@ -9054,13 +9064,16 @@ function ProcurementModal({ bridge, projectId, mode, procurementForm, people, sc
         productId: product.id,
         productCode: product.code,
         productDescription: product.description,
-        quantity: "1",
+        quantity: newQuantity,
         unitOfMeasure: product.unitOfMeasure || "UN",
-        unitPrice: formatCurrencyFromNumber(product.costPrice ?? 0),
+        unitPrice: newPrice,
         schedulePhaseId: "",
         constructionUnitId: "",
       },
     ])
+    setProduct(null)
+    setNewQuantity("1")
+    setNewPrice("")
   }
 
   const updateItem = (key, field, value) => {
@@ -9082,7 +9095,14 @@ function ProcurementModal({ bridge, projectId, mode, procurementForm, people, sc
             Fechar
           </button>
         </header>
-        <form className={styles.modalBody} onSubmit={onSubmit}>
+        <form className={styles.modalBody} onSubmit={(event) => {
+          if (product) {
+            event.preventDefault()
+            bridge.feedback?.error?.("Clique em Adicionar produto para incluir o produto selecionado antes de salvar.")
+            return
+          }
+          onSubmit(event)
+        }}>
           <div className={styles.formGrid}>
             <label className={styles.filterControl}>
               <span>Código</span>
@@ -9128,17 +9148,39 @@ function ProcurementModal({ bridge, projectId, mode, procurementForm, people, sc
               />
             </label>
             <section className={`${styles.spanTwoColumns} ${styles.procurementSection}`} aria-label="Itens da requisição">
-              {CatalogPicker && canEditCatalog ? (
-                <>
-                  <span>Produtos da requisição *</span>
-                  <CatalogPicker token={bridge.token} companyId={bridge.companyContext?.companyId} projectId={projectId}
-                    onChange={(product) => {
-                      if (product) addProduct({ ...product, unitOfMeasure: product.unit_of_measure_code, costPrice: product.cost_price })
-                    }}
-                    disabled={submitting} launchContext="construction-requisition" ariaLabel="Produtos da requisição"
-                    selectOnEnter onLaunchError={bridge.feedback?.error} onCreatePendingChange={setCatalogPending} />
-                </>
-              ) : <ProductPicker bridge={bridge} onSelect={addProduct} disabled={loading} />}
+              <div className={styles.procurementAddRow}>
+                <div className={styles.procurementProductField}>
+                  {CatalogPicker && canEditCatalog ? (
+                    <>
+                      <span>Produtos da requisição *</span>
+                      <CatalogPicker token={bridge.token} companyId={bridge.companyContext?.companyId} projectId={projectId}
+                        value={product} onChange={(selected) => selectProduct(selected ? { ...selected,
+                          unitOfMeasure: selected.unit_of_measure?.code ?? selected.unit_of_measure_code,
+                          costPrice: selected.cost_price } : null)}
+                        disabled={submitting} launchContext="construction-requisition" ariaLabel="Produtos da requisição"
+                        selectOnEnter onLaunchError={bridge.feedback?.error} onCreatePendingChange={setCatalogPending} />
+                    </>
+                  ) : <>
+                    <ProductPicker bridge={bridge} onSelect={selectProduct} disabled={loading} />
+                    {product && <div className={styles.procurementSelectedProduct}>
+                      <strong>{product.code} - {product.description}</strong>
+                      <button type="button" className={styles.iconButton} disabled={loading}
+                        title="Limpar produto selecionado" aria-label="Limpar produto selecionado"
+                        onClick={() => selectProduct(null)}><CircleX size={16} aria-hidden="true" /></button>
+                    </div>}
+                  </>}
+                </div>
+                <label className={styles.filterControl}><span>Quantidade *</span>
+                  <input ref={newQuantityRef} type="number" min="0.0001" max="9999999999.9999" step="0.0001" required
+                    value={newQuantity} disabled={loading || !product}
+                    onChange={(event) => setNewQuantity(event.target.value)} /></label>
+                <label className={styles.filterControl}><span>Valor estimado (opcional)</span>
+                  <input type="text" inputMode="decimal" placeholder="0,00" value={newPrice} disabled={loading || !product}
+                    onChange={(event) => setNewPrice(formatCurrencyInput(event.target.value))} /></label>
+                <button type="button" className={styles.secondaryButton}
+                  disabled={loading || !product} onClick={addProduct}>
+                  <Plus size={16} aria-hidden="true" />Adicionar produto</button>
+              </div>
               {procurementForm.items?.length ? (
                 <div className={styles.procurementItems}>
                   {procurementForm.items.map((item) => {

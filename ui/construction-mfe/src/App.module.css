@@ -1488,6 +1488,48 @@
   font-weight: 600;
 }
 
+.procurementAddRow {
+  align-items: end;
+  box-sizing: border-box;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) 7rem 12rem auto;
+  min-width: 0;
+}
+
+.procurementProductField {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.procurementAddRow input,
+.procurementAddRow > button {
+  height: 40px;
+  min-height: 40px;
+}
+
+.procurementSelectedProduct {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.procurementSelectedProduct > strong { flex: 1; min-width: 0; }
+.procurementSelectedProduct > button { flex-shrink: 0; }
+
+.procurementAddRow > button {
+  min-width: 0;
+  white-space: normal;
+}
+
+@media (max-width: 1000px) {
+  .procurementAddRow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .procurementProductField, .procurementAddRow > button { grid-column: 1 / -1; }
+}
+
 .procurementItems {
   display: grid;
   gap: 0.65rem;
@@ -1495,6 +1537,7 @@
 }
 
 .procurementSection {
+  grid-column: 1 / -1;
   color: var(--color-text);
   display: flex;
   flex-direction: column;
