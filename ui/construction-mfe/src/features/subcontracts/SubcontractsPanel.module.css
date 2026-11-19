@@ -200,14 +200,14 @@
   width: 100%;
   border-collapse: collapse;
 }
-.table th,
-.table td {
+.table > thead > tr > th,
+.table > tbody > tr > td {
   padding: 0.65rem 0.85rem;
   border-bottom: 1px solid var(--color-border);
   color: var(--color-text);
   text-align: left;
 }
-.table th {
+.table > thead > tr > th {
   background: var(--color-surface-muted);
   color: var(--color-text-muted);
   font-size: 0.8rem;
@@ -215,7 +215,7 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-.table tbody tr:last-child td {
+.table > tbody > tr:last-child > td {
   border-bottom: none;
 }
 .empty {
@@ -461,7 +461,7 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
 }
-.pickerTable .table th {
+.pickerTable .table > thead > tr > th {
   position: sticky;
   top: 0;
 }
@@ -563,4 +563,159 @@
   .row {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+.contractFields {
+  display: grid;
+  gap: 0.9rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.financialSummary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 0;
+}
+.financialSummary dt {
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+.financialSummary dd {
+  margin: 0.35rem 0 0;
+  color: var(--color-text);
+  font-size: 1.1rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+@media (width <= 640px) {
+  .financialSummary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .blockHeader > .actions {
+    width: 100%;
+  }
+  .fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.blockHeader > .actions {
+  display: flex;
+  align-items: center;
+}
+
+.contractDetailsToggle {
+  display: list-item;
+  color: var(--color-text);
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.contractDetailsToggle:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
+}
+
+.table .expandedCell {
+  padding: 0;
+  white-space: normal;
+}
+.expandedCell > .editor {
+  margin: 0;
+  padding: 1rem;
+  border: 0;
+  border-left: 3px solid var(--color-primary);
+  background: var(--color-surface);
+}
+.chosen td {
+  border-bottom: 0;
+}
+.chosen td:first-child {
+  border-left: 3px solid var(--color-primary);
+}
+
+@media (width <= 640px) {
+  .table,
+  .table > tbody,
+  .expandedRow,
+  .table .expandedCell {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+  .table > thead {
+    display: none;
+  }
+  .contractRow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .table .contractRow > td {
+    display: block;
+    grid-column: 1;
+    padding: 0.4rem 0.75rem;
+    border: 0;
+    overflow-wrap: anywhere;
+  }
+  .contractRow > td[data-label]::before {
+    display: block;
+    margin-bottom: 0.15rem;
+    color: var(--color-text-muted);
+    font-size: 0.75rem;
+    content: attr(data-label);
+  }
+  .contractRow > td:last-child {
+    grid-column: 2;
+    grid-row: 1 / 3;
+  }
+  .contractRow.chosen {
+    border-bottom: 0;
+    border-left: 3px solid var(--color-primary);
+  }
+  .chosen td:first-child {
+    border-left: 0;
+  }
+}
+
+.contractBox.measurementPurpose > label {
+  max-width: none;
+}
+.contractBox.measurementPurpose > .competenceField {
+  width: 100%;
+  max-width: 16rem;
+}
+.contractBox .measurementContractSelect {
+  height: 2.6rem;
+  min-height: 2.6rem;
+  max-height: 2.6rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.contractBox .measurementContractSelect {
+  position: relative;
+  padding-right: 2.25rem;
+}
+.measurementContractSelect::picker-icon {
+  position: absolute;
+  top: 50%;
+  right: 0.85rem;
+  transform: translateY(-50%);
+}
+
+.contractBox.measurementPurpose {
+  grid-template-columns: minmax(0, 3fr) minmax(0, 7fr);
+  align-items: start;
+}
+.measurementPurpose > label:first-of-type:last-of-type { grid-column: 1 / -1; }
+.measurementPurpose > .competenceField { grid-column: 1; }
+.measurementPurpose > .hint { align-self: end; margin: 0 0 0.4rem; }
+.measurementPurpose > .loadError { grid-column: 1 / -1; }
+@media (width <= 760px) {
+  .contractBox.measurementPurpose { grid-template-columns: minmax(0, 1fr); }
 }

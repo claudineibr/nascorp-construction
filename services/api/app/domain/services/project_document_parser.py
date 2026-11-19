@@ -144,6 +144,43 @@ def parse_measurement(content):
         workbook.close()
 
 
+def parse_service_stages(content):
+    if not content or len(content) > MAX_DOCUMENT_BYTES:
+        raise ConstructionInvalidValueError(message="Selecione uma planilha de até 8 MB.")
+    try:
+        with ZipFile(BytesIO(content)) as archive:
+            entries = archive.infolist()
+            if len(entries) > 500 or sum(entry.file_size for entry in entries) > 64 * 1024 * 1024:
+                raise ConstructionInvalidValueError(message="A planilha excede o limite de conteúdo para importação.")
+        workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
+        try:
+            for sheet in workbook:
+                if not sheet.max_row or sheet.max_row > 1500 or not sheet.max_column or sheet.max_column > 150:
+                    continue
+                rows = list(sheet.values)
+                for index, row in enumerate(rows[:40]):
+                    labels = [normalized_label(value) for value in row]
+                    if "item" not in labels or "descricao" not in labels:
+                        continue
+                    code_column, name_column = labels.index("item"), labels.index("descricao")
+                    stages = []
+                    for data in rows[index + 1:]:
+                        code = str(data[code_column] or "").strip()
+                        name = str(data[name_column] or "").strip()
+                        if code.isdecimal() and name:
+                            stages.append({"name": name[:255]})
+                    names = [normalized_label(stage["name"]) for stage in stages]
+                    if stages and len(names) == len(set(names)):
+                        return stages
+            raise ConstructionInvalidValueError(message="A planilha precisa ter ITEM e DESCRIÇÃO e etapas numeradas sem subitem.")
+        finally:
+            workbook.close()
+    except ConstructionInvalidValueError:
+        raise
+    except Exception as exc:
+        raise ConstructionInvalidValueError(message="Não foi possível ler as etapas. Envie uma planilha XLSX ou XLSM válida.") from exc
+
+
 def parse_project_document(kind, content):
     if not content or len(content) > MAX_DOCUMENT_BYTES:
         raise ConstructionInvalidValueError(message="Selecione um arquivo não vazio de até 8 MB.")

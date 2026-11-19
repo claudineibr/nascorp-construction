@@ -174,6 +174,28 @@ class ProjectDocumentService:
         logger.info(f"[project_documents] attached: company_id={self.company_id} project_id={project_id} document_id={document.id} kind={kind}")
         return document
 
+    async def import_stages(self, project_id, content):
+        from app.domain.services.project_document_parser import parse_service_stages
+
+        logger.info(f"[project_documents] import_stages: company_id={self.company_id} project_id={project_id} actor_id={self.actor_user_id}")
+        await self.projects.get_project(company_id=self.company_id, project_id=project_id)
+        await self.projects.repository.get_project(company_id=self.company_id, project_id=project_id, for_update=True)
+        stages = await asyncio.to_thread(parse_service_stages, content)
+        before = await self.projects.repository.list_schedule_phases(company_id=self.company_id, project_id=project_id)
+        aliases = {"fundacao": "fundacoes"}
+        existing = {normalized_label(phase.name): phase.name for phase in before}
+        for stage in stages:
+            key = normalized_label(stage["name"])
+            match = existing.get(aliases.get(key, key))
+            if match:
+                stage["name"] = match
+        await self._map_phases(project_id, stages, True)
+        await self.projects.repository.commit()
+        after = await self.projects.repository.list_schedule_phases(company_id=self.company_id, project_id=project_id)
+        created = len(after) - len(before)
+        logger.info(f"[project_documents] stages_imported: company_id={self.company_id} project_id={project_id} created={created} matched={len(stages) - created}")
+        return {"created": created, "matched": len(stages) - created, "total": len(after)}
+
     async def _map_phases(self, project_id, measured_phases, create_phases):
         phases = await self.projects.repository.list_schedule_phases(company_id=self.company_id, project_id=project_id)
         names = {}

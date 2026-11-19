@@ -2,6 +2,7 @@ import test from "node:test"
 import assert from "node:assert/strict"
 import {
   canLinkPayable,
+  canApproveMeasurementInDialog,
   getMeasurementApprovalActions,
   isZeroValueMeasurement,
   measurementPayableBadge,
@@ -67,4 +68,30 @@ test("ERP title status is shown in Portuguese", () => {
   assert.equal(payableStatusLabel("PAID"), "Pago")
   assert.equal(payableStatusLabel("OPEN"), "Em aberto")
   assert.equal(payableStatusLabel(null), "-")
+})
+
+test("direct approval needs both edit permission and self approval authorization", () => {
+  const bridge = { user: { id: "actor" }, canUpdate: (feature) => feature === "construction_measurements" }
+  assert.equal(canApproveMeasurementInDialog({ status: "draft" }, bridge), false)
+  assert.equal(canApproveMeasurementInDialog({ status: "draft" }, { ...bridge, canUpdate: () => true }), true)
+  assert.equal(canApproveMeasurementInDialog({ status: "draft" }, { ...bridge,
+    canUpdate: (feature) => feature === "construction_measurement_self_approval" }), false)
+})
+
+test("submitted creator and sender need self approval while another authorized user can approve", () => {
+  const measurement = { status: "submitted", createdByUserId: "creator", submittedByUserId: "sender" }
+  const bridge = { canUpdate: (feature) => feature === "construction_measurements" }
+  for (const id of ["creator", "sender"]) {
+    assert.equal(canApproveMeasurementInDialog(measurement, { ...bridge, user: { id } }), false)
+  }
+  assert.equal(canApproveMeasurementInDialog(measurement, { ...bridge, user: { id: "other" } }), true)
+  assert.equal(canApproveMeasurementInDialog(measurement, bridge), false)
+})
+
+test("closed measurements and pending reversals do not offer dialog approval", () => {
+  const bridge = { user: { id: "actor" }, canUpdate: () => true }
+  for (const status of ["approved", "paid"]) {
+    assert.equal(canApproveMeasurementInDialog({ status }, bridge), false)
+  }
+  assert.equal(canApproveMeasurementInDialog({ status: "submitted", reversalPending: true }, bridge), false)
 })

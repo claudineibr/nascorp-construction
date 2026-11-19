@@ -709,6 +709,9 @@ class ConstructionRepository(UnitSaleValueAuditRepository, UnitTransferRepositor
         due_to: date | None = None,
         search: str | None = None,
         subcontract_id: UUID | None = None,
+        schedule_phase_id: UUID | None = None,
+        competence_from: date | None = None,
+        competence_to: date | None = None,
         global_selection: bool = False,
     ) -> list:
         amount = func.coalesce(ConstructionMeasurement.net_amount, ConstructionMeasurement.measured_amount, 0)
@@ -752,6 +755,12 @@ class ConstructionRepository(UnitSaleValueAuditRepository, UnitTransferRepositor
         if unit_search:
             pattern = f"%{unit_search.strip()}%"
             conditions.append(or_(ConstructionUnit.code.ilike(pattern), ConstructionUnit.description.ilike(pattern)))
+        if schedule_phase_id is not None:
+            conditions.append(ConstructionMeasurement.schedule_phase_id == schedule_phase_id)
+        if competence_from is not None:
+            conditions.append(ConstructionMeasurement.competence_date >= competence_from)
+        if competence_to is not None:
+            conditions.append(ConstructionMeasurement.competence_date <= competence_to)
         if due_from is not None:
             conditions.append(ConstructionMeasurement.due_date >= due_from)
         if due_to is not None:

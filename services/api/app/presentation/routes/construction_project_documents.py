@@ -21,7 +21,7 @@ from app.presentation.routes.construction_projects import (
     require_nfse_receivable_configuration,
 )
 from app.schemas.construction.project import ConstructionProjectCreate, ConstructionProjectResponse, ConstructionProjectUpdate
-from app.schemas.construction.project_document import ProjectDocumentHistory, ProjectDocumentPreview, ProjectDocumentResponse
+from app.schemas.construction.project_document import ProjectDocumentHistory, ProjectDocumentPreview, ProjectDocumentResponse, ScheduleStageImportResponse
 
 
 router = APIRouter(prefix="/construction", tags=["construction-project-documents"])
@@ -102,6 +102,20 @@ async def preview(
         return await run_in_threadpool(preview_document, kind, filename, data)
     except ConstructionDomainError as exc:
         raise report_error(ctx, "preview", exc, project_id) from exc
+
+
+@router.post("/projects/{project_id}/schedule/import-stages", response_model=ScheduleStageImportResponse)
+async def import_stages(
+    project_id: UUID,
+    file: UploadFile = File(...),
+    ctx: ConstructionContext = Depends(require_permission(Feature.SCHEDULE, Action.READ | Action.CREATE)),
+    service: ProjectDocumentService = Depends(get_document_service),
+):
+    require(ctx, Feature.PROJECTS, Action.READ)
+    try:
+        return await service.import_stages(project_id, await file.read(MAX_DOCUMENT_BYTES + 1))
+    except ConstructionDomainError as exc:
+        raise report_error(ctx, "import_stages", exc, project_id) from exc
 
 
 @router.post("/projects/from-contract", response_model=ConstructionProjectResponse, status_code=201)

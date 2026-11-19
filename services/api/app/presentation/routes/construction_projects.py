@@ -903,6 +903,9 @@ def _zero_value_filters(
     due_to: date | None = Query(default=None),
     search: str | None = Query(default=None, max_length=60),
     subcontract_id: UUID | None = Query(default=None),
+    schedule_phase_id: UUID | None = Query(default=None),
+    competence_from: date | None = Query(default=None),
+    competence_to: date | None = Query(default=None),
 ) -> dict:
     return {
         "supplier_person_id": supplier_person_id,
@@ -913,6 +916,9 @@ def _zero_value_filters(
         "due_to": due_to,
         "search": search,
         "subcontract_id": subcontract_id,
+        "schedule_phase_id": schedule_phase_id,
+        "competence_from": competence_from,
+        "competence_to": competence_to,
     }
 
 
@@ -972,11 +978,13 @@ async def list_zero_value_measurement_ids(
 @router.get("/projects/{project_id}/shared-payables")
 async def list_shared_payables(
     project_id: UUID,
+    subcontract_id: UUID | None = None,
+    without_contract: bool = False,
     ctx: ConstructionContext = Depends(require_permission(ConstructionFeature.MEASUREMENTS, PermissionAction.READ)),
     service: ConstructionProjectService = Depends(get_project_service),
 ) -> dict:
     try:
-        items = await service.list_shared_payables(company_id=ctx.company_id, project_id=project_id, user_id=ctx.user_id)
+        items = await service.list_shared_payables(company_id=ctx.company_id, project_id=project_id, user_id=ctx.user_id, subcontract_id=subcontract_id, without_contract=without_contract)
         return {"items": items, "total": len(items)}
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc

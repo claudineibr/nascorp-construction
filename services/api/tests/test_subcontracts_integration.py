@@ -292,7 +292,7 @@ async def test_contract_dnf_covers_approved_contract_measurements_when_totals_ma
 
 
 @pytest.mark.asyncio
-async def test_global_contract_groups_zero_value_orders_and_limits_dnfs_to_its_total():
+async def test_global_contract_groups_zero_value_orders_and_closes_after_first_title():
     engine = await create_reachable_engine_or_skip()
     factory = async_sessionmaker(engine, expire_on_commit=False)
     company_id = uuid4()
@@ -321,10 +321,12 @@ async def test_global_contract_groups_zero_value_orders_and_limits_dnfs_to_its_t
             await session.commit()
             order_ids, valued_id = [row.id for row in orders], valued.id
 
-            with pytest.raises(ConstructionDomainError, match="tem valor próprio"):
+            with pytest.raises(ConstructionDomainError, match="Selecione as OS"):
                 await service.link_orders(company_id, contract["id"], [valued_id], uuid4())
             await session.rollback()
-            assert await service.link_orders(company_id, contract["id"], order_ids, uuid4()) == 2
+            with pytest.raises(ConstructionDomainError, match="Selecione as OS"):
+                await service.link_orders(company_id, contract["id"], order_ids, uuid4())
+            await session.rollback()
 
             first_dnf, second_dnf = uuid4(), uuid4()
             client = service.projects.erp_client
@@ -337,23 +339,25 @@ async def test_global_contract_groups_zero_value_orders_and_limits_dnfs_to_its_t
 
             client.check_shared_payable.return_value = {"accounts_payable_document_id": str(second_dnf),
                 "accounts_payable_status": "OPEN", "person_id": str(supplier), "total_amount": "50.00"}
-            with pytest.raises(ConstructionDomainError, match="passa do saldo"):
+            with pytest.raises(ConstructionDomainError, match="encerrado"):
                 await service.projects.link_shared_payable(company_id=company_id, project_id=project_id,
                     payable_document_id=second_dnf, measurement_ids=[order_ids[1]], subcontract_id=contract["id"])
             await session.rollback()
 
-            with pytest.raises(ConstructionDomainError, match="Remova a OS"):
+            with pytest.raises(ConstructionDomainError, match="cancelar o título"):
                 await service.unlink_orders(company_id, contract["id"], [order_ids[0]], uuid4())
             await session.rollback()
             client.check_shared_payable.return_value = {"accounts_payable_document_id": str(first_dnf),
                 "accounts_payable_status": "OPEN", "person_id": str(supplier), "total_amount": "60.00"}
-            await service.projects.unlink_shared_payable(company_id=company_id, project_id=project_id,
-                payable_document_id=first_dnf, measurement_ids=[order_ids[0]])
+            with pytest.raises(ConstructionDomainError, match="cancel"):
+                await service.projects.unlink_shared_payable(company_id=company_id, project_id=project_id,
+                    payable_document_id=first_dnf, measurement_ids=[order_ids[0]])
+            await session.rollback()
             listed = {row["id"]: row for row in await service.list(company_id, project_id)}
-            assert listed[contract["id"]]["remaining_amount"] == "100.00"
+            assert listed[contract["id"]]["remaining_amount"] == "40.00"
             payable = await session.scalar(select(ConstructionSubcontractPayable).where(
                 ConstructionSubcontractPayable.company_id == company_id))
-            assert payable.status == "REMOVED"
+            assert payable.status == "ACTIVE"
     finally:
         await cleanup(factory, company_id)
         await engine.dispose()

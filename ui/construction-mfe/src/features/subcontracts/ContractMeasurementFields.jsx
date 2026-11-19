@@ -45,7 +45,7 @@ export function ContractMeasurementFields({
       path: `/subcontracts/${pinned.contractId}?version_id=${pinned.versionId}`,
     })
       .then((sheet) => {
-        if (active) setPinnedTerms({ valid_from: sheet.valid_from, valid_to: sheet.valid_to });
+        if (active) setPinnedTerms(sheet);
       })
       .catch((failure) => {
         if (active) setError(failure.message);
@@ -61,30 +61,38 @@ export function ContractMeasurementFields({
     onChange("purpose", row ? "CONTRACT" : "SERVICE");
     if (row) {
       onChange("supplierPersonId", row.supplier_person_id);
+      onChange("contractPricingMode", row.pricing_mode);
       if (!form.documentType?.trim()) onChange("documentType", "NFS-e");
     }
   };
   const usesPinnedTerms = Boolean(pinnedTerms) && form.subcontractId === pinned.contractId;
   const terms = usesPinnedTerms ? pinnedTerms : rows.find((row) => row.id === form.subcontractId);
+  const options = usesPinnedTerms
+    ? rows.some((row) => row.id === pinned.contractId)
+      ? rows.map((row) => row.id === pinned.contractId ? { ...row, ...pinnedTerms, id: row.id } : row)
+      : [...rows, { ...pinnedTerms, id: pinned.contractId }]
+    : rows;
   const hint = form.purpose === "CONTROL"
     ? "OS de controle físico: registre serviços e FVS sem valor próprio. A DNF pode pagar um conjunto de OS depois."
     : form.purpose === "CONTRACT"
-      ? "Informe somente quantidades executadas. O contrato fornece empreiteiro, serviços e preços."
+      ? terms?.pricing_mode === "MEASURED"
+        ? "Escolha o serviço e a FVS e informe o valor executado em Itens e inspeção. O lançamento reserva o saldo do contrato."
+        : "Informe somente quantidades executadas. O contrato fornece empreiteiro, serviços e preços."
       : "Serviço avulso: crie a medição sem informar valores. Depois, em Itens e inspeção, informe o valor de cada serviço; a soma calcula o total da medição. Retenções podem ser informadas na edição, após incluir os serviços. Não consome saldo de contrato.";
   return (
-    <fieldset className={`${styles.panel} ${styles.contractBox}`}>
+    <fieldset className={`${styles.panel} ${styles.contractBox} ${styles.measurementPurpose}`}>
       <legend>
         Finalidade da medição
-        <InfoTip floating label="Sobre a finalidade da medição">
+        <InfoTip floating insideLabel label="Sobre a finalidade da medição">
           Vincule quando o serviço faz parte de um contrato liberado na aba
-          Empreitada: o valor sai do preço contratado e a aprovação consome o
-          saldo. Sem contrato, escolha serviço avulso com pagamento próprio ou OS de controle sem valor próprio.
+          Empreitada. Por planilha, o preço vem dos itens contratados. No valor global por serviços,
+          informe o valor executado e o lançamento reserva o saldo. Sem contrato, escolha serviço avulso
+          com pagamento próprio ou OS de controle sem valor próprio.
           <br /><br />{hint}
           {form.subcontractId && <>
             <br /><br />O fornecedor é o empreiteiro do contrato e não pode ser alterado
-              nesta medição. Após criar, informe as quantidades em Itens e inspeção;
-              os totais serão calculados pelos preços contratados e exibidos nos
-              detalhes. O líquido inclui a parcela futura de caução.
+              nesta medição. Em Itens e inspeção, informe os valores executados no contrato por
+              serviços ou as quantidades no contrato por planilha. O líquido inclui a parcela futura de caução.
             <br /><br />Retenções identificadas, documento fiscal e parcelas são conferidos
               no lançamento do título no financeiro, após a aprovação da medição.
           </>}
@@ -126,7 +134,8 @@ export function ContractMeasurementFields({
       )}
       {form.purpose === "CONTRACT" && <label>
         Contrato*
-        <select required
+        <select required className={styles.measurementContractSelect}
+          title={options.find((row) => row.id === form.subcontractId)?.title || undefined}
           value={form.subcontractId ?? ""}
           onChange={(e) => choose(e.target.value)}
           disabled={loading}
@@ -134,7 +143,7 @@ export function ContractMeasurementFields({
           <option value="">
             {loading ? "Carregando contratos..." : "Selecione um contrato liberado"}
           </option>
-          {rows.map((row) => (
+          {options.map((row) => (
             <option key={row.id} value={row.id}>
               {row.code} · {row.title} · Versão {row.released_version}
             </option>
@@ -142,9 +151,9 @@ export function ContractMeasurementFields({
         </select>
       </label>}
       {form.subcontractId && (
-        <label>
-          <span>Competência* <InfoTip floating label="Como informar a competência da medição">
-            A competência precisa estar dentro da vigência do contrato ou da versão usada nesta medição.
+        <label className={styles.competenceField}>
+          <span>Competência* <InfoTip floating insideLabel label="Como informar a competência da medição">
+            Data de referência desta medição no contrato, usada para conferir a vigência da versão contratada. Exemplo: 31/10/2026 para a medição de outubro. Não é o vencimento do pagamento nem o término do serviço. Precisa estar dentro da vigência do contrato ou da versão usada nesta medição.
           </InfoTip></span>
           <input
             type="date"
@@ -154,15 +163,16 @@ export function ContractMeasurementFields({
             value={form.competenceDate ?? ""}
             onChange={(event) => onChange("competenceDate", event.target.value)}
           />
-          {terms && (
-            <span className={styles.hint}>
-              {usesPinnedTerms ? "Vigência da versão usada nesta medição" : "Vigência do contrato"}:{" "}
-              {formatBusinessDate(terms.valid_from)} a {formatBusinessDate(terms.valid_to)}.
-            </span>
-          )}
+
         </label>
       )}
-      {form.purpose === "CONTRACT" && !loading && !error && !rows.length && (
+      {form.subcontractId && terms && (
+        <p className={styles.hint}>
+          {usesPinnedTerms ? "Vigência da versão usada nesta medição" : "Vigência do contrato"}:{" "}
+          {formatBusinessDate(terms.valid_from)} a {formatBusinessDate(terms.valid_to)}.
+        </p>
+      )}
+      {form.purpose === "CONTRACT" && !loading && !error && !options.length && (
         <p className={styles.hint}>Nenhum contrato liberado disponível. Cadastre e libere a planilha na aba Empreitada antes de medir por contrato.</p>
       )}
     </fieldset>

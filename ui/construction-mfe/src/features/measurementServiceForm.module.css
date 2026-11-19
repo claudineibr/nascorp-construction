@@ -1,0 +1,124 @@
+.form,
+.form * {
+  box-sizing: border-box;
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  min-width: 0;
+}
+
+.heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  color: var(--color-text);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.actions > button {
+  min-width: 0;
+  height: 2.4rem;
+  min-height: 2.4rem;
+  padding: 0 0.85rem;
+  font-size: 0.85rem;
+  line-height: 1.2;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) repeat(2, minmax(0, 1fr));
+  grid-template-areas:
+    "catalog catalog amount"
+    "description description description"
+    "inspector inspector start";
+  align-items: start;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.controlGrid {
+  grid-template-areas:
+    "catalog catalog catalog"
+    "description description description"
+    "inspector inspector start";
+}
+
+.grid > * {
+  min-width: 0;
+}
+
+.grid input,
+.grid select,
+.grid .inspector input {
+  width: 100%;
+  min-width: 0;
+  height: 2.6rem;
+  min-height: 2.6rem;
+  max-height: 2.6rem;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 400;
+}
+
+.catalog { grid-area: catalog; }
+.amount { grid-area: amount; }
+.description { grid-area: description; }
+.inspector { grid-area: inspector; }
+.start { grid-area: start; }
+
+.grid .catalog select {
+  position: relative;
+  padding-right: 2.25rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.catalog select::picker-icon {
+  position: absolute;
+  top: 50%;
+  right: 0.85rem;
+  transform: translateY(-50%);
+}
+
+.fieldLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.inspector > div > div:has(> input),
+.inspector > div > div:has(> span[title]) {
+  height: 2.6rem;
+}
+
+.grid .inspector input {
+  height: 100%;
+  min-height: 0;
+  max-height: none;
+}
+
+@media (width <= 760px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "catalog" "amount" "description" "inspector" "start";
+  }
+
+  .controlGrid {
+    grid-template-areas: "catalog" "description" "inspector" "start";
+  }
+}

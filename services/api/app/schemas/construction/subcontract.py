@@ -27,7 +27,7 @@ class SubcontractRequest(BaseModel):
     escrow_rate: Decimal = Field(default=0, ge=0, le=100, decimal_places=4)
     escrow_due_date: date | None = None
     notes: str | None = Field(default=None, max_length=4000)
-    pricing_mode: Literal["ITEMIZED", "GLOBAL"] = "ITEMIZED"
+    pricing_mode: Literal["ITEMIZED", "GLOBAL", "MEASURED"] = "ITEMIZED"
     global_amount: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
     items: list[SubcontractItemRequest] = Field(default_factory=list, max_length=990)
 
@@ -39,7 +39,7 @@ class SubcontractRequest(BaseModel):
             raise ValueError("Retenção e caução precisam deixar saldo líquido positivo.")
         if self.escrow_rate and self.escrow_due_date is None:
             raise ValueError("Informe a data prevista de liberação da caução.")
-        if self.pricing_mode == "GLOBAL":
+        if self.pricing_mode in {"GLOBAL", "MEASURED"}:
             if self.global_amount is None:
                 raise ValueError("Informe o valor total do contrato global.")
             if self.items:

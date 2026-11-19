@@ -5,7 +5,7 @@ import { InfoTip } from "../../components/InfoTip"
 import appStyles from "../../App.module.css"
 import styles from "./SharedPayables.module.css"
 import { payableStatusLabel } from "../measurementActions"
-import { listSharedPayables, unlinkSharedPayable } from "../../services/constructionApi"
+import { listSharedPayables } from "../../services/constructionApi"
 import { SharedPayableLinkModal, money } from "./SharedPayableLinkModal"
 import { ZeroValueOrders, day } from "./ZeroValueOrders"
 
@@ -15,145 +15,53 @@ const openPayable = (bridge, payable, onSaved, projectId) => {
   else window.open(path, "_blank", "noopener")
 }
 
-function SharedPayableOrdersModal({ bridge, projectId, payable, canUpdate, onClose, onChanged }) {
-  const canRemove = canUpdate && !payable.globalCoveredCount
-  const [selected, setSelected] = useState(() => new Set())
-  const [reloadKey, setReloadKey] = useState(0)
-  const [confirming, setConfirming] = useState(false)
-  const [saving, setSaving] = useState(false)
-
-  const remove = async () => {
-    if (!canRemove) return
-    setSaving(true)
-    try {
-      const result = await unlinkSharedPayable({
-        bridge,
-        projectId,
-        payableDocumentId: payable.id,
-        measurementIds: [...selected],
-      })
-      bridge?.feedback?.success?.(
-        `${result.affected} OS removida(s) do título ${payable.documentNumber ?? "sem número"}. Elas voltam a ficar sem título e podem ir para outro documento.`,
-      )
-      setSelected(new Set())
-      setConfirming(false)
-      setReloadKey((value) => value + 1)
-      onChanged()
-    } catch (removeError) {
-      bridge?.feedback?.error?.(removeError?.message ?? "Não foi possível remover as OS da DNF.")
-    } finally {
-      setSaving(false)
-    }
-  }
-
+function SharedPayableOrdersModal({ bridge, projectId, project, payable, onClose }) {
+  const [selected] = useState(() => new Set())
+  const Modal = bridge?.components?.Modal
+  const content = <div className={styles.section}>
+    {project && <p className={styles.notice}><strong>Obra: {project.name}</strong>{project.code ? ` · ${project.code}` : ""}</p>}
+    <p className={styles.notice}>Consulta das OS vinculadas. Depois de lançar o título, as OS não podem ser removidas manualmente.</p>
+    <ZeroValueOrders bridge={bridge} projectId={projectId} payableDocumentId={payable.id}
+      selected={selected} readOnly />
+  </div>
+  if (Modal) return <Modal isOpen title={`OS cobertas pelo título ${payable.documentNumber ?? "sem número"}`}
+    onClose={onClose} closeOnEsc closeOnOverlayClick dialogMaxWidth="1100px"
+    footer={<button type="button" className={appStyles.secondaryButton} onClick={onClose}>Fechar</button>}>
+    {content}
+  </Modal>
   return (
-    <div className={appStyles.modalOverlay} role="presentation" onClick={() => !saving && onClose()}>
-      <section
-        className={`${appStyles.modalCard} ${styles.wideModal}`}
-        role="dialog"
-        aria-modal="true"
+    <div className={appStyles.modalOverlay} role="presentation" onClick={onClose}>
+      <section className={`${appStyles.modalCard} ${styles.wideModal}`} role="dialog" aria-modal="true"
         aria-label={`OS cobertas pelo título ${payable.documentNumber ?? ""}`}
-        onClick={(event) => event.stopPropagation()}
-      >
+        onClick={(event) => event.stopPropagation()}>
         <header className={appStyles.modalHeader}>
-          <h3>
-            OS cobertas pelo título {payable.documentNumber ?? "sem número"} · {payable.personName || "Fornecedor"}
-          </h3>
-          <button type="button" className={appStyles.closeButton} onClick={onClose} disabled={saving}>
-            Fechar
-          </button>
+          <h3>OS cobertas pelo título {payable.documentNumber ?? "sem número"} · {payable.personName || "Fornecedor"}</h3>
+          <button type="button" className={appStyles.closeButton} onClick={onClose}>Fechar</button>
         </header>
         <div className={appStyles.modalBody}>
-          {payable.globalCoveredCount ? <p className={styles.notice}>As OS do contrato global só são liberadas ao cancelar o título no ERP.</p> : null}
-          <ZeroValueOrders
-            bridge={bridge}
-            projectId={projectId}
-            payableDocumentId={payable.id}
-            selected={selected}
-            onSelectedChange={setSelected}
-            reloadKey={reloadKey}
-            disabled={saving || !canRemove}
-          />
-          <div className={appStyles.modalFooter}>
-            <button type="button" className={appStyles.secondaryButton} onClick={onClose} disabled={saving}>
-              Fechar
-            </button>
-            {canRemove ? (
-              <button
-                type="button"
-                className={`${appStyles.secondaryButton} ${appStyles.dangerButton}`}
-                onClick={() => setConfirming(true)}
-                disabled={!selected.size || saving}
-              >
-                Remover {selected.size} OS do título
-              </button>
-            ) : null}
-          </div>
+          {content}
         </div>
       </section>
-      {confirming ? (
-        <div
-          className={appStyles.modalOverlay}
-          role="presentation"
-          onClick={(event) => {
-            event.stopPropagation()
-            if (!saving) setConfirming(false)
-          }}
-        >
-          <section
-            className={appStyles.modalCard}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Remover OS do título"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <header className={appStyles.modalHeader}>
-              <h3>Remover OS do título</h3>
-            </header>
-            <div className={appStyles.modalBody}>
-              <p>
-                Remover {selected.size} OS do título {payable.documentNumber ?? "sem número"}? O título no ERP não muda; as
-                OS voltam a ficar sem título e podem ser vinculadas a outro documento.
-              </p>
-              <div className={appStyles.modalFooter}>
-                <button
-                  type="button"
-                  className={appStyles.secondaryButton}
-                  onClick={() => setConfirming(false)}
-                  disabled={saving}
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  className={`${appStyles.secondaryButton} ${appStyles.dangerButton}`}
-                  onClick={remove}
-                  disabled={saving}
-                >
-                  {saving ? "Removendo..." : "Remover"}
-                </button>
-              </div>
-            </div>
-          </section>
-        </div>
-      ) : null}
     </div>
   )
 }
 
 export function SharedPayablesCardTitle() {
   return <>
-    Títulos da empreitada
+    Pagamentos da empreitada
     <InfoTip floating label="Sobre os documentos da empreitada e as OS cobertas">
-      Esta lista reúne os títulos que pagam as OS da obra, incluindo notas fiscais e documentos não fiscais.
+      Esta lista reúne os títulos vinculados às OS do contrato aberto, incluindo notas fiscais e documentos não fiscais.
       Vincular OS preserva o tipo e o número cadastrados em Contas a Pagar. A coluna Documento mostra o número
       e o tipo original. Número não informado indica que o título está sem número no cadastro.
-      Os títulos das medições são vinculados no próprio contrato e também aparecem aqui.
+      Criar título e Vincular título existente usam o contrato aberto. Consulte as OS de cada documento nas ações da linha.
     </InfoTip>
   </>
 }
 
-export function SharedPayablesSection({ bridge, projectId, renderActions }) {
+export function SharedPayablesSection({
+  bridge, projectId, project, renderActions, contractActions,
+  subcontractId = "", withoutContract = false, reloadKey = 0, onChanged,
+}) {
   const canUpdate = Boolean(bridge?.canUpdate?.("construction_measurements"))
   const canReadPayable = Boolean(bridge?.canRead?.("accounts_payable"))
   const [rows, setRows] = useState([])
@@ -165,18 +73,22 @@ export function SharedPayablesSection({ bridge, projectId, renderActions }) {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      setRows(await listSharedPayables({ bridge, projectId }))
+      setRows(await listSharedPayables({ bridge, projectId, subcontractId, withoutContract }))
       setError("")
     } catch (failure) {
       setError(failure?.message ?? "Não foi possível buscar os títulos da empreitada.")
     } finally {
       setLoading(false)
     }
-  }, [bridge, projectId])
+  }, [bridge, projectId, subcontractId, withoutContract])
 
   useEffect(() => {
     load()
-  }, [load])
+  }, [load, reloadKey])
+
+  const refreshPayments = async () => {
+    await Promise.all([load(), onChanged?.()])
+  }
 
   return (
     <section className={styles.section}>
@@ -191,7 +103,8 @@ export function SharedPayablesSection({ bridge, projectId, renderActions }) {
         >
           <RefreshCw size={16} aria-hidden="true" />
         </button>
-        {canUpdate ? (
+        {contractActions}
+        {canUpdate && !contractActions ? (
           <button type="button" className={appStyles.primaryButton} onClick={() => setLinkTarget({ payable: null })}>
             <Link2 size={16} aria-hidden="true" />
             Vincular OS sem valor
@@ -207,7 +120,7 @@ export function SharedPayablesSection({ bridge, projectId, renderActions }) {
         {loading ? (
           <p className={styles.empty}>Buscando títulos da empreitada...</p>
         ) : !rows.length ? (
-          <p className={styles.empty}>Nenhum título de empreitada vinculado a OS desta obra.</p>
+          <p className={styles.empty}>{subcontractId ? "Nenhum título vinculado às OS deste contrato." : withoutContract ? "Nenhum título vinculado a OS sem contrato." : "Nenhum título de empreitada vinculado a OS desta obra."}</p>
         ) : (
           <table className={styles.table}>
             <thead>
@@ -216,8 +129,8 @@ export function SharedPayablesSection({ bridge, projectId, renderActions }) {
                 <th>Fornecedor</th>
                 <th>Emissão</th>
                 <th>Valor</th>
-                <th>Situação</th>
-                <th>OS cobertas</th>
+                <th>Pagamento</th>
+                <th>OS</th>
                 <th>Ações</th>
               </tr>
             </thead>
@@ -234,7 +147,6 @@ export function SharedPayablesSection({ bridge, projectId, renderActions }) {
                   <td>{payableStatusLabel(row.status)}</td>
                   <td>
                     {row.coveredCount}
-                    {row.contractCoveredCount ? <small>do contrato</small> : null}
                   </td>
                   <td>
                     <div className={styles.rowActions}>
@@ -262,7 +174,7 @@ export function SharedPayablesSection({ bridge, projectId, renderActions }) {
                         <button
                           type="button"
                           className={styles.iconButton}
-                          onClick={() => openPayable(bridge, row, load, projectId)}
+                          onClick={() => openPayable(bridge, row, refreshPayments, projectId)}
                           title="Ver título no ERP"
                           aria-label={`Ver o título ${row.documentNumber ?? ""} no ERP`}
                         >
@@ -285,7 +197,7 @@ export function SharedPayablesSection({ bridge, projectId, renderActions }) {
           onClose={() => setLinkTarget(null)}
           onLinked={() => {
             setLinkTarget(null)
-            load()
+            refreshPayments()
           }}
         />
       ) : null}
@@ -293,10 +205,9 @@ export function SharedPayablesSection({ bridge, projectId, renderActions }) {
         <SharedPayableOrdersModal
           bridge={bridge}
           projectId={projectId}
+          project={project}
           payable={ordersTarget}
-          canUpdate={canUpdate}
           onClose={() => setOrdersTarget(null)}
-          onChanged={load}
         />
       ) : null}
     </section>

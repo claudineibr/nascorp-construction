@@ -56,11 +56,19 @@ class SubcontractService:
         return {"total_amount": str(money(Decimal(totals.get(row.id, (0, 0))[0]))),
             "remaining_amount": str(money(Decimal(totals.get(row.id, (0, 0))[1])))}
 
+    @staticmethod
+    def measured_amounts(row, totals):
+        committed = money(Decimal(totals.get(row.id, 0)))
+        return {"total_amount": str(money(row.global_amount)), "committed_amount": str(committed),
+            "remaining_amount": str(money(row.global_amount - committed))}
+
     async def list(self, company_id, project_id):
         rows = await self.repository.list(company_id, project_id)
         totals = await self.repository.item_totals(company_id, [row.id for row in rows])
         paid = await self.repository.global_paid_totals(company_id, [row.id for row in rows if row.pricing_mode == "GLOBAL"])
-        return [{**self.header(row), **self.amounts(row, totals, paid)} for row in rows]
+        measured = await self.repository.measured_totals(company_id, [row.id for row in rows if row.pricing_mode == "MEASURED"])
+        return [{**self.header(row), **(self.measured_amounts(row, measured) if row.pricing_mode == "MEASURED"
+            else self.amounts(row, totals, paid))} for row in rows]
 
     async def detail(self, company_id, contract_id, version_id=None):
         row = await self.get(company_id, contract_id)
@@ -77,6 +85,7 @@ class SubcontractService:
                 "remaining_quantity": str(max(Decimal("0"), Decimal(item["quantity"]) -
                     consumed.get(item["id"], Decimal("0"))))} for item in version.sheet["items"]]}
         paid = await self.repository.global_paid_totals(company_id, [row.id]) if row.pricing_mode == "GLOBAL" else {}
+        measured = await self.repository.measured_totals(company_id, [row.id]) if row.pricing_mode == "MEASURED" else {}
         return {**self.header(row), "items": [{"id": item.id, "sequence_number": item.sequence_number,
             "product_id": item.product_id, "service_template_id": item.service_template_id,
             "service_template_name": names.get(item.service_template_id),
@@ -87,7 +96,8 @@ class SubcontractService:
             for item in sorted(items, key=lambda item: item.sequence_number)],
             "remaining_amount": str(money(sum(((item.quantity - item.consumed_quantity) *
                 (item.material_unit_price + item.labor_unit_price) for item in items if item.active), Decimal("0")))),
-            **(self.amounts(row, {}, paid) if row.pricing_mode == "GLOBAL" else {})}
+            **(self.amounts(row, {}, paid) if row.pricing_mode == "GLOBAL" else {}),
+            **(self.measured_amounts(row, measured) if row.pricing_mode == "MEASURED" else {})}
 
     async def save(self, company_id, project_id, request, actor_user_id, contract_id=None):
         await self.projects.get_project(company_id=company_id, project_id=project_id)
@@ -116,6 +126,15 @@ class SubcontractService:
             if row.pricing_mode != request.pricing_mode and (
                     row.released_version or await self.repository.has_contract_activity(company_id, row.id)):
                 self.fail("A modalidade não pode mudar depois de liberar o contrato.")
+            if row.pricing_mode == "MEASURED":
+                totals = await self.repository.measured_totals(company_id, [row.id])
+                committed = Decimal(totals.get(row.id, 0))
+                if committed > 0 and request.pricing_mode != "MEASURED":
+                    self.fail("A modalidade não pode mudar depois de lançar serviços.")
+                if request.pricing_mode == "MEASURED" and request.global_amount < committed:
+                    self.fail(f"O valor total não pode ficar abaixo dos serviços lançados ({brl(committed)}).")
+                if row.supplier_person_id != request.supplier_person_id and committed > 0:
+                    self.fail("O empreiteiro não pode mudar depois de lançar serviços no contrato.")
             if request.pricing_mode == "GLOBAL" and request.global_amount is not None:
                 paid = money(Decimal((await self.repository.global_paid_totals(company_id, [row.id])).get(row.id, 0)))
                 if request.global_amount < paid:
@@ -158,7 +177,7 @@ class SubcontractService:
             item.active = True
         for field in ("code", "title", "supplier_person_id", "valid_from", "valid_to", "retention_rate", "escrow_rate", "escrow_due_date", "notes", "pricing_mode"):
             setattr(row, field, getattr(request, field))
-        row.global_amount = request.global_amount if request.pricing_mode == "GLOBAL" else None
+        row.global_amount = request.global_amount if request.pricing_mode in {"GLOBAL", "MEASURED"} else None
         row.code, row.title, row.status = row.code.strip(), row.title.strip(), "DRAFT"
         if not row.code or not row.title:
             self.fail("Código e título do contrato são obrigatórios.")
@@ -190,7 +209,7 @@ class SubcontractService:
             self.fail("Somente uma planilha em preparação pode ser liberada.")
         detail = await self.detail(company_id, contract_id)
         active = [item for item in detail["items"] if item["active"]]
-        if row.pricing_mode == "GLOBAL":
+        if row.pricing_mode in {"GLOBAL", "MEASURED"}:
             if not row.global_amount or row.global_amount <= 0:
                 self.fail("Informe o valor total do contrato global antes de liberar.")
             active = []
@@ -281,9 +300,16 @@ class SubcontractService:
             )
 
     async def contract_item(self, measurement, contract_item_id, quantity):
+        contract = await self.get(measurement.company_id, measurement.subcontract_id)
+        if contract.pricing_mode == "MEASURED":
+            if contract_item_id is not None or quantity is not None:
+                self.fail("No valor global por serviços, informe o serviço e o valor executado.")
+            version = await self.measurement_version(measurement.company_id, contract, measurement.subcontract_version_id)
+            if contract.status != "RELEASED" or version is None:
+                self.fail("Libere o contrato antes de lançar serviços.")
+            return version, None
         if not measurement.subcontract_id or quantity is None or quantity <= 0:
             self.fail("Informe contrato, item contratado e quantidade positiva para a medição.")
-        contract = await self.get(measurement.company_id, measurement.subcontract_id)
         self.assert_itemized(contract)
         version = await self.measurement_version(measurement.company_id, contract, measurement.subcontract_version_id)
         if contract.status != "RELEASED" or version is None:
@@ -298,6 +324,10 @@ class SubcontractService:
     async def bind_item(self, measurement, item, contract_item_id, quantity, terms=None):
         version, snapshot = terms if terms is not None else await self.contract_item(measurement, contract_item_id, quantity)
         measurement.subcontract_version_id = version.id
+        if snapshot is None:
+            if not item.service_template_id or item.amount is None or item.amount <= 0:
+                self.fail("Escolha a FVS do serviço e informe um valor positivo.")
+            return
         item.subcontract_item_id, item.quantity, item.contract_snapshot = contract_item_id, quantity, snapshot
         service_id = snapshot.get("service_template_id")
         expected_service_id = UUID(service_id) if service_id else None
@@ -328,17 +358,42 @@ class SubcontractService:
         return contract
 
     async def ensure_measurement_balance(self, contract):
+        if contract.pricing_mode == "MEASURED":
+            totals = await self.repository.measured_totals(contract.company_id, [contract.id])
+            if Decimal(totals.get(contract.id, 0)) >= contract.global_amount:
+                self.fail("O contrato não possui saldo disponível para nova medição.")
+            return
         items = await self.repository.items(contract.company_id, contract.id)
         if not any(item.active and item.quantity > item.consumed_quantity for item in items):
             _logger.info(f"[subcontract.measurement] sem_saldo: company_id={contract.company_id} contract_id={contract.id}")
             self.fail(f"O contrato {contract.code} não possui saldo disponível para nova medição. "
                 "Não há quantitativo ativo restante para medir. Revise o contrato e as medições existentes.")
 
+    async def reserve_measured(self, measurement, amount):
+        contract = await self.get(measurement.company_id, measurement.subcontract_id, True)
+        if contract.pricing_mode != "MEASURED":
+            return
+        if contract.status != "RELEASED":
+            self.fail("Libere o contrato antes de lançar serviços.")
+        totals = await self.repository.measured_totals(measurement.company_id, [contract.id], measurement.id)
+        available = money(contract.global_amount - Decimal(totals.get(contract.id, 0)))
+        if amount > available:
+            _logger.info(f"[subcontract] service_over_balance: company_id={measurement.company_id} contract_id={contract.id} measurement_id={measurement.id}")
+            self.fail(f"O valor dos serviços ({brl(amount)}) passa do saldo disponível do contrato ({brl(available)}).")
+        if measurement.subcontract_version_id is None:
+            version = await self.measurement_version(measurement.company_id, contract)
+            if version is None:
+                self.fail("Libere a versão do contrato antes de lançar serviços.")
+            measurement.subcontract_version_id = version.id
+        _logger.info(f"[subcontract] services_reserved: company_id={measurement.company_id} contract_id={contract.id} measurement_id={measurement.id} amount={amount}")
+
     async def financial_amounts(self, measurement, gross):
         version = await self.repository.version_by_id(measurement.company_id, measurement.subcontract_id, measurement.subcontract_version_id)
         if version is None:
             self.fail("Adicione itens da planilha liberada antes de calcular a medição.")
         deductions = await self.repository.deductions(measurement.company_id, measurement.id)
+        if version.sheet.get("pricing_mode") == "MEASURED" and any(row.status != "REVERSED" for row in deductions):
+            self.fail("Faturamento direto de material exige contrato por planilha de serviços.")
         measurement.direct_billing_amount = sum((row.amount for row in deductions if row.status != "REVERSED"), Decimal("0"))
         invoice = gross - measurement.direct_billing_amount
         measurement.retentions_amount = money(invoice * Decimal(version.sheet["retention_rate"]) / 100)
@@ -361,6 +416,9 @@ class SubcontractService:
         if version is None:
             self.fail("A versão da planilha não pertence a este contrato.")
         self.assert_competence(version, measurement.competence_date)
+        if contract.pricing_mode == "MEASURED":
+            await self.reserve_measured(measurement, measurement.gross_amount)
+            return
         active = await self.repository.consumptions(measurement.company_id, measurement.id)
         if active:
             return
@@ -479,7 +537,7 @@ class SubcontractService:
             return {"id": measurement.id, "reversal_pending": True}
         if measurement.external_accounts_payable_shared:
             _logger.info("construction.subcontract.reversal_refused reason=shared_payable measurement_id=%s", measurement.id)
-            self.fail("A medição está numa DNF do contrato: remova-a da DNF em DNFs da empreitada (Ver OS cobertas) antes de estornar.")
+            self.fail("A medição está vinculada a uma DNF do contrato e não permite remoção manual das OS nem estorno por esta tela. Confira o documento e seus pagamentos no Contas a Pagar antes de corrigir o lançamento.")
         if measurement.external_accounts_payable_id is None:
             await self.reverse_consumption(measurement, actor_user_id)
             measurement.status, measurement.rejection_reason = "rejected", reason.strip()
@@ -527,6 +585,8 @@ class SubcontractService:
         if row.status in {"CLOSED", "CANCELED"}:
             self.fail("Este contrato já está encerrado.")
         items = await self.repository.items(company_id, contract_id, True)
+        if cancel and row.pricing_mode == "MEASURED" and Decimal((await self.repository.measured_totals(company_id, [row.id])).get(row.id, 0)) > 0:
+            self.fail("Remova os serviços lançados antes de cancelar o contrato; use encerramento para preservar o histórico.")
         if cancel and row.pricing_mode == "GLOBAL" and await self.repository.has_contract_activity(company_id, contract_id):
             self.fail("Tire as OS e as DNFs do contrato global antes de cancelá-lo; use encerramento para parar de vincular OS.")
         if cancel and any(item.consumed_quantity > 0 for item in items):

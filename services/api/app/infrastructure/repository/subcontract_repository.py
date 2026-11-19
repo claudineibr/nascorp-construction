@@ -34,6 +34,20 @@ class SubcontractRepository:
             *scope_conditions(ConstructionSubcontractItem, self.scope)).order_by(ConstructionSubcontractItem.id)
         return (await self.session.scalars(query.with_for_update().execution_options(populate_existing=True) if lock else query)).all()
 
+    async def measured_totals(self, company_id, contract_ids, exclude_measurement_id=None):
+        if not contract_ids:
+            return {}
+        query = select(ConstructionMeasurement.subcontract_id,
+            func.coalesce(func.sum(ConstructionMeasurement.gross_amount), 0)).where(
+            ConstructionMeasurement.company_id == company_id,
+            ConstructionMeasurement.subcontract_id.in_(contract_ids),
+            ConstructionMeasurement.deleted_at.is_(None),
+            *scope_conditions(ConstructionMeasurement, self.scope))
+        if exclude_measurement_id is not None:
+            query = query.where(ConstructionMeasurement.id != exclude_measurement_id)
+        rows = await self.session.execute(query.group_by(ConstructionMeasurement.subcontract_id))
+        return dict(rows.all())
+
     async def item_totals(self, company_id, contract_ids):
         if not contract_ids:
             return {}

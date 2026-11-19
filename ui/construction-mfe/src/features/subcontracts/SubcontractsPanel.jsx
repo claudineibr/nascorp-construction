@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { FileText, RefreshCw } from "lucide-react";
 import { InfoTip } from "../../components/InfoTip";
 import { PersonPicker } from "../../components/PersonPicker";
@@ -10,6 +10,7 @@ import { money } from "../sharedPayables/SharedPayableLinkModal";
 import { day } from "../sharedPayables/ZeroValueOrders";
 import { Dialog, DirectBillsSection } from "./DirectBillsSection";
 import { ContractPayablesSection } from "./ContractPayablesSection";
+import { SharedPayablesCardTitle, SharedPayablesSection } from "../sharedPayables/SharedPayablesSection";
 import { GlobalOrdersSection } from "./GlobalOrdersSection";
 import { SubcontractItemsTable, itemTotal } from "./SubcontractItemsTable";
 import { currencyDecimal, currencyFromNumber, currencyNumber, formatCurrencyInput } from "../../utils/currencyInput";
@@ -85,8 +86,8 @@ const sheetPayload = (draft) => {
   );
   body.escrow_due_date = draft.escrow_due_date || null;
   body.pricing_mode = draft.pricing_mode ?? "ITEMIZED";
-  body.global_amount = body.pricing_mode === "GLOBAL" ? currencyDecimal(draft.global_amount) : null;
-  body.items = body.pricing_mode === "GLOBAL" ? [] : draft.items
+  body.global_amount = body.pricing_mode !== "ITEMIZED" ? currencyDecimal(draft.global_amount) : null;
+  body.items = body.pricing_mode !== "ITEMIZED" ? [] : draft.items
     .filter((item) => item.active !== false)
     .map((item) => Object.fromEntries(
       [
@@ -119,7 +120,7 @@ function StatusGuide({ draft, blocker }) {
   if (!draft.id) {
     return (
       <p className={styles.guide}>
-        Preencha os dados e os itens e clique em <strong>Salvar planilha</strong>.
+        {draft.pricing_mode === "ITEMIZED" ? "Preencha os dados e os itens" : "Preencha os dados e o valor total"} e clique em <strong>Salvar planilha</strong>.
         Depois, libere a versão para que as medições possam usar o contrato.
       </p>
     );
@@ -135,19 +136,11 @@ function StatusGuide({ draft, blocker }) {
       </p>
     );
   }
-  if (draft.status === "RELEASED") {
-    return (
-      <p className={styles.guide}>
-        As medições da obra já podem consumir o saldo deste contrato. Alterar e
-        salvar a planilha cria uma nova versão em preparação, que precisa ser
-        liberada de novo.
-      </p>
-    );
-  }
+  if (draft.status === "RELEASED") return null;
   return (
     <p className={styles.guide}>
       Contrato {statusLabels[draft.status]?.toLowerCase()}
-      {draft.closure_reason ? `: ${draft.closure_reason}` : ""}. Somente
+      {draft.closure_reason ? `: ${draft.closure_reason.replace(/\.+$/, "")}` : ""}. Somente
       consulta.
     </p>
   );
@@ -168,24 +161,27 @@ export function SubcontractsCardTitle() {
   );
 }
 
-export function SubcontractsPanel({ bridge, projectId, renderActions }) {
+export function SubcontractsPanel({ bridge, projectId, project, renderActions, RowActionsMenu }) {
   return (
     <SubcontractsWorkspace
       key={`${bridge.companyContext?.companyId}:${projectId}:${bridge.token}`}
       bridge={bridge}
       projectId={projectId}
+      project={project}
       renderActions={renderActions}
+      RowActionsMenu={RowActionsMenu}
     />
   );
 }
 
-function SubcontractsWorkspace({ bridge, projectId, renderActions }) {
+function SubcontractsWorkspace({ bridge, projectId, project, renderActions, RowActionsMenu }) {
   const canCreate = Boolean(bridge?.canCreate?.("construction_measurements"));
   const canUpdate = Boolean(bridge?.canUpdate?.("construction_measurements"));
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState(null);
   const [savedSheet, setSavedSheet] = useState(null);
+  const [payablesRevision, setPayablesRevision] = useState(0);
   const dirty = Boolean(draft && JSON.stringify(sheetPayload(draft)) !== savedSheet);
   const [bills, setBills] = useState([]);
   const [services, setServices] = useState({ items: [], restricted: false });
@@ -258,6 +254,9 @@ function SubcontractsWorkspace({ bridge, projectId, renderActions }) {
     } finally {
       if (alive.current) setBusy(false);
     }
+  };
+  const refreshContract = async () => {
+    await Promise.all([open(draft.id), load()]);
   };
   const execute = async (path, method, body, message) => {
     setBusy(true);
@@ -339,7 +338,9 @@ function SubcontractsWorkspace({ bridge, projectId, renderActions }) {
     (item) => Number(item.consumed_quantity ?? 0) > 0,
   );
   const globalMode = draft?.pricing_mode === "GLOBAL";
-  const contractTotal = globalMode
+  const measuredMode = draft?.pricing_mode === "MEASURED";
+  const totalMode = globalMode || measuredMode;
+  const contractTotal = totalMode
     ? currencyNumber(draft?.global_amount ?? "")
     : (draft?.items ?? [])
       .filter((item) => item.active !== false)
@@ -347,100 +348,11 @@ function SubcontractsWorkspace({ bridge, projectId, renderActions }) {
   const releaseBlocker = dirty
     ? "Salve a planilha antes de liberar."
     : contractTotal <= 0
-      ? globalMode
+      ? totalMode
         ? "Informe o valor total do contrato global e salve antes de liberar."
         : "O total do contrato está em R$ 0,00. Informe o preço de material ou de mão de obra dos itens e salve antes de liberar."
       : "";
-  return (
-    <section className={styles.panel}>
-      {renderActions(<>
-        {canCreate && (
-          <button
-            type="button"
-            className={appStyles.primaryButton}
-            disabled={busy}
-            onClick={() => {
-              setDraft(emptyContract());
-              setBills([]);
-              setSavedSheet(null);
-              setError("");
-            }}
-          >
-            Novo contrato de empreitada
-          </button>
-        )}
-        <button
-          type="button"
-          className={styles.iconButton}
-          disabled={busy || loading}
-          onClick={load}
-          title="Atualizar contratos"
-          aria-label="Atualizar contratos"
-        >
-          <RefreshCw size={16} aria-hidden="true" />
-        </button>
-      </>)}
-      {error && (
-        <p role="alert" className={styles.alertText}>
-          {error}
-        </p>
-      )}
-      <div className={styles.tableWrap}>
-        <table className={styles.table}>
-          <thead>
-            <tr>
-              <th>Código</th>
-              <th>Contrato</th>
-              <th>Situação</th>
-              <th>Vigência</th>
-              <th>Valor contratado</th>
-              <th>Saldo</th>
-              <th aria-label="Ações" />
-            </tr>
-          </thead>
-          <tbody>
-            {!rows.length && (
-              <tr>
-                <td colSpan={7} className={styles.empty}>
-                  {loading
-                    ? "Carregando..."
-                    : "Nenhum contrato de empreitada nesta obra."}
-                </td>
-              </tr>
-            )}
-            {rows.map((row) => (
-              <tr
-                key={row.id}
-                className={draft?.id === row.id ? styles.chosen : undefined}
-              >
-                <td>{row.code}</td>
-                <td>{row.title}</td>
-                <td>
-                  <StatusPill status={row.status} version={row.released_version} />
-                </td>
-                <td>
-                  {day(row.valid_from)} a {day(row.valid_to)}
-                </td>
-                <td className={styles.numeric}>{money(row.total_amount)}</td>
-                <td className={styles.numeric}>{money(row.remaining_amount)}</td>
-                <td>
-                  <button
-                    type="button"
-                    className={styles.iconButton}
-                    disabled={busy}
-                    onClick={() => open(row.id)}
-                    title="Abrir contrato"
-                    aria-label={`Abrir o contrato ${row.code}`}
-                  >
-                    <FileText size={16} aria-hidden="true" />
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {draft && (
+  const contractEditor = draft && (
         <section className={styles.editor}>
           <header className={styles.editorHeader}>
             <div className={styles.editorTitle}>
@@ -451,6 +363,28 @@ function SubcontractsWorkspace({ bridge, projectId, renderActions }) {
                 <StatusPill status={draft.status} version={draft.released_version} />
               )}
             </div>
+            <div className={styles.actions}>
+            {draft.id && canUpdate && draft.status === "DRAFT" && (
+              <button type="button" className={appStyles.primaryButton}
+                disabled={busy || Boolean(releaseBlocker)} title={releaseBlocker || undefined}
+                onClick={() => execute(`/subcontracts/${draft.id}/release`, "POST", null, "Versão da planilha liberada.")}>
+                Liberar versão
+              </button>
+            )}
+            {draft.id && canUpdate && draft.status !== "CANCELED" && (
+              <RowActionsMenu label="Ações do contrato" busy={busy} actions={[
+                { key: "close", label: "Encerrar saldo", visible: draft.status === "RELEASED",
+                  disabled: busy, onSelect: () => setClosure("close") },
+                { key: "cancel", label: "Cancelar contrato", visible: ["DRAFT", "RELEASED"].includes(draft.status),
+                  disabled: busy || measuredAny, danger: true,
+                  title: measuredAny ? "Contrato com medição não pode ser cancelado: estorne as medições ou encerre o saldo." : undefined,
+                  onSelect: () => setClosure("cancel") },
+                { key: "reopen", label: "Reabrir saldo", visible: draft.status === "CLOSED",
+                  disabled: busy || (globalMode && Number(draft.paid_amount) > 0),
+                  title: globalMode && Number(draft.paid_amount) > 0 ? "Cancele o título no ERP para liberar as OS e o contrato global." : undefined,
+                  onSelect: () => execute(`/subcontracts/${draft.id}/reopen`, "POST", null, "Contrato reaberto.") },
+              ]} />
+            )}
             <button
               type="button"
               className={appStyles.secondaryButton}
@@ -462,14 +396,13 @@ function SubcontractsWorkspace({ bridge, projectId, renderActions }) {
             >
               Fechar
             </button>
+            </div>
           </header>
           <StatusGuide draft={draft} blocker={releaseBlocker} />
           <form className={styles.form} onSubmit={save}>
-            <fieldset className={styles.block} disabled={readOnly}>
-              <div className={styles.blockHeader}>
-                <h4>Dados do contrato</h4>
-                <p className={styles.hint}>* Campo obrigatório</p>
-              </div>
+            <details className={styles.block} open={!draft.id}>
+              <summary className={styles.contractDetailsToggle}>Dados do contrato</summary>
+              <fieldset className={styles.contractFields} disabled={readOnly}>
               <div className={`${styles.fields} ${styles.contractIdentity}`}>
                 <label>
                   Código*
@@ -499,6 +432,7 @@ function SubcontractsWorkspace({ bridge, projectId, renderActions }) {
                     onChange={(e) => patch({ pricing_mode: e.target.value })}
                   >
                     <option value="ITEMIZED">Por planilha de serviços</option>
+                    <option value="MEASURED">Valor global por serviços</option>
                     <option value="GLOBAL">Valor global (OS sem valor)</option>
                   </select>
                 </label>
@@ -532,7 +466,7 @@ function SubcontractsWorkspace({ bridge, projectId, renderActions }) {
                     onChange={(e) => patch({ valid_to: e.target.value })}
                   />
                 </label>
-                {globalMode && (
+                {totalMode && (
                   <label>
                     Valor total do contrato*
                     <input
@@ -589,23 +523,24 @@ function SubcontractsWorkspace({ bridge, projectId, renderActions }) {
                   />
                 </label>
               </div>
-            </fieldset>
-            {globalMode ? (
+              </fieldset>
+            </details>
+            {totalMode ? (
               <section className={styles.block}>
                 <div className={styles.blockHeader}>
-                  <h4>Contrato por valor global
+                  <h4>Resumo financeiro
                   <InfoTip floating label="Sobre o contrato por valor global">
-                    Não há planilha de serviços. Depois de liberar, vincule as
-                    OS sem valor do empreiteiro ao lançar o título
-                    em Títulos das medições do contrato. A soma dos títulos não passa
-                    do valor total.
+                    {measuredMode
+                      ? "Defina o valor total e libere o contrato. Em cada medição, escolha o serviço e sua FVS e informe o valor executado. Os serviços lançados reservam o saldo do contrato. Agrupe as medições aprovadas por etapa e período para gerar o título mensal."
+                      : "Depois de liberar, vincule as OS sem valor do empreiteiro ao lançar o título em Pagamentos da empreitada."}
                   </InfoTip></h4>
                 </div>
                 {draft.id && (
-                  <p className={styles.hint}>
-                    Valor total {money(draft.total_amount)} · pago em títulos {money(draft.paid_amount)} ·
-                    saldo {money(draft.remaining_amount)}
-                  </p>
+                  <dl className={styles.financialSummary}>
+                    <div><dt>Valor contratado</dt><dd>{money(draft.total_amount)}</dd></div>
+                    <div><dt>{measuredMode ? "Serviços lançados" : "Vinculado em títulos"}</dt><dd>{money(measuredMode ? draft.committed_amount : draft.paid_amount)}</dd></div>
+                    <div><dt>Saldo disponível</dt><dd>{money(draft.remaining_amount)}</dd></div>
+                  </dl>
                 )}
               </section>
             ) : <section className={styles.block}>
@@ -635,7 +570,7 @@ function SubcontractsWorkspace({ bridge, projectId, renderActions }) {
                 onRemove={removeItem}
               />
             </section>}
-            {!readOnly && (
+            {!readOnly && (!draft.id || dirty) && (
               <div className={styles.saveBar}>
                 {draft.status === "RELEASED" && (
                   <span className={styles.hint}>
@@ -648,83 +583,13 @@ function SubcontractsWorkspace({ bridge, projectId, renderActions }) {
               </div>
             )}
           </form>
-          {draft.id && canUpdate && (
-            <section className={styles.block}>
-              <div className={styles.blockHeader}>
-                <h4>Situação do contrato</h4>
-              </div>
-              <div className={styles.actions}>
-                {draft.status === "DRAFT" && (
-                  <button
-                    type="button"
-                    className={appStyles.primaryButton}
-                    disabled={busy || Boolean(releaseBlocker)}
-                    title={releaseBlocker || undefined}
-                    onClick={() =>
-                      execute(
-                        `/subcontracts/${draft.id}/release`,
-                        "POST",
-                        null,
-                        "Versão da planilha liberada.",
-                      )
-                    }
-                  >
-                    Liberar versão
-                  </button>
-                )}
-                {draft.status === "RELEASED" && (
-                  <button
-                    type="button"
-                    className={appStyles.secondaryButton}
-                    disabled={busy}
-                    onClick={() => setClosure("close")}
-                  >
-                    Encerrar saldo
-                  </button>
-                )}
-                {["DRAFT", "RELEASED"].includes(draft.status) && (
-                  <button
-                    type="button"
-                    className={`${appStyles.secondaryButton} ${appStyles.dangerButton}`}
-                    disabled={busy || measuredAny}
-                    title={
-                      measuredAny
-                        ? "Contrato com medição não pode ser cancelado: estorne as medições ou encerre o saldo."
-                        : undefined
-                    }
-                    onClick={() => setClosure("cancel")}
-                  >
-                    Cancelar contrato
-                  </button>
-                )}
-                {draft.status === "CLOSED" && (
-                  <button
-                    type="button"
-                    className={appStyles.secondaryButton}
-                    disabled={busy || (globalMode && Number(draft.paid_amount) > 0)}
-                    title={globalMode && Number(draft.paid_amount) > 0 ? "Cancele o título no ERP para liberar as OS e o contrato global." : undefined}
-                    onClick={() =>
-                      execute(
-                        `/subcontracts/${draft.id}/reopen`,
-                        "POST",
-                        null,
-                        "Contrato reaberto.",
-                      )
-                    }
-                  >
-                    Reabrir saldo
-                  </button>
-                )}
-              </div>
-            </section>
-          )}
           {draft.id && globalMode && (
             <GlobalOrdersSection
               bridge={bridge}
               contract={draft}
             />
           )}
-          {draft.id && !globalMode && (
+          {draft.id && !totalMode && (
             <DirectBillsSection
               bridge={bridge}
               projectId={projectId}
@@ -755,17 +620,136 @@ function SubcontractsWorkspace({ bridge, projectId, renderActions }) {
             />
           )}
           {draft.id && (
-            <ContractPayablesSection
-              bridge={bridge}
-              projectId={projectId}
-              contract={draft}
-              canUpdate={canUpdate}
-              dirty={dirty}
-              onChanged={() => open(draft.id)}
-            />
+      <section className={styles.block}>
+        <SharedPayablesSection
+          bridge={bridge}
+          projectId={projectId}
+          project={project}
+          key={draft.id}
+          subcontractId={draft.id}
+          reloadKey={payablesRevision}
+          onChanged={refreshContract}
+          contractActions={draft?.id ? <ContractPayablesSection key={draft.id}
+            bridge={bridge} projectId={projectId} contract={draft} canUpdate={canUpdate} dirty={dirty}
+            onChanged={async () => {
+              setPayablesRevision((value) => value + 1);
+              await refreshContract();
+            }}
+          /> : null}
+          renderActions={(actions) => <div className={styles.blockHeader}>
+            <div>
+              <h4><SharedPayablesCardTitle /></h4>
+            </div>
+            <div className={styles.actions}>{actions}</div>
+          </div>}
+        />
+      </section>
           )}
         </section>
+  );
+  return (
+    <section className={styles.panel}>
+      {renderActions(<>
+        {canCreate && (
+          <button
+            type="button"
+            className={appStyles.primaryButton}
+            disabled={busy}
+            onClick={() => {
+              setDraft(emptyContract());
+              setBills([]);
+              setSavedSheet(null);
+              setError("");
+            }}
+          >
+            Novo contrato de empreitada
+          </button>
+        )}
+        <button
+          type="button"
+          className={styles.iconButton}
+          disabled={busy || loading}
+          onClick={load}
+          title="Atualizar contratos"
+          aria-label="Atualizar contratos"
+        >
+          <RefreshCw size={16} aria-hidden="true" />
+        </button>
+      </>)}
+      {error && (
+        <p role="alert" className={styles.alertText}>
+          {error}
+        </p>
       )}
+      {draft && !draft.id && contractEditor}
+      <div className={styles.tableWrap}>
+        <table className={styles.table}>
+          <thead>
+            <tr>
+              <th>Código</th>
+              <th>Contrato</th>
+              <th>Situação</th>
+              <th>Vigência</th>
+              <th>Valor contratado</th>
+              <th>Saldo</th>
+              <th aria-label="Ações" />
+            </tr>
+          </thead>
+          <tbody>
+            {!rows.length && (
+              <tr>
+                <td colSpan={7} className={styles.empty}>
+                  {loading
+                    ? "Carregando..."
+                    : "Nenhum contrato de empreitada nesta obra."}
+                </td>
+              </tr>
+            )}
+            {rows.map((row) => (
+              <Fragment key={row.id}>
+              <tr
+                className={`${styles.contractRow} ${draft?.id === row.id ? styles.chosen : ""}`}
+              >
+                <td data-label="Código">{row.code}</td>
+                <td data-label="Contrato">{row.title}</td>
+                <td data-label="Situação">
+                  <StatusPill status={row.status} version={row.released_version} />
+                </td>
+                <td data-label="Vigência">
+                  {day(row.valid_from)} a {day(row.valid_to)}
+                </td>
+                <td data-label="Valor contratado" className={styles.numeric}>{money(row.total_amount)}</td>
+                <td data-label="Saldo" className={styles.numeric}>{money(row.remaining_amount)}</td>
+                <td>
+                  <button
+                    type="button"
+                    className={styles.iconButton}
+                    disabled={busy}
+                    onClick={() => open(row.id)}
+                    aria-expanded={draft?.id === row.id}
+                    aria-controls={`contract-${row.id}`}
+                    title="Abrir contrato"
+                    aria-label={`Abrir o contrato ${row.code}`}
+                  >
+                    <FileText size={16} aria-hidden="true" />
+                  </button>
+                </td>
+              </tr>
+              {draft?.id === row.id && <tr id={`contract-${row.id}`} className={styles.expandedRow}>
+                <td colSpan={7} className={styles.expandedCell}>{contractEditor}</td>
+              </tr>}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <details className={styles.block}>
+        <summary className={styles.contractDetailsToggle}>OS sem contrato</summary>
+        <SharedPayablesSection bridge={bridge} projectId={projectId} project={project} withoutContract
+          renderActions={(actions) => <div className={styles.blockHeader}>
+            <h4>Pagamentos de OS sem contrato</h4><div className={styles.actions}>{actions}</div>
+          </div>} />
+      </details>
       {closure && draft && (
         <Dialog
           title={closure === "cancel" ? "Cancelar contrato" : "Encerrar saldo"}

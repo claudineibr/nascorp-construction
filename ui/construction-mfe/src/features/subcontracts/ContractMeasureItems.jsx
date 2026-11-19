@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowDownToLine, Plus } from "lucide-react";
+import { InfoTip } from "../../components/InfoTip";
 import { PersonPicker } from "../../components/PersonPicker";
 import { subcontractRequest } from "../../services/constructionApi";
 import { money } from "../sharedPayables/SharedPayableLinkModal";
@@ -20,6 +21,7 @@ export function ContractMeasureItems({
   serviceTemplates,
   saving,
   onCreateItems,
+  onPricingMode,
 }) {
   const [contract, setContract] = useState(null);
   const [error, setError] = useState("");
@@ -36,7 +38,10 @@ export function ContractMeasureItems({
       path: `/subcontracts/${measurement.subcontractId}${measurement.subcontractVersionId ? `?version_id=${measurement.subcontractVersionId}` : ""}`,
     })
       .then((value) => {
-        if (active) setContract(value);
+        if (active) {
+          setContract(value);
+          onPricingMode?.(value.pricing_mode);
+        }
       })
       .catch((failure) => {
         if (active) setError(failure.message);
@@ -44,7 +49,15 @@ export function ContractMeasureItems({
     return () => {
       active = false;
     };
-  }, [bridge, measurement.subcontractId, measurement.subcontractVersionId, attempt]);
+  }, [bridge, measurement.subcontractId, measurement.subcontractVersionId, attempt, onPricingMode]);
+  if (error) return <section className={`${appStyles.card} ${styles.panel}`}>
+    <p role="alert" className={styles.alertText}>{error}</p>
+    <button type="button" className={appStyles.secondaryButton} onClick={() => setAttempt((value) => value + 1)}>
+      Tentar novamente
+    </button>
+  </section>;
+  if (!contract) return <div className={appStyles.card} role="status">Carregando modalidade do contrato...</div>;
+  if (contract.pricing_mode === "MEASURED") return null;
   const serviceNames = Object.fromEntries(
     (serviceTemplates ?? []).map((service) => [service.id, service.name]),
   );
@@ -101,22 +114,11 @@ export function ContractMeasureItems({
           </p>
         </div>
       </div>
-      {error && (
-        <div className={styles.loadError} role="alert">
-          <span>{error}</span>
-          <button
-            type="button"
-            className={appStyles.secondaryButton}
-            onClick={() => setAttempt((value) => value + 1)}
-          >
-            Tentar novamente
-          </button>
-        </div>
-      )}
       <div className={styles.inspectorRow}>
         <PersonPicker
           bridge={bridge}
           label="Inspetor responsável"
+          labelHelp={<InfoTip floating insideLabel label="Sobre o inspetor responsável">Pessoa responsável por verificar a execução. O parecer da FVS é registrado pelo próprio inspetor da rodada.</InfoTip>}
           value={inspectorPersonId}
           onChange={setInspectorPersonId}
           knownPeople={people}

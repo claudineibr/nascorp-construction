@@ -21,3 +21,9 @@ class ProjectDocumentHistory(BaseModel):
     items: list[ProjectDocumentResponse]
     total: int
     today: date
+
+
+class ScheduleStageImportResponse(BaseModel):
+    created: int
+    matched: int
+    total: int

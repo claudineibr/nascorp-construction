@@ -23,8 +23,8 @@ class ConstructionSubcontract(SubcontractRecord, Base):
         CheckConstraint("status IN ('DRAFT','RELEASED','CLOSED','CANCELED')", name="ck_subcontract_status"),
         CheckConstraint("valid_to >= valid_from", name="ck_subcontract_dates"),
         CheckConstraint("retention_rate BETWEEN 0 AND 100 AND escrow_rate BETWEEN 0 AND 100", name="ck_subcontract_rates"),
-        CheckConstraint("pricing_mode IN ('ITEMIZED','GLOBAL')", name="ck_subcontract_pricing_mode"),
-        CheckConstraint("pricing_mode <> 'GLOBAL' OR global_amount > 0", name="ck_subcontract_global_amount"),
+        CheckConstraint("pricing_mode IN ('ITEMIZED','GLOBAL','MEASURED')", name="ck_subcontract_pricing_mode"),
+        CheckConstraint("pricing_mode NOT IN ('GLOBAL','MEASURED') OR global_amount > 0", name="ck_subcontract_global_amount"),
         {"schema": CONSTRUCTION_SCHEMA},
     )
     project_id: Mapped[UUID] = mapped_column(ForeignKey(f"{CONSTRUCTION_SCHEMA}.construction_projects.id"), index=True)

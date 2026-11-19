@@ -289,13 +289,18 @@ class ErpConstructionClient:
             response.raise_for_status()
             return response.json()
 
-    async def list_shared_payables(self, *, company_id, project_id, user_id):
+    async def list_shared_payables(self, *, company_id, project_id, user_id, subcontract_id=None, without_contract=False):
         headers = {"X-Service-Key": settings.erp_service_key or "", "X-Company-ID": str(company_id)}
         if user_id:
             headers["X-User-ID"] = str(user_id)
+        params = {}
+        if subcontract_id:
+            params["subcontract_id"] = str(subcontract_id)
+        if without_contract:
+            params["without_contract"] = "true"
         async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
             response = await client.get(f"/v1/internal/construction/projects/{project_id}/shared-payables",
-                headers=headers)
+                headers=headers, params=params)
             response.raise_for_status()
             return response.json()
 

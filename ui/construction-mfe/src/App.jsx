@@ -41,6 +41,7 @@ import { Pagination as StandalonePagination } from "./components/Pagination.jsx"
 import {
   canLinkPayable,
   getMeasurementApprovalActions,
+  canApproveMeasurementInDialog,
   measurementPayableBadge,
   newMeasurementPayablePath,
 } from "./features/measurementActions.js"
@@ -82,10 +83,12 @@ import {
   FilePlus2,
 } from "lucide-react"
 import styles from "./App.module.css"
+import serviceFormStyles from "./features/measurementServiceForm.module.css"
 import installmentStyles from "./features/UnitInstallmentsPanel.module.css"
 import CreatableCombobox from "./components/CreatableCombobox.jsx"
 import { PersonPicker } from "./components/PersonPicker.jsx"
 import { InfoTip } from "./components/InfoTip.jsx"
+import { ProcurementDetailsDialog } from "./features/ProcurementDetailsDialog.jsx"
 import { measurementPurpose, measurementEditable, measurementCancelled, inspectionEligibleForBulk, measurementInspectionBlockers } from "./features/measurementWorkflow.js"
 import { ProductPicker } from "./components/ProductPicker.jsx"
 import { currencyCents, procurementLineCents, procurementSubtotalCents, quantityUnits } from "./utils/procurementAmounts.js"
@@ -105,10 +108,10 @@ import { CreditOffsetModal } from "./features/unitTermination/CreditOffsetModal.
 import { ServiceTemplatesPanel } from "./features/serviceTemplates/ServiceTemplatesPanel.jsx"
 import { ProjectServicesPanel } from "./features/projectServices/ProjectServicesPanel.jsx"
 import { ProjectFilesPanel } from "./features/projectFiles/ProjectFilesPanel.jsx"
+import { ScheduleStageImport } from "./features/projectDocuments/ScheduleStageImport.jsx"
 import { phaseDeadline, ProjectScheduleSummary } from "./features/projectDocuments/ProjectDocuments.jsx"
 import { ProjectContractSection } from "./features/projectDocuments/ProjectContractSection.jsx"
 import { SubcontractsCardTitle, SubcontractsPanel } from "./features/subcontracts/SubcontractsPanel.jsx"
-import { SharedPayablesCardTitle, SharedPayablesSection } from "./features/sharedPayables/SharedPayablesSection.jsx"
 import { ContractMeasurementFields } from "./features/subcontracts/ContractMeasurementFields.jsx"
 import { UnitContractPanel } from "./features/unitContracts/UnitContractPanel.jsx"
 import { UnitTermPanel } from "./features/unitContracts/UnitTermPanel.jsx"
@@ -144,6 +147,7 @@ import {
   deleteConstructionMeasurement,
   deleteConstructionMeasurementInspection,
   deleteConstructionMeasurementItem,
+  updateConstructionMeasurementItemPeriod,
   deleteConstructionMeasurementOccurrence,
   deleteConstructionProcurementRequest,
   deleteConstructionProject,
@@ -1549,6 +1553,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [loadingMeasurements, setLoadingMeasurements] = useState(false)
   const [measurementError, setMeasurementError] = useState(null)
   const [isMeasurementModalOpen, setIsMeasurementModalOpen] = useState(false)
+  const [measurementTab, setMeasurementTab] = useState("data")
+  const [measurementDataDirty, setMeasurementDataDirty] = useState(false)
+  const measurementFormRef = useRef(null)
   const [measurementModalMode, setMeasurementModalMode] = useState("create")
   const [editingMeasurementId, setEditingMeasurementId] = useState(null)
   const [measurementForm, setMeasurementForm] = useState(defaultMeasurementForm)
@@ -4019,27 +4026,6 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     }
   }
 
-  const openMeasurementItems = (measurement) => {
-    if (!personSummaries.length) {
-      void loadPersonSummaries()
-    }
-
-    setItemsTargetMeasurement(measurement)
-    setMeasurementItems([])
-    void loadMeasurementItems(measurement.id)
-    void loadServiceTemplates(measurement.projectId ?? null)
-  }
-
-  const closeMeasurementItems = () => {
-    if (savingMeasurementItem || confirmRequest) {
-      return
-    }
-
-    setItemsTargetMeasurement(null)
-    setMeasurementItems([])
-    setMeasurementItemsError(null)
-  }
-
   const handleCreateMeasurementItem = async (itemForm) => {
     if (!itemsTargetMeasurement) {
       return false
@@ -4093,6 +4079,23 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         result = confirmed ? await attempt(true) : { created: false }
       }
       return result.created === true
+    } finally {
+      setSavingMeasurementItem(false)
+    }
+  }
+
+  const handleSaveMeasurementItemPeriod = async (item, period) => {
+    if (!itemsTargetMeasurement || savingMeasurementItem) return false
+    setSavingMeasurementItem(true)
+    try {
+      await updateConstructionMeasurementItemPeriod({ bridge, itemId: item.id, ...period })
+      await loadMeasurementItems(itemsTargetMeasurement.id)
+      await loadMeasurements()
+      bridge?.feedback?.success?.(period.endDate ? "Conclusão do serviço registrada." : "Período do serviço atualizado.")
+      return true
+    } catch (requestError) {
+      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível atualizar o período do serviço.")
+      return false
     } finally {
       setSavingMeasurementItem(false)
     }
@@ -4290,6 +4293,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }
 
   const handleSubmitMeasurement = async (measurement) => {
+    if (submittingMeasurement) return
+    setSubmittingMeasurement(true)
     try {
       const result = await listConstructionMeasurementItems({ bridge, measurementId: measurement.id })
       const blockers = measurementInspectionBlockers(measurement, result.items, units.find((unit) => unit.id === measurement.unitId))
@@ -4302,6 +4307,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       await loadMeasurements()
     } catch (requestError) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível enviar a medição para aprovação.")
+    } finally {
+      setSubmittingMeasurement(false)
     }
   }
 
@@ -4315,6 +4322,10 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       void loadPersonSummaries()
     }
 
+    setMeasurementTab("data")
+    setMeasurementDataDirty(false)
+    setItemsTargetMeasurement(null)
+    setMeasurementItems([])
     setMeasurementModalMode("create")
     setEditingMeasurementId(null)
     setMeasurementForm({
@@ -4325,11 +4336,19 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     setIsMeasurementModalOpen(true)
   }
 
-  const openEditMeasurement = (measurement) => {
+  const openEditMeasurement = (measurement, tab = "data") => {
     if (!personSummaries.length) {
       void loadPersonSummaries()
     }
 
+    setMeasurementTab(tab)
+    setMeasurementDataDirty(false)
+    if (itemsTargetMeasurement?.id !== measurement.id) {
+      setMeasurementItems([])
+    }
+    setItemsTargetMeasurement(measurement)
+    void loadMeasurementItems(measurement.id)
+    void loadServiceTemplates(measurement.projectId ?? null)
     setMeasurementModalMode("edit")
     setEditingMeasurementId(measurement.id)
     setMeasurementForm({
@@ -4364,16 +4383,20 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   }
 
   const closeMeasurementModal = () => {
-    if (submittingMeasurement) {
+    if (submittingMeasurement || savingMeasurementItem || importingServiceTemplates || confirmRequest) {
       return
     }
 
+    setItemsTargetMeasurement(null)
+    setMeasurementItems([])
+    setMeasurementItemsError(null)
     setIsMeasurementModalOpen(false)
     setEditingMeasurementId(null)
     setMeasurementForm(defaultMeasurementForm)
   }
 
   const handleMeasurementFieldChange = (field, value) => {
+    setMeasurementDataDirty(true)
     setMeasurementForm((currentForm) => ({
       ...currentForm,
       [field]: value,
@@ -4386,6 +4409,14 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
   const handleMeasurementSubmit = async (event) => {
     event.preventDefault()
+
+    if (measurementModalMode === "edit" && !measurementDataDirty) {
+      setMeasurementTab("items")
+      return
+    }
+    if (itemsTargetMeasurement && (!measurementEditable(itemsTargetMeasurement) || bridge?.canUpdate?.("construction_measurements") === false)) {
+      return
+    }
 
     const validationError = requiredMeasurementFieldError(measurementForm)
     if (validationError) {
@@ -4400,8 +4431,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
 
     setSubmittingMeasurement(true)
     try {
+      let savedMeasurement
       if (measurementModalMode === "create") {
-        await createConstructionMeasurement({
+        savedMeasurement = await createConstructionMeasurement({
           bridge,
           projectId: activeProjectId,
           measurementData: {
@@ -4412,17 +4444,19 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
             measuredAmount: "0",
           },
         })
-        bridge?.feedback?.success?.("Medição criada com sucesso.")
       } else if (editingMeasurementId) {
-        await updateConstructionMeasurement({
+        savedMeasurement = await updateConstructionMeasurement({
           bridge,
           measurementId: editingMeasurementId,
           measurementData: measurementForm,
         })
-        bridge?.feedback?.success?.("Medição atualizada com sucesso.")
       }
 
-      closeMeasurementModal()
+      if (!savedMeasurement) {
+        bridge?.feedback?.warning?.("Reabra a medição para salvar os dados e continuar.")
+        return
+      }
+      openEditMeasurement(savedMeasurement, "items")
       await loadMeasurements()
     } catch (requestError) {
       bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível salvar a medição.")
@@ -4450,25 +4484,37 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
     }
   }
 
-  const handleApproveMeasurement = (measurement) => {
+  const handleApproveMeasurement = (measurement, submitFirst = false) => {
     setConfirmRequest({
       title: `Aprovar a medição ${measurement.code}`,
       message: measurement.subcontractId
-        ? "A medição passa a valer, conta no avanço da obra e consome o saldo do contrato. O título a pagar não é gerado: vincule o título no próprio contrato, na aba Empreitada, em Títulos das medições do contrato."
+        ? "A medição passa a valer e registra a execução no contrato, sem duplicar o consumo do saldo. O título a pagar não é gerado: vincule o título no próprio contrato, na aba Empreitada, em Pagamentos da empreitada."
         : "A medição passa a valer e conta no avanço da obra. O título a pagar não é gerado: depois da aprovação, use Ações > Lançar título no ERP ou Vincular título existente.",
       confirmLabel: "Aprovar medição",
       danger: false,
-      run: () => runApproveMeasurement(measurement),
+      run: () => runApproveMeasurement(measurement, submitFirst),
     })
   }
 
-  const runApproveMeasurement = async (measurement) => {
+  const runApproveMeasurement = async (measurement, submitFirst = false) => {
+    if (submittingMeasurement) return
+    setSubmittingMeasurement(true)
+    let submitted = false
     try {
+      if (submitFirst) {
+        await submitConstructionMeasurement({ bridge, measurementId: measurement.id })
+        submitted = true
+      }
       await approveConstructionMeasurement({ bridge, measurementId: measurement.id })
       bridge?.feedback?.success?.("Medição aprovada com sucesso.")
       await loadMeasurements()
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível aprovar a medição.")
+      bridge?.feedback?.error?.(submitted
+        ? `A medição foi enviada, mas não foi aprovada. ${requestError?.message ?? "Confira as pendências antes de aprovar novamente."}`
+        : requestError?.message ?? "Não foi possível aprovar a medição.")
+      await loadMeasurements()
+    } finally {
+      setSubmittingMeasurement(false)
     }
   }
 
@@ -4999,7 +5045,6 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                     onEditMeasurement={openEditMeasurement}
                     onDeleteMeasurement={handleDeleteMeasurement}
                     onApproveMeasurement={handleApproveMeasurement}
-                    onOpenMeasurementItems={openMeasurementItems}
                     onSubmitMeasurement={handleSubmitMeasurement}
                     onRejectMeasurement={openRejectMeasurement}
                     paymentPlan={unitPaymentPlan?.constructionUnitId === selectedUnit.id ? unitPaymentPlan : null}
@@ -5078,6 +5123,11 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
               action={
                 <>
                   {bridge.canCreate?.("construction_schedule") && <>
+                    <ScheduleStageImport bridge={bridge} projectId={selectedProject.id}
+                      onImported={async () => {
+                        await loadSchedulePhases()
+                        setProjectDetailRevision((value) => value + 1)
+                      }} />
                     <SchedulePhaseSuggestions />
                     <button type="button" className={styles.primaryButton} onClick={openCreateSchedulePhase}>
                       <Plus size={16} />
@@ -5170,17 +5220,9 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           ) : null}
 
           {projectDetailTab === "subcontracts" ? <DomainCard title={<SubcontractsCardTitle />}
-            subtitle="Planilha liberada, medições por quantidade e saldo contratado."
+            subtitle="Contratos, saldo dos serviços e pagamentos da obra."
             renderContent={(renderActions) => <SubcontractsPanel bridge={bridge}
-              projectId={activeProjectId} renderActions={renderActions} />} /> : null}
-
-          {projectDetailTab === "subcontracts" ? (
-            <DomainCard
-              title={<SharedPayablesCardTitle />}
-              renderContent={(renderActions) => <SharedPayablesSection bridge={bridge}
-                projectId={activeProjectId} renderActions={renderActions} />}
-            />
-          ) : null}
+              projectId={activeProjectId} project={selectedProject} renderActions={renderActions} RowActionsMenu={RowActionsMenu} />} /> : null}
 
           {projectDetailTab === "reports" ? (
             <DomainCard
@@ -5434,59 +5476,123 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
         />
       ) : null}
 
-      {itemsTargetMeasurement ? (
-        <MeasurementItemsModal
-          bridge={bridge}
-          measurement={itemsTargetMeasurement}
-          unit={units.find((unit) => unit.id === itemsTargetMeasurement.unitId)}
-          items={measurementItems}
-          people={personSummaries}
-          serviceTemplates={serviceTemplates}
-          serviceTemplatesRestricted={serviceTemplatesRestricted}
-          loadingServiceTemplates={loadingServiceTemplates}
-          importingServiceTemplates={importingServiceTemplates}
-          onImportServiceTemplates={handleImportServiceTemplates}
-          loading={loadingMeasurementItems}
-          error={measurementItemsError}
-          saving={savingMeasurementItem}
-          onClose={closeMeasurementItems}
-          onEditContract={() => {
-            const measurement = itemsTargetMeasurement
-            closeMeasurementItems()
-            openEditMeasurement(measurement)
-          }}
-          onRetry={() => Promise.all([
-            loadMeasurementItems(itemsTargetMeasurement.id),
-            loadMeasurements(),
-          ])}
-          onCreateItem={handleCreateMeasurementItem}
-          onCreateContractItems={handleCreateContractMeasurementItems}
-          onDeleteItem={handleDeleteMeasurementItem}
-          onCreateInspection={handleCreateInspection}
-          onVerifyInspection={handleVerifyInspection}
-          onVerifyAllPendingInspections={handleVerifyAllPendingInspections}
-          onDeleteInspection={handleDeleteInspection}
-          onCreateOccurrence={handleCreateOccurrence}
-          onResolveOccurrence={handleResolveOccurrence}
-          onDeleteOccurrence={handleDeleteOccurrence}
-        />
-      ) : null}
-
       {isMeasurementModalOpen ? (
-        <MeasurementModal
+        <UnitBankSlipDialogFrame
           bridge={bridge}
-          projectId={activeProjectId}
-          mode={measurementModalMode}
-          measurementForm={measurementForm}
-          people={personSummaries}
-          units={units}
-          lockedUnit={measurementForm.unitId ? units.find((unit) => unit.id === measurementForm.unitId) ?? null : null}
-          schedulePhases={schedulePhases}
-          onClose={closeMeasurementModal}
-          onChange={handleMeasurementFieldChange}
-          onSubmit={handleMeasurementSubmit}
-          loading={submittingMeasurement}
-        />
+          title={measurementModalMode === "create" ? "Nova medição" : `Medição ${measurementForm.code}`}
+          onClose={submittingMeasurement || savingMeasurementItem || importingServiceTemplates || confirmRequest ? undefined : closeMeasurementModal}
+          dialogMaxWidth={1320}
+          footer={(
+            <div className={`${styles.dialogActions} ${styles.measurementDialogActions}`}>
+              <button type="button" className={styles.secondaryButton} onClick={closeMeasurementModal}
+                disabled={submittingMeasurement || savingMeasurementItem || importingServiceTemplates || Boolean(confirmRequest)}>
+                Fechar
+              </button>
+              {measurementTab === "data" && (!itemsTargetMeasurement || (measurementEditable(itemsTargetMeasurement) && bridge?.canUpdate?.("construction_measurements") !== false)) && (
+                <button type="submit" form="measurement-details-form" className={styles.primaryButton}
+                  disabled={submittingMeasurement || savingMeasurementItem || importingServiceTemplates}>
+                  {submittingMeasurement ? "Salvando..." : measurementModalMode === "create" ? "Criar e continuar" : "Salvar e continuar"}
+                </button>
+              )}
+              {measurementTab === "items" && itemsTargetMeasurement && measurementEditable(itemsTargetMeasurement) && bridge?.canUpdate?.("construction_measurements") !== false && (
+                <button type="button" className={canApproveMeasurementInDialog(itemsTargetMeasurement, bridge) ? styles.secondaryButton : styles.primaryButton}
+                  disabled={submittingMeasurement || savingMeasurementItem || loadingMeasurementItems || importingServiceTemplates || Boolean(confirmRequest)}
+                  onClick={() => handleSubmitMeasurement(itemsTargetMeasurement)}>
+                  <Send size={16} aria-hidden="true" /> Enviar para aprovação
+                </button>
+              )}
+              {measurementTab === "items" && canApproveMeasurementInDialog(itemsTargetMeasurement, bridge) && (
+                <button type="button" className={styles.primaryButton}
+                  disabled={submittingMeasurement || savingMeasurementItem || loadingMeasurementItems || importingServiceTemplates || Boolean(confirmRequest)}
+                  onClick={() => handleApproveMeasurement(itemsTargetMeasurement, measurementEditable(itemsTargetMeasurement))}>
+                  <CheckCircle size={16} aria-hidden="true" /> Aprovar medição
+                </button>
+              )}
+            </div>
+          )}
+        >
+          <div className={styles.measurementWorkspace}>
+            <div className={styles.measurementTabs} role="tablist" aria-label="Medição"
+              onKeyDown={(event) => {
+                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return
+                event.preventDefault()
+                const tabs = Array.from(event.currentTarget.querySelectorAll('[role="tab"]:not(:disabled)'))
+                const current = tabs.indexOf(event.target)
+                const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+                  : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length
+                tabs[next]?.focus()
+                tabs[next]?.click()
+              }}>
+              <button type="button" role="tab" id="measurement-data-tab" aria-controls="measurement-data-panel"
+                aria-selected={measurementTab === "data"} tabIndex={measurementTab === "data" ? 0 : -1} className={styles.measurementTab}
+                disabled={submittingMeasurement || savingMeasurementItem || importingServiceTemplates || Boolean(confirmRequest)}
+                onClick={() => {
+                  if (measurementTab === "items" && itemsTargetMeasurement) openEditMeasurement(itemsTargetMeasurement)
+                }}>Dados principais</button>
+              <button type="button" role="tab" id="measurement-items-tab" aria-controls="measurement-items-panel"
+                aria-selected={measurementTab === "items"} tabIndex={measurementTab === "items" ? 0 : -1} className={styles.measurementTab}
+                disabled={submittingMeasurement || savingMeasurementItem || importingServiceTemplates || Boolean(confirmRequest)}
+                onClick={() => {
+                  if (measurementTab === "items") return
+                  if (measurementModalMode === "create" || measurementDataDirty) measurementFormRef.current?.requestSubmit()
+                  else setMeasurementTab("items")
+                }}>Itens e FVS</button>
+            </div>
+            <div id="measurement-data-panel" role="tabpanel" aria-labelledby="measurement-data-tab" hidden={measurementTab !== "data"}>
+              <MeasurementDetailsForm
+                key={editingMeasurementId ?? "new"}
+                bridge={bridge}
+                projectId={activeProjectId}
+                mode={measurementModalMode}
+                measurementForm={measurementForm}
+                people={personSummaries}
+                units={units}
+                lockedUnit={measurementForm.unitId ? units.find((unit) => unit.id === measurementForm.unitId) ?? null : null}
+                schedulePhases={schedulePhases}
+                onChange={handleMeasurementFieldChange}
+                onSubmit={handleMeasurementSubmit}
+                formRef={measurementFormRef}
+                readOnly={Boolean(itemsTargetMeasurement && (!measurementEditable(itemsTargetMeasurement) || bridge?.canUpdate?.("construction_measurements") === false))}
+                loading={submittingMeasurement}
+              />
+            </div>
+            <div id="measurement-items-panel" role="tabpanel" aria-labelledby="measurement-items-tab" hidden={measurementTab !== "items"}>
+              {itemsTargetMeasurement ? (
+                <MeasurementItemsPanel
+                  key={`${itemsTargetMeasurement.id}:${itemsTargetMeasurement.subcontractId ?? ""}:${itemsTargetMeasurement.subcontractVersionId ?? ""}:${measurementPurpose(itemsTargetMeasurement)}`}
+                  bridge={bridge}
+                  measurement={itemsTargetMeasurement}
+                  unit={units.find((unit) => unit.id === itemsTargetMeasurement.unitId)}
+                  items={measurementItems}
+                  people={personSummaries}
+                  serviceTemplates={serviceTemplates}
+                  serviceTemplatesRestricted={serviceTemplatesRestricted}
+                  loadingServiceTemplates={loadingServiceTemplates}
+                  importingServiceTemplates={importingServiceTemplates}
+                  onImportServiceTemplates={handleImportServiceTemplates}
+                  loading={loadingMeasurementItems}
+                  error={measurementItemsError}
+                  saving={savingMeasurementItem}
+                  onRetry={() => Promise.all([
+                    loadMeasurementItems(itemsTargetMeasurement.id),
+                    loadMeasurements(),
+                  ])}
+                  onCreateItem={handleCreateMeasurementItem}
+                  onCreateContractItems={handleCreateContractMeasurementItems}
+                  onSavePeriod={handleSaveMeasurementItemPeriod}
+                  onDeleteItem={handleDeleteMeasurementItem}
+                  onCreateInspection={handleCreateInspection}
+                  onVerifyInspection={handleVerifyInspection}
+                  onVerifyAllPendingInspections={handleVerifyAllPendingInspections}
+                  onDeleteInspection={handleDeleteInspection}
+                  onCreateOccurrence={handleCreateOccurrence}
+                  onResolveOccurrence={handleResolveOccurrence}
+                  onDeleteOccurrence={handleDeleteOccurrence}
+                />
+              ) : null}
+            </div>
+          </div>
+        </UnitBankSlipDialogFrame>
       ) : null}
 
       {rejectMeasurementTarget ? (
@@ -6258,7 +6364,6 @@ function UnitDetailPanel({
   onEditMeasurement,
   onDeleteMeasurement,
   onApproveMeasurement,
-  onOpenMeasurementItems,
   onSubmitMeasurement,
   onRejectMeasurement,
   paymentPlan,
@@ -6483,7 +6588,6 @@ function UnitDetailPanel({
             onEdit={onEditMeasurement}
             onDelete={onDeleteMeasurement}
             onApprove={onApproveMeasurement}
-            onOpenItems={onOpenMeasurementItems}
             onSubmit={onSubmitMeasurement}
             onReject={onRejectMeasurement}
           />
@@ -8492,7 +8596,6 @@ function MeasurementsList({
   onDelete,
   onApprove,
   onReject,
-  onOpenItems,
   onSubmit,
 }) {
   const bridge = useBridge()
@@ -8617,7 +8720,6 @@ function MeasurementsList({
             const canSubmit = ["draft", "rejected"].includes(measurement.status)
             const { canApprove } = getMeasurementApprovalActions(measurement)
             const canReject = ["submitted", "in_approval"].includes(measurement.status)
-            const canEdit = measurementEditable(measurement)
             const canDelete = measurementEditable(measurement)
             const payableBadge = measurementPayableBadge(measurement)
 
@@ -8662,9 +8764,11 @@ function MeasurementsList({
                   ) : null}
                 </td>
                 <td>
-                  {measurement.itemsCount ? `${measurement.itemsCount} item(ns)` : "valor único"}
+                  {measurement.itemsCount == null ? "Itens e inspeção" : `${measurement.itemsCount} item(ns)`}
                   <div className={styles.rowSecondaryText}>
-                    {measurement.pendingInspectionsCount
+                    {measurement.pendingInspectionsCount == null
+                      ? "Consultar FVS"
+                      : measurement.pendingInspectionsCount
                       ? `${measurement.pendingInspectionsCount} verificação(oes) pendente(s)`
                       : "sem verificação pendente"}
                     {measurement.openOccurrencesCount
@@ -8691,16 +8795,9 @@ function MeasurementsList({
                   <RowActionsMenu
                     actions={[
                       {
-                        key: "items",
-                        label: "Itens e inspeção",
-                        icon: ListChecks,
-                        onSelect: () => onOpenItems(measurement),
-                      },
-                      {
                         key: "edit",
-                        label: "Editar",
-                        icon: Pencil,
-                        visible: canEdit,
+                        label: "Abrir lançamento",
+                        icon: FileText,
                         onSelect: () => onEdit(measurement),
                       },
                       {
@@ -8732,7 +8829,7 @@ function MeasurementsList({
                         icon: FilePlus2,
                         visible: canLinkPayable(measurement) && canCreatePayable,
                         dividerBefore: true,
-                        onSelect: () => (bridge.openPayable ?? bridge.navigate)?.(newMeasurementPayablePath(measurement), { onSaved: loadMeasurements }),
+                        onSelect: () => (bridge.openPayable ?? bridge.navigate)?.(newMeasurementPayablePath(measurement), { onSaved: onRetry }),
                       },
                       {
                         key: "link-payable",
@@ -8749,7 +8846,7 @@ function MeasurementsList({
                         visible: Boolean(measurement.externalAccountsPayableId) && canReadPayable,
                         dividerBefore: true,
                         onSelect: () =>
-                          (bridge.openPayable ?? bridge.navigate)?.(`/accounts-payable/${measurement.externalAccountsPayableId}/edit?${new URLSearchParams({ project_id: measurement.projectId })}`, { onSaved: loadMeasurements }),
+                          (bridge.openPayable ?? bridge.navigate)?.(`/accounts-payable/${measurement.externalAccountsPayableId}/edit?${new URLSearchParams({ project_id: measurement.projectId })}`, { onSaved: onRetry }),
                       },
                       {
                         key: "delete",
@@ -8794,6 +8891,11 @@ function ProcurementList({
   onViewOrder,
   viewingOrderId,
 }) {
+  const [detailsId, setDetailsId] = useState(null)
+  const detailsRequest = procurementRequests.find((request) => request.id === detailsId)
+  const integrationLabel = (request) => request.externalProcurementId
+    ? erpProcurementStatusLabel[request.externalProcurementStatus] ?? "Vinculada ao ERP"
+    : { sending: "Enviando", sent: "Enviada", failed: "Falha ao enviar para Compras", not_sent: "Pendente" }[request.deliveryStatus] ?? "Pendente"
   if (loading) {
     return (
       <div className={styles.tableWrapper} aria-busy="true">
@@ -8828,6 +8930,7 @@ function ProcurementList({
   }
 
   return (
+    <>
     <div className={styles.tableWrapper}>
       <table className={styles.table}>
         <thead>
@@ -8851,15 +8954,7 @@ function ProcurementList({
               <tr key={procurementRequest.id}>
                 <td>{procurementRequest.code}</td>
                 <td>
-                  <strong>{procurementRequest.title}</strong>
-                  {procurementRequest.externalItems?.length > 0 && <details><summary>Saldo por item</summary>
-                    {procurementRequest.externalItems.map((item) => <p key={item.sequence_number}>
-                      {item.description ?? `Item ${item.sequence_number}`}: solicitado {item.quantity} · pedido {item.qty_ordered}
-                      {` · reservado ${item.qty_reserved ?? 0} · saldo ${item.qty_available}`}
-                    </p>)}
-                  </details>}
-                  <div className={styles.rowSecondaryText}>{procurementRequest.description || "-"}</div>
-                  {procurementRequest.rejectionReason ? <div className={styles.rowSecondaryText}>Motivo da rejeição: {procurementRequest.rejectionReason}</div> : null}
+                  <strong className={styles.procurementRequestTitle} title={procurementRequest.title}>{procurementRequest.title}</strong>
                 </td>
                 <td>
                   <span className={`${styles.statusPill} ${styles[`status${procurementRequest.status}`] || ""}`}>
@@ -8869,30 +8964,18 @@ function ProcurementList({
                 <td>{formatMoney(procurementRequest.estimatedAmount)}</td>
                 <td>{formatDate(procurementRequest.neededByDate)}</td>
                 <td>
-                  <div className={styles.procurementIntegration}>
-                    {procurementRequest.externalProcurementId ? (
-                      <>
-                        <span className={styles.procurementIntegrationStatus}>{erpProcurementStatusLabel[procurementRequest.externalProcurementStatus] ?? "Vinculada ao ERP"}</span>
-                        {procurementRequest.externalOrderNumbers?.length ? (
-                          <span className={`${styles.badgeSuccess} ${styles.procurementOrderReference}`}>
-                            <ShoppingCart size={13} aria-hidden="true" />
-                            {procurementRequest.externalOrders?.length ? procurementRequest.externalOrders.map((order) =>
-                              `${order.number} (${{ DRAFT: "Rascunho", OPEN: "Aberto", PARTIALLY_RECEIVED: "Recebido parcialmente",
-                                RECEIVED: "Recebido", CLOSED: "Encerrado", CANCELED: "Cancelado" }[order.status] ?? "Em andamento"})`
-                            ).join(", ") : procurementRequest.externalOrderNumbers.join(", ")}
-                          </span>
-                        ) : <span className={styles.procurementIntegrationContext}>Na central de compras</span>}
-                      </>
-                    ) : (
-                      <span className={styles.badgeMuted}>{{ sending: "Enviando", sent: "Enviada",
-                        failed: "Falha ao enviar para Compras", not_sent: "Pendente" }[procurementRequest.deliveryStatus] ?? "Pendente"}</span>
-                    )}
-                  </div>
+                  <span>{integrationLabel(procurementRequest)}</span>
                 </td>
                 <td>
                   <RowActionsMenu
                     busy={viewingOrderId === procurementRequest.id}
                     actions={[
+                      {
+                        key: "details",
+                        label: "Ver detalhes",
+                        icon: FileText,
+                        onSelect: () => setDetailsId(procurementRequest.id),
+                      },
                       {
                         key: "edit",
                         label: "Editar",
@@ -8941,6 +9024,11 @@ function ProcurementList({
         </tbody>
       </table>
     </div>
+    {detailsRequest && <ProcurementDetailsDialog bridge={bridge} request={detailsRequest}
+      statusLabel={procurementStatusLabel[detailsRequest.status] ?? "Situação não reconhecida"}
+      integrationLabel={integrationLabel(detailsRequest)} estimatedAmount={formatMoney(detailsRequest.estimatedAmount)}
+      neededBy={formatDate(detailsRequest.neededByDate)} onClose={() => setDetailsId(null)} />}
+    </>
   )
 }
 
@@ -9094,7 +9182,7 @@ function ProcurementModal({ bridge, projectId, mode, procurementForm, people, sc
   )
 }
 
-function MeasurementModal({
+function MeasurementDetailsForm({
   bridge,
   projectId,
   mode,
@@ -9103,31 +9191,19 @@ function MeasurementModal({
   units,
   lockedUnit,
   schedulePhases,
-  onClose,
+  formRef,
+  readOnly,
   onChange,
   onSubmit,
   loading,
 }) {
   return (
-    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
-      <section
-        className={styles.modalCard}
-        role="dialog"
-        aria-modal="true"
-        aria-label={mode === "create" ? "Nova medição" : "Editar medição"}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header className={styles.modalHeader}>
-          <h3>{mode === "create" ? "Nova medição" : "Editar medição"}</h3>
-          <button type="button" className={styles.closeButton} onClick={onClose} disabled={loading}>
-            Fechar
-          </button>
-        </header>
-        <form className={styles.modalBody} onSubmit={onSubmit}>
+    <form id="measurement-details-form" ref={formRef} onSubmit={onSubmit}>
+      <fieldset className={styles.measurementFields} disabled={loading || readOnly}>
           <ContractMeasurementFields bridge={bridge} projectId={projectId} form={measurementForm} onChange={onChange} />
           <div className={`${styles.formGrid} ${styles.measurementFormGrid}`}>
             {mode === "edit" && (
-              <div className={`${styles.detailMetaItem} ${styles.spanTwoColumns}`}>
+              <div className={styles.detailMetaItem}>
                 <span>Código</span>
                 <strong>
                   {measurementForm.code} · OS {measurementForm.sequenceNumber || "-"}
@@ -9135,14 +9211,14 @@ function MeasurementModal({
               </div>
             )}
             {lockedUnit ? (
-              <div className={`${styles.detailMetaItem} ${styles.spanTwoColumns}`}>
+              <div className={`${styles.detailMetaItem} ${styles.measurementUnitField}`}>
                 <span>Unidade*</span>
                 <strong>
                   {lockedUnit.code} - {lockedUnit.description || formatUnitType(lockedUnit.unitType)}
                 </strong>
               </div>
             ) : (
-              <label className={`${styles.filterControl} ${styles.spanTwoColumns}`}>
+              <label className={`${styles.filterControl} ${styles.measurementUnitField}`}>
                 <span>Unidade*</span>
                 <select value={measurementForm.unitId} onChange={(event) => onChange("unitId", event.target.value)} required>
                   <option value="">Selecione</option>
@@ -9155,7 +9231,7 @@ function MeasurementModal({
               </label>
             )}
             <label className={styles.filterControl}>
-              <span>Etapa*</span>
+              <span>Etapa* <InfoTip floating insideLabel label="Sobre a etapa da medição">Etapa do cronograma à qual pertencem os serviços desta medição. Exemplo: Serviços em terra. Os valores compõem a visão geral da obra nessa etapa.</InfoTip></span>
               <select
                 value={measurementForm.schedulePhaseId}
                 onChange={(event) => onChange("schedulePhaseId", event.target.value)}
@@ -9172,6 +9248,7 @@ function MeasurementModal({
             <div className={styles.measurementSupplierField}>
               <PersonPicker
                 label={measurementForm.subcontractId ? "Fornecedor do contrato" : "Fornecedor"}
+                labelHelp={<InfoTip floating insideLabel label="Sobre o fornecedor da medição">Prestador que executa os serviços. Quando há contrato, o fornecedor vem dele e não pode ser alterado separadamente.</InfoTip>}
                 disabled={Boolean(measurementForm.subcontractId)}
                 value={measurementForm.supplierPersonId}
                 onChange={(value) => onChange("supplierPersonId", value)}
@@ -9182,7 +9259,9 @@ function MeasurementModal({
               />
             </div>
             <label className={styles.filterControl}>
-              <span>Vencimento previsto*</span>
+              <span className={serviceFormStyles.fieldLabel}>Vencimento previsto* <InfoTip floating insideLabel label="Sobre o vencimento previsto">
+                Data esperada para pagar esta medição. É uma previsão: o vencimento efetivo e as parcelas são definidos no título do Financeiro. Não é a data de conclusão do serviço.
+              </InfoTip></span>
               <input
                 type="date"
                 value={measurementForm.dueDate}
@@ -9227,7 +9306,7 @@ function MeasurementModal({
             <label className={styles.filterControl}>
               <span>
                 Tipo documento (opcional)
-                <InfoTip floating label="Para que serve o tipo de documento">
+                <InfoTip floating insideLabel label="Para que serve o tipo de documento">
                   NFS-e é a sugestão para nota fiscal de serviço; ajuste conforme
                   o documento recebido. A nota pode ser emitida depois da medição.
                   Estes dados não bloqueiam a aprovação nem geram título a pagar.
@@ -9244,7 +9323,7 @@ function MeasurementModal({
             <label className={styles.filterControl}>
               <span>
                 Número documento (opcional)
-                <InfoTip floating label="Qual número de documento informar">
+                <InfoTip floating insideLabel label="Qual número de documento informar">
                   Preencha somente se a nota já foi emitida. Caso contrário,
                   deixe em branco e informe o número no lançamento do título
                   financeiro. Não é o número do contrato nem da OS.
@@ -9266,17 +9345,8 @@ function MeasurementModal({
               />
             </label>
           </div>
-          <footer className={styles.modalFooter}>
-            <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={loading}>
-              Cancelar
-            </button>
-            <button type="submit" className={styles.primaryButton} disabled={loading}>
-              {loading ? "Salvando..." : mode === "create" ? "Criar medição" : "Salvar alterações"}
-            </button>
-          </footer>
-        </form>
-      </section>
-    </div>
+      </fieldset>
+    </form>
   )
 }
 
@@ -10793,7 +10863,7 @@ function SaleUnitModal({
   )
 }
 
-function MeasurementItemsModal({
+function MeasurementItemsPanel({
   bridge,
   measurement,
   unit,
@@ -10807,11 +10877,10 @@ function MeasurementItemsModal({
   loading,
   error,
   saving,
-  onClose,
-  onEditContract,
   onRetry,
   onCreateItem,
   onCreateContractItems,
+  onSavePeriod,
   onDeleteItem,
   onCreateInspection,
   onVerifyInspection,
@@ -10821,10 +10890,12 @@ function MeasurementItemsModal({
   onResolveOccurrence,
   onDeleteOccurrence,
 }) {
+  const serviceImportRef = useRef(null)
   const [itemForm, setItemForm] = useState(defaultMeasurementItemForm)
+  const [contractPricingMode, setContractPricingMode] = useState(null)
   const [expandedItemId, setExpandedItemId] = useState(null)
 
-  const isLocked = !measurementEditable(measurement)
+  const isLocked = !measurementEditable(measurement) || bridge?.canUpdate?.("construction_measurements") === false
   const controlOnly = measurementPurpose(measurement) === "CONTROL"
   const blockers = measurementInspectionBlockers(measurement, items, unit)
   const itemsTotal = items.reduce((total, item) => total + Number(item.amount ?? 0), 0)
@@ -10850,22 +10921,8 @@ function MeasurementItemsModal({
   }
 
   return (
-    <div className={styles.modalOverlay} role="presentation" onClick={onClose}>
-      <section
-        className={`${styles.modalCard} ${styles.modalCardWide}`}
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Itens da medição ${measurement.code}`}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <header className={styles.modalHeader}>
-          <h3>Itens da medição {measurement.code}</h3>
-          <button type="button" className={styles.closeButton} onClick={onClose} disabled={saving}>
-            Fechar
-          </button>
-        </header>
-        <div className={styles.modalBody}>
-          <div className={styles.integrationGrid}>
+    <div className={styles.measurementItemsContent}>
+          <div className={`${styles.integrationGrid} ${styles.measurementSummary}`}>
             <article className={styles.integrationCard}>
               <h3>Total dos itens</h3>
               <p className={styles.metricValue}>{formatMoney(itemsTotal)}</p>
@@ -10895,7 +10952,7 @@ function MeasurementItemsModal({
             <p className={styles.metricHint}>
               Medição {measurementStatusLabel[measurement.status] ?? measurement.status} - itens em somente leitura.
             </p>
-          ) : measurement.subcontractId ? (
+          ) : measurement.subcontractId && contractPricingMode !== "MEASURED" ? (
             <ContractMeasureItems
               bridge={bridge}
               measurement={measurement}
@@ -10904,37 +10961,27 @@ function MeasurementItemsModal({
               serviceTemplates={serviceTemplates}
               saving={saving}
               onCreateItems={onCreateContractItems}
+              onPricingMode={setContractPricingMode}
             />
           ) : (
-            <form className={styles.card} onSubmit={handleItemSubmit}>
-              <div className={styles.scopeHeader}>
-                <div className={styles.scopeMeta}>
-                  <strong>{controlOnly ? "Novo serviço · OS de controle" : "Novo serviço medido · Serviço avulso"}</strong>
-                  <span className={styles.metricHint}>
-                    Sem contrato vinculado. Para usar os preços contratados,
-                    selecione o contrato em Editar finalidade e contrato.
-                    {items.length > 0 && " Remova os itens avulsos antes de vincular; depois, inclua as quantidades da planilha contratada."}
-                  </span>
-                  {["draft", "rejected"].includes(measurement.status) && bridge?.canUpdate?.("construction_measurements") && (
-                    <button type="button" className={styles.secondaryButton}
-                      onClick={onEditContract} disabled={saving || loading}>
-                      Editar finalidade e contrato
-                    </button>
-                  )}
-                  <span className={styles.metricHint}>
-                    {loadingServiceTemplates
-                      ? "Carregando catálogo de serviços..."
-                      : serviceTemplatesRestricted
-                        ? `${serviceTemplates.length} serviço(s) da lista desta obra, definida na aba Serviços da obra`
-                        : serviceTemplates.length
-                        ? `Todo o catálogo (${serviceTemplates.length} serviço(s)). Para limitar, marque os serviços na aba Serviços da obra`
-                        : "Catálogo vazio - importe a planilha de verificação de serviço (FVS) da Caixa"}
-                  </span>
-                </div>
-                <label className={styles.secondaryButton}>
-                  <Upload size={16} />
-                  {importingServiceTemplates ? "Importando..." : "Importar planilha (FVS)"}
+            <form className={`${styles.card} ${serviceFormStyles.form}`} onSubmit={handleItemSubmit}>
+              <div className={serviceFormStyles.header}>
+                <strong className={serviceFormStyles.heading}>
+                  {controlOnly ? "Novo serviço · OS de controle" : measurement.subcontractId ? "Novo serviço medido · Contrato" : "Novo serviço medido · Serviço avulso"}
+                  <InfoTip floating insideLabel label="Sobre o lançamento do serviço">
+                    {measurement.subcontractId
+                      ? "Informe o valor executado neste serviço. O lançamento reserva o saldo do contrato; o pagamento pelo título não abate esse saldo novamente."
+                      : "Sem contrato vinculado. Para usar um contrato, selecione-o na aba Dados principais."}
+                  </InfoTip>
+                </strong>
+                <div className={serviceFormStyles.actions}>
+                  <button type="button" className={styles.secondaryButton}
+                    disabled={importingServiceTemplates || saving} onClick={() => serviceImportRef.current?.click()}>
+                    <Upload size={16} aria-hidden="true" />
+                    {importingServiceTemplates ? "Importando..." : "Importar planilha (FVS)"}
+                  </button>
                   <input
+                    ref={serviceImportRef}
                     type="file"
                     accept=".xlsx,.xlsm"
                     multiple
@@ -10949,16 +10996,25 @@ function MeasurementItemsModal({
                       }
                     }}
                   />
-                </label>
+                </div>
               </div>
-              <div className={styles.formGrid}>
-                <label className={styles.filterControl}>
-                  <span>{serviceTemplatesRestricted ? "Serviço da obra*" : "Serviço do catálogo"}</span>
+              <div className={`${serviceFormStyles.grid} ${controlOnly ? serviceFormStyles.controlGrid : ""}`}>
+                <label className={`${styles.filterControl} ${serviceFormStyles.catalog}`}>
+                  <span className={serviceFormStyles.fieldLabel}>
+                    {serviceTemplatesRestricted ? "Serviço da obra*" : measurement.subcontractId ? "Serviço do catálogo*" : "Serviço do catálogo"}
+                    <InfoTip floating insideLabel label="Sobre o catálogo de serviços">
+                      {loadingServiceTemplates ? "Carregando catálogo de serviços..." : serviceTemplatesRestricted
+                        ? `${serviceTemplates.length} serviço(s) da lista desta obra, definida na aba Serviços da obra`
+                        : serviceTemplates.length ? `Todo o catálogo (${serviceTemplates.length} serviço(s)). Para limitar, marque os serviços na aba Serviços da obra`
+                        : "Catálogo vazio - importe a planilha de verificação de serviço (FVS) da Caixa"}
+                    </InfoTip>
+                  </span>
                   <select
+                    title={serviceTemplates.find((template) => template.id === itemForm.serviceTemplateId)?.name || undefined}
                     value={itemForm.serviceTemplateId}
                     onChange={(event) => handleItemChange("serviceTemplateId", event.target.value)}
                     disabled={loadingServiceTemplates}
-                    required={serviceTemplatesRestricted}
+                    required={serviceTemplatesRestricted || Boolean(measurement.subcontractId)}
                   >
                     <option value="">
                       {serviceTemplatesRestricted
@@ -10974,9 +11030,24 @@ function MeasurementItemsModal({
                     ))}
                   </select>
                 </label>
-                <label className={styles.filterControl}>
-                  <span>
+                {!controlOnly && <label className={`${styles.filterControl} ${serviceFormStyles.amount}`}>
+                  <span className={serviceFormStyles.fieldLabel}>Valor* <InfoTip floating insideLabel label="Sobre o valor do serviço">
+                    Valor executado neste serviço, em reais. No contrato por valor global por serviços, reserva o saldo disponível ao adicionar; pagar a DNF não desconta o contrato novamente. Exemplo: R$ 2.500,00.
+                  </InfoTip></span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={itemForm.amount}
+                    disabled={Boolean(measurement.subcontractId) && contractPricingMode !== "MEASURED"}
+                    onChange={(event) => handleItemChange("amount", formatCurrencyInput(event.target.value))}
+                    placeholder="0,00"
+                    required
+                  />
+                </label>}
+                <label className={`${styles.filterControl} ${serviceFormStyles.description}`}>
+                  <span className={serviceFormStyles.fieldLabel}>
                     {itemForm.serviceTemplateId || serviceTemplatesRestricted ? "Observação (opcional)" : "Serviço medido*"}
+                    <InfoTip floating insideLabel label="Sobre a descrição do serviço">Com serviço do catálogo, informe apenas o local ou detalhe da execução, como banheiro da suíte. Sem catálogo, descreva o serviço executado.</InfoTip>
                   </span>
                   <input
                     type="text"
@@ -10990,50 +11061,24 @@ function MeasurementItemsModal({
                     required={!itemForm.serviceTemplateId && !serviceTemplatesRestricted}
                   />
                 </label>
-                {!controlOnly && <label className={styles.filterControl}>
-                  <span>Valor*</span>
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={itemForm.amount}
-                    disabled={Boolean(measurement.subcontractId)}
-                    onChange={(event) => handleItemChange("amount", formatCurrencyInput(event.target.value))}
-                    placeholder="0,00"
-                    required
-                  />
-                </label>}
-                <label className={styles.filterControl}>
-                  <span>Produto / referência</span>
-                  <input
-                    type="text"
-                    value={itemForm.productDescription}
-                    onChange={(event) => handleItemChange("productDescription", event.target.value)}
-                    placeholder="Código ou nome do serviço no cadastro"
-                  />
-                </label>
-                <label className={styles.filterControl}>
-                  <span>Início</span>
+                <div className={serviceFormStyles.inspector}>
+                <PersonPicker
+                  label="Inspetor responsável"
+                  labelHelp={<InfoTip floating insideLabel label="Sobre o inspetor responsável">Pessoa responsável pela verificação do serviço. O parecer da FVS é registrado pelo próprio inspetor da rodada.</InfoTip>}
+                  value={itemForm.inspectorPersonId}
+                  onChange={(value) => handleItemChange("inspectorPersonId", value)}
+                  knownPeople={people}
+                  emptyLabel="Buscar inspetor pelo nome"
+                />
+                </div>
+                <label className={`${styles.filterControl} ${serviceFormStyles.start}`}>
+                  <span className={serviceFormStyles.fieldLabel}>Início da execução <InfoTip floating insideLabel label="Sobre o início da execução">Data em que o serviço começou na unidade. Não pode estar no futuro. O término é informado no serviço lançado, após concluir a FVS.</InfoTip></span>
                   <input
                     type="date"
                     value={itemForm.startDate}
                     onChange={(event) => handleItemChange("startDate", event.target.value)}
                   />
                 </label>
-                <label className={styles.filterControl}>
-                  <span>Fim</span>
-                  <input
-                    type="date"
-                    value={itemForm.endDate}
-                    onChange={(event) => handleItemChange("endDate", event.target.value)}
-                  />
-                </label>
-                <PersonPicker
-                  label="Inspetor responsável"
-                  value={itemForm.inspectorPersonId}
-                  onChange={(value) => handleItemChange("inspectorPersonId", value)}
-                  knownPeople={people}
-                  emptyLabel="Buscar inspetor pelo nome"
-                />
               </div>
               <div className={styles.filtersFooter}>
                 <button type="submit" className={styles.primaryButton} disabled={saving}>
@@ -11059,7 +11104,7 @@ function MeasurementItemsModal({
             </div>
           ) : !items.length ? (
             <div className={styles.empty}>
-              Nenhum item de serviço lancado. Sem itens, a medição vale o valor único informado no cadastro.
+              Nenhum serviço lançado. Inclua os serviços e conclua a FVS antes de enviar a medição.
             </div>
           ) : (
             <div className={styles.tableWrapper}>
@@ -11090,6 +11135,7 @@ function MeasurementItemsModal({
                       saving={saving}
                       expanded={expandedItemId === item.id}
                       onToggle={() => setExpandedItemId(expandedItemId === item.id ? null : item.id)}
+                      onSavePeriod={onSavePeriod}
                       onDeleteItem={onDeleteItem}
                       onCreateInspection={onCreateInspection}
                       onVerifyInspection={onVerifyInspection}
@@ -11105,10 +11151,38 @@ function MeasurementItemsModal({
             </div>
           )}
           <MeasurementFinancialPanel key={measurement.id} bridge={bridge} measurement={measurement} onRefresh={onRetry} />
-        </div>
-      </section>
     </div>
   )
+}
+
+function MeasurementItemPeriod({ item, saving, readOnly, onSave }) {
+  const [startDate, setStartDate] = useState(item.startDate?.slice(0, 10) ?? "")
+  const [endDate, setEndDate] = useState(item.endDate?.slice(0, 10) ?? "")
+  const canConclude = Boolean(item.inspections?.length) && !countPendingLines(item.inspections) && !countBlockingLines(item.inspections)
+  useEffect(() => {
+    setStartDate(item.startDate?.slice(0, 10) ?? "")
+    setEndDate(item.endDate?.slice(0, 10) ?? "")
+  }, [item.startDate, item.endDate])
+  if (readOnly) return null
+  return <form className={styles.measurementPeriod} onSubmit={async (event) => {
+    event.preventDefault()
+    await onSave(item, { startDate, endDate })
+  }}>
+    <label className={styles.filterControl}>
+      <span>Início da execução <InfoTip floating insideLabel label="Sobre o início do serviço">Data real em que o serviço começou. Não pode estar no futuro nem ser posterior ao término.</InfoTip></span>
+      <input type="date" value={startDate} disabled={saving} onChange={(event) => setStartDate(event.target.value)} />
+    </label>
+    <label className={styles.filterControl}>
+      <span>Término da execução <InfoTip floating insideLabel label="Como concluir o serviço">Informe a data real de término depois de aprovar ou dispensar todas as linhas da FVS. Não pode estar no futuro. Salvar essa data registra a conclusão do serviço; depois envie a medição para aprovação.</InfoTip></span>
+      <input type="date" value={endDate} min={startDate || undefined} disabled={saving || !canConclude}
+        onChange={(event) => setEndDate(event.target.value)} />
+    </label>
+    <button type="submit" className={styles.primaryButton}
+      disabled={saving || (Boolean(endDate) && !canConclude) || (startDate === (item.startDate?.slice(0, 10) ?? "") && endDate === (item.endDate?.slice(0, 10) ?? ""))}>
+      {saving ? "Salvando..." : endDate ? "Salvar conclusão" : "Salvar início"}
+    </button>
+    {!canConclude && <p className={styles.metricHint}>Conclua as verificações pendentes e reinspeções da FVS para liberar o término.</p>}
+  </form>
 }
 
 function MeasurementItemRow({
@@ -11120,6 +11194,7 @@ function MeasurementItemRow({
   saving,
   expanded,
   onToggle,
+  onSavePeriod,
   onDeleteItem,
   onCreateInspection,
   onVerifyInspection,
@@ -11154,7 +11229,7 @@ function MeasurementItemRow({
           <div className={styles.rowSecondaryText}>
             {[
               serviceName && item.description !== serviceName ? item.description : null,
-              item.productDescription || (item.subcontractItemId ? "item do contrato" : "sem referência de produto"),
+              item.productDescription || (item.subcontractItemId ? "item do contrato" : null),
             ]
               .filter(Boolean)
               .join(" · ")}
@@ -11162,7 +11237,7 @@ function MeasurementItemRow({
         </td>
         <td>
           {item.startDate ? formatDate(item.startDate) : "-"}
-          <div className={styles.rowSecondaryText}>{item.endDate ? formatDate(item.endDate) : "em aberto"}</div>
+          <div className={styles.rowSecondaryText}>{item.endDate ? `Concluído em ${formatDate(item.endDate)}` : isLocked ? "Término não informado" : "Término pendente"}</div>
         </td>
         <td>{formatMoney(item.amount)}</td>
         <td>
@@ -11178,7 +11253,7 @@ function MeasurementItemRow({
           <div className={styles.rowActions}>
             <button type="button" className={styles.iconButton} onClick={onToggle}>
               <ShieldCheck size={14} />
-              {expanded ? "Recolher" : "Inspeção"}
+              {expanded ? "Recolher" : "FVS e conclusão"}
             </button>
             {isLocked ? null : (
               <button
@@ -11197,7 +11272,8 @@ function MeasurementItemRow({
       {expanded ? (
         <tr>
           <td colSpan={6}>
-            <div className={styles.card}>
+            <div className={`${styles.card} ${styles.measurementItemDetails}`}>
+              <MeasurementItemPeriod item={item} saving={saving} readOnly={isLocked} onSave={onSavePeriod} />
               <strong>Ficha de verificação de serviço (FVS)</strong>
               <InspectionChecklist
                 bridge={bridge}

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Pagination as StandalonePagination } from "../../components/Pagination.jsx"
 import {
   listConstructionBlocks,
+  listConstructionSchedulePhases,
   listZeroValueMeasurementIds,
   listZeroValueMeasurements,
 } from "../../services/constructionApi"
@@ -36,6 +37,7 @@ export function ZeroValueOrders({
   onRowsLoaded = null,
   reloadKey = 0,
   disabled = false,
+  readOnly = false,
 }) {
   const Pagination = bridge?.components?.Pagination ?? StandalonePagination
   const [blockId, setBlockId] = useState("")
@@ -43,6 +45,10 @@ export function ZeroValueOrders({
   const [orderSearch, setOrderSearch] = useState("")
   const [dueFrom, setDueFrom] = useState("")
   const [dueTo, setDueTo] = useState("")
+  const [schedulePhaseId, setSchedulePhaseId] = useState("")
+  const [competenceFrom, setCompetenceFrom] = useState("")
+  const [competenceTo, setCompetenceTo] = useState("")
+  const [phases, setPhases] = useState([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [blocks, setBlocks] = useState([])
@@ -63,10 +69,22 @@ export function ZeroValueOrders({
       search: debouncedOrder.trim(),
       dueFrom,
       dueTo,
+      schedulePhaseId,
+      competenceFrom,
+      competenceTo,
     }),
-    [supplierPersonId, payableDocumentId, subcontractId, blockId, debouncedUnit, debouncedOrder, dueFrom, dueTo],
+    [supplierPersonId, payableDocumentId, subcontractId, blockId, debouncedUnit, debouncedOrder, dueFrom, dueTo, schedulePhaseId, competenceFrom, competenceTo],
   )
   const contractMode = Boolean(subcontractId)
+
+  useEffect(() => {
+    if (!contractMode) return undefined
+    let active = true
+    listConstructionSchedulePhases({ bridge, projectId })
+      .then((response) => { if (active) setPhases(response.items) })
+      .catch((failure) => { if (active) setError(failure.message) })
+    return () => { active = false }
+  }, [bridge, projectId, contractMode])
 
   useEffect(() => {
     let active = true
@@ -183,8 +201,25 @@ export function ZeroValueOrders({
           <span>Vencimento até</span>
           <input type="date" value={dueTo} onChange={(event) => setDueTo(event.target.value)} disabled={disabled} />
         </label>
+        {contractMode && <>
+          <label className={styles.field}>
+            <span>Etapa</span>
+            <select value={schedulePhaseId} onChange={(event) => setSchedulePhaseId(event.target.value)} disabled={disabled}>
+              <option value="">Todas as etapas</option>
+              {phases.map((phase) => <option key={phase.id} value={phase.id}>{phase.name}</option>)}
+            </select>
+          </label>
+          <label className={styles.field}>
+            <span>Competência de</span>
+            <input type="date" value={competenceFrom} onChange={(event) => setCompetenceFrom(event.target.value)} disabled={disabled} />
+          </label>
+          <label className={styles.field}>
+            <span>Competência até</span>
+            <input type="date" value={competenceTo} onChange={(event) => setCompetenceTo(event.target.value)} disabled={disabled} />
+          </label>
+        </>}
       </div>
-      <div className={styles.selectionBar}>
+      {!readOnly && <div className={styles.selectionBar}>
         <span>
           <strong>{selected.size}</strong> OS marcada(s) · {result.total} no filtro
         </span>
@@ -208,7 +243,7 @@ export function ZeroValueOrders({
             Limpar marcação
           </button>
         </span>
-      </div>
+      </div>}
       {error ? (
         <p role="alert" className={styles.error}>
           {error}
@@ -225,7 +260,7 @@ export function ZeroValueOrders({
           <table className={styles.table}>
             <thead>
               <tr>
-                <th>
+                {!readOnly && <th>
                   <input
                     type="checkbox"
                     aria-label="Marcar as OS desta página"
@@ -233,10 +268,11 @@ export function ZeroValueOrders({
                     onChange={togglePage}
                     disabled={disabled}
                   />
-                </th>
+                </th>}
                 <th>OS</th>
                 <th>Unidade</th>
                 <th>Bloco</th>
+                {contractMode ? <th>Competência</th> : null}
                 <th>Vencimento</th>
                 {contractMode ? <th>Líquido</th> : null}
                 <th>Descrição</th>
@@ -245,7 +281,7 @@ export function ZeroValueOrders({
             <tbody>
               {result.items.map((row) => (
                 <tr key={row.id} className={selected.has(row.id) ? styles.chosen : undefined}>
-                  <td>
+                  {!readOnly && <td>
                     <input
                       type="checkbox"
                       aria-label={`Marcar a ${row.code}`}
@@ -253,16 +289,17 @@ export function ZeroValueOrders({
                       onChange={() => toggle(row.id)}
                       disabled={disabled}
                     />
-                  </td>
+                  </td>}
                   <td>
                     OS {row.sequenceNumber ?? "-"}
                     <small>{row.code}</small>
                   </td>
                   <td>
-                    {row.unitCode || "-"}
-                    {row.unitDescription ? <small>{row.unitDescription}</small> : null}
+                    {row.unitDescription || row.unitCode || "Serviço da obra, sem unidade"}
+                    {row.unitDescription && row.unitCode ? <small>{row.unitCode}</small> : null}
                   </td>
                   <td>{row.blockName || "-"}</td>
+                  {contractMode ? <td>{day(row.competenceDate)}</td> : null}
                   <td>{day(row.dueDate)}</td>
                   {contractMode ? <td>{money(row.netAmount)}</td> : null}
                   <td>{row.description || "-"}</td>

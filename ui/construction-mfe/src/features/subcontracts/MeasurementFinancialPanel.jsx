@@ -222,7 +222,7 @@ export function MeasurementFinancialPanel({ bridge, measurement, onRefresh }) {
               <h4>Estorno do contrato</h4>
               <p className={styles.hint}>
                 {measurement.externalAccountsPayableShared
-                  ? "A medição está numa DNF do contrato. Remova-a da DNF em DNFs da empreitada (Ver OS cobertas) antes de estornar; a DNF continua no ERP."
+                  ? "A medição está vinculada a uma DNF do contrato e não permite remoção manual das OS nem estorno por esta tela. Confira o documento e seus pagamentos no Contas a Pagar antes de corrigir o lançamento."
                   : measurement.externalAccountsPayableId
                   ? "Cancela o título vinculado à medição no ERP e devolve ao contrato a quantidade medida e o crédito de material descontado. A devolução só acontece depois que o ERP confirma o cancelamento; pagamentos precisam ser estornados no financeiro antes."
                   : "A medição ainda não tem título vinculado: o estorno devolve na hora ao contrato a quantidade medida e o crédito de material descontado, e a medição fica rejeitada."}
@@ -252,7 +252,7 @@ export function MeasurementFinancialPanel({ bridge, measurement, onRefresh }) {
               type="button"
               className={`${appStyles.secondaryButton} ${appStyles.dangerButton}`}
               disabled={busy || reason.trim().length < 15 || measurement.externalAccountsPayableShared}
-              title={measurement.externalAccountsPayableShared ? "Remova a medição da DNF do contrato antes de estornar" : undefined}
+              title={measurement.externalAccountsPayableShared ? "O vínculo com a DNF do contrato impede o estorno por esta tela" : undefined}
               onClick={() =>
                 execute(
                   `/measurements/${measurement.id}/reverse-contract-consumption`,

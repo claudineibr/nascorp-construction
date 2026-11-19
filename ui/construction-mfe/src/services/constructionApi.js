@@ -2099,6 +2099,16 @@ export async function updateConstructionMeasurementItem({ bridge, itemId, itemDa
   return toMeasurementItemView(payload)
 }
 
+export async function updateConstructionMeasurementItemPeriod({ bridge, itemId, startDate, endDate }) {
+  const payload = await requestJson({
+    bridge,
+    path: `/v1/construction/measurement-items/${itemId}`,
+    method: "PATCH",
+    body: { start_date: toNullableString(startDate), end_date: toNullableString(endDate) },
+  })
+  return toMeasurementItemView(payload)
+}
+
 export async function deleteConstructionMeasurementItem({ bridge, itemId }) {
   await requestJson({
     bridge,
@@ -2303,6 +2313,9 @@ const zeroValueQuery = (filters = {}) => {
     dueTo: "due_to",
     search: "search",
     subcontractId: "subcontract_id",
+    schedulePhaseId: "schedule_phase_id",
+    competenceFrom: "competence_from",
+    competenceTo: "competence_to",
   }
   for (const [key, param] of Object.entries(keys)) {
     if (filters[key]) {
@@ -2355,8 +2368,12 @@ export async function listZeroValueMeasurementIds({ bridge, projectId, filters }
   })
 }
 
-export async function listSharedPayables({ bridge, projectId }) {
-  const payload = await requestJson({ bridge, path: `/v1/construction/projects/${projectId}/shared-payables` })
+export async function listSharedPayables({ bridge, projectId, subcontractId = "", withoutContract = false }) {
+  const params = new URLSearchParams()
+  if (subcontractId) params.set("subcontract_id", subcontractId)
+  if (withoutContract) params.set("without_contract", "true")
+  const query = params.size ? `?${params}` : ""
+  const payload = await requestJson({ bridge, path: `/v1/construction/projects/${projectId}/shared-payables${query}` })
   return (payload.items ?? []).map(toPayableDocumentView)
 }
 
@@ -2378,15 +2395,6 @@ export async function linkSharedPayable({ bridge, projectId, payableDocumentId, 
     path: `/v1/construction/projects/${projectId}/shared-payables/${payableDocumentId}/measurements`,
     method: "POST",
     body: { measurement_ids: measurementIds, ...(subcontractId ? { subcontract_id: subcontractId } : {}) },
-  })
-}
-
-export async function unlinkSharedPayable({ bridge, projectId, payableDocumentId, measurementIds }) {
-  return requestJson({
-    bridge,
-    path: `/v1/construction/projects/${projectId}/shared-payables/${payableDocumentId}/measurements/remove`,
-    method: "POST",
-    body: { measurement_ids: measurementIds },
   })
 }
 

@@ -164,31 +164,27 @@ async def test_dnf_of_a_contract_does_not_take_orders_without_contract() -> None
 
 
 @pytest.mark.asyncio
-async def test_contract_order_leaves_the_dnf_only_when_it_has_no_payment() -> None:
+@pytest.mark.parametrize("status", ["OPEN", "PARTIALLY_PAID", "PAID", "CANCELED", "ARCHIVED"])
+@pytest.mark.parametrize("contract", [False, True])
+async def test_linked_orders_cannot_be_manually_removed(status, contract):
     service, repository, erp, company_id, project, supplier_id = build_project()
     title_id = uuid4()
-    contract_order = add_measurement(
-        repository, company_id, project, supplier_id, code="OS-001", amount=Decimal("500.00"),
-        external_accounts_payable_id=title_id, subcontract_id=uuid4(),
+    order = add_measurement(
+        repository, company_id, project, supplier_id, code="OS-001",
+        amount=Decimal("500") if contract else Decimal("0"),
+        external_accounts_payable_id=title_id, subcontract_id=uuid4() if contract else None,
+        external_accounts_payable_status=status,
     )
-    contract_order.external_accounts_payable_shared = True
-
-    with pytest.raises(ConstructionInvalidValueError) as paid:
+    order.external_accounts_payable_shared = True
+    with pytest.raises(ConstructionInvalidValueError) as error:
         await service.unlink_shared_payable(
-            company_id=company_id, project_id=project.id, payable_document_id=title_id, measurement_ids=[contract_order.id]
+            company_id=company_id, project_id=project.id, payable_document_id=title_id, measurement_ids=[order.id]
         )
-    assert paid.value.error_code == "CONSTRUCTION_MEASUREMENT_SHARED_PAYABLE_PAID"
-    assert contract_order.external_accounts_payable_id == title_id
-
-    async def missing_title(**_):
-        raise ConstructionNotFoundError(resource_name="o título")
-
-    erp.check_shared_payable = missing_title
-    removed = await service.unlink_shared_payable(
-        company_id=company_id, project_id=project.id, payable_document_id=title_id, measurement_ids=[contract_order.id]
-    )
-    assert removed == 1
-    assert contract_order.external_accounts_payable_id is None
+    assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_SHARED_UNLINK_FORBIDDEN"
+    assert order.external_accounts_payable_id == title_id
+    assert order.external_accounts_payable_shared is True
+    assert order.external_accounts_payable_status == status
+    assert erp.checked == []
 
 
 @pytest.mark.asyncio
@@ -225,11 +221,12 @@ async def test_removing_orders_only_touches_the_ones_in_that_dnf() -> None:
         )
     assert error.value.error_code == "CONSTRUCTION_MEASUREMENT_SHARED_NOT_IN_PAYABLE"
 
-    removed = await service.unlink_shared_payable(
-        company_id=company_id, project_id=project.id, payable_document_id=title_id, measurement_ids=[covered.id]
-    )
-    assert removed == 1
-    assert covered.external_accounts_payable_id is None
-    assert covered.external_accounts_payable_status is None
-    assert covered.external_accounts_payable_shared is False
+    with pytest.raises(ConstructionInvalidValueError) as blocked:
+        await service.unlink_shared_payable(
+            company_id=company_id, project_id=project.id, payable_document_id=title_id, measurement_ids=[covered.id]
+        )
+    assert blocked.value.error_code == "CONSTRUCTION_MEASUREMENT_SHARED_UNLINK_FORBIDDEN"
+    assert covered.external_accounts_payable_id == title_id
+    assert covered.external_accounts_payable_status == "PAID"
+    assert covered.external_accounts_payable_shared is True
     assert own_title.external_accounts_payable_id == title_id

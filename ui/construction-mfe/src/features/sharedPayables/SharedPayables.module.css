@@ -208,3 +208,15 @@
     flex-basis: 100%;
   }
 }
+
+.paymentActions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.paymentActions > button {
+  min-width: 0;
+  white-space: normal;
+}

@@ -20,7 +20,7 @@ from app.domain.services.subcontract_service import SubcontractService
 ])
 async def test_new_measurement_requires_active_remaining_quantity(quantities, allowed):
     service = SubcontractService(SimpleNamespace(repository=SimpleNamespace(session=MagicMock(), scope=None)))
-    contract = SimpleNamespace(id=uuid4(), company_id=uuid4(), code="C-0002")
+    contract = SimpleNamespace(id=uuid4(), company_id=uuid4(), code="C-0002", pricing_mode="ITEMIZED")
     items = [SimpleNamespace(quantity=Decimal(quantity), consumed_quantity=Decimal(consumed), active=active)
         for quantity, consumed, active in quantities]
     service.repository.items = AsyncMock(return_value=items)

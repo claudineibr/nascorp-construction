@@ -2522,6 +2522,8 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
             sequence_number,
         )
         gross_amount = request.gross_amount or request.measured_amount or Decimal("0")
+        if subcontract is not None and subcontract.pricing_mode == "MEASURED" and gross_amount:
+            raise ConstructionInvalidValueError(message="Informe o valor nos serviços da medição, em Itens e inspeção.")
         retentions_amount = request.retentions_amount or Decimal("0")
         net_amount = request.net_amount or request.measured_amount or (gross_amount - retentions_amount)
         if net_amount < Decimal("0") and subcontract is None:
@@ -2721,6 +2723,12 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
         )
 
     async def _global_selection_filters(self, company_id, project_id, filters):
+        if filters.get("schedule_phase_id"):
+            phase = await self._get_schedule_phase(company_id=company_id, phase_id=filters["schedule_phase_id"])
+            if phase.project_id != project_id:
+                raise ConstructionNotFoundError(resource_name="a etapa desta obra")
+        if filters.get("competence_from") and filters.get("competence_to") and filters["competence_from"] > filters["competence_to"]:
+            raise ConstructionInvalidValueError(message="A competência inicial não pode ser posterior à final.")
         if filters.get("subcontract_id") is None:
             return
         contract = await SubcontractService(self).get(company_id, filters["subcontract_id"])
@@ -2730,10 +2738,16 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
             filters["global_selection"] = True
             filters["supplier_person_id"] = contract.supplier_person_id
 
-    async def list_shared_payables(self, *, company_id: UUID, project_id: UUID, user_id: UUID | None) -> list[dict]:
+    async def list_shared_payables(self, *, company_id: UUID, project_id: UUID, user_id: UUID | None, subcontract_id: UUID | None = None, without_contract: bool = False) -> list[dict]:
         await self.get_project(company_id=company_id, project_id=project_id)
+        if subcontract_id and without_contract:
+            raise ConstructionInvalidValueError(message="Escolha um contrato ou consulte as OS sem contrato.")
+        if subcontract_id:
+            contract = await SubcontractService(self).get(company_id, subcontract_id)
+            if contract.project_id != project_id:
+                raise ConstructionNotFoundError(resource_name="o contrato desta obra")
         result = await self._erp_request(
-            lambda: self.erp_client.list_shared_payables(company_id=company_id, project_id=project_id, user_id=user_id),
+            lambda: self.erp_client.list_shared_payables(company_id=company_id, project_id=project_id, user_id=user_id, subcontract_id=subcontract_id, without_contract=without_contract),
             fallback_message="Não foi possível buscar as DNFs da empreitada no ERP.",
         )
         return list(result.get("items", []))
@@ -2978,47 +2992,14 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
                     message=f"A OS {measurement.code} não está vinculada a esta DNF da empreitada.",
                     error_code="CONSTRUCTION_MEASUREMENT_SHARED_NOT_IN_PAYABLE",
                 )
-        contract_measurements = [m for m in measurements if self._measurement_contract_id(m) is not None]
-        if contract_measurements:
-            try:
-                payload = await self._erp_request(
-                    lambda: self.erp_client.check_shared_payable(
-                        company_id=company_id,
-                        project_id=project_id,
-                        user_id=user_id,
-                        payable_document_id=payable_document_id,
-                        supplier_person_id=contract_measurements[0].supplier_person_id,
-                    ),
-                    fallback_message="Não foi possível conferir a DNF no ERP.",
-                )
-            except ConstructionDomainError as check_error:
-                if check_error.status_code >= 500:
-                    raise
-                _logger.info(
-                    f"[construction] shared_payable: unlink_without_active_payable payable_document_id={payable_document_id} "
-                    f"reason={check_error.message}"
-                )
-                payload = {}
-            if payload.get("accounts_payable_status") in {"PAID", "PARTIALLY_PAID"}:
-                _logger.info(
-                    f"[construction] shared_payable: unlink_refused_paid payable_document_id={payable_document_id}"
-                )
-                raise ConstructionInvalidValueError(
-                    message="A DNF já tem pagamento: estorne os pagamentos no Contas a Pagar antes de tirar OS de contrato dela.",
-                    error_code="CONSTRUCTION_MEASUREMENT_SHARED_PAYABLE_PAID",
-                )
-        for measurement in measurements:
-            measurement.external_accounts_payable_id = None
-            measurement.external_accounts_payable_status = None
-            measurement.external_accounts_payable_shared = False
-        await self.repository.commit()
         _logger.info(
-            "construction.measurement.shared_payable_unlinked project_id=%s payable_document_id=%s count=%s",
-            project_id,
-            payable_document_id,
-            len(measurements),
+            f"[construction] shared_payable: unlink_refused company_id={company_id} project_id={project_id} "
+            f"payable_document_id={payable_document_id} count={len(measurements)} user_id={user_id}"
         )
-        return len(measurements)
+        raise ConstructionInvalidValueError(
+            message="OS vinculadas a um título não podem ser removidas manualmente. Corrija ou cancele o documento no Contas a Pagar.",
+            error_code="CONSTRUCTION_MEASUREMENT_SHARED_UNLINK_FORBIDDEN",
+        )
 
     async def update_measurement(
         self,
@@ -3117,7 +3098,7 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
                 raise ConstructionInvalidValueError(message="Remova os itens antes de trocar a finalidade da medição.")
         updates["purpose"] = purpose
         self._apply_updates(entity=measurement, updates=updates)
-        if purpose == "SERVICE" and financial_fields_changed:
+        if (purpose == "SERVICE" or contract_id) and financial_fields_changed:
             await self._sync_measurement_amounts_from_items(measurement=measurement)
             if measurement.retentions_amount > measurement.gross_amount:
                 raise ConstructionInvalidValueError(
@@ -3348,10 +3329,13 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
         contract_item = None
         if measurement.subcontract_id:
             contract_version, contract_item = await SubcontractService(self).contract_item(measurement, request.subcontract_item_id, request.quantity)
-            request = request.model_copy(update={
-                "service_template_id": UUID(contract_item["service_template_id"]) if contract_item.get("service_template_id") else None,
-                "description": contract_item["description"],
-            })
+            if contract_item is not None:
+                request = request.model_copy(update={
+                    "service_template_id": UUID(contract_item["service_template_id"]) if contract_item.get("service_template_id") else None,
+                    "description": contract_item["description"],
+                })
+            elif request.amount is None or request.amount <= 0 or not request.service_template_id:
+                raise ConstructionInvalidValueError(message="Escolha a FVS do serviço e informe um valor positivo.")
         elif request.subcontract_item_id or request.quantity is not None:
             raise ConstructionInvalidValueError(message="Vincule a medição ao contrato antes de selecionar o item contratado.")
         elif measurement_purpose(measurement) == "CONTROL":
@@ -3671,7 +3655,7 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
         if getattr(measurement, "subcontract_id", None) and await SubcontractService(self).repository.item_has_history(company_id, item_id):
             raise ConstructionInvalidValueError(message="O item possui histórico de consumo contratual e precisa ser preservado.")
         await self.repository.delete(item)
-        await self.repository.commit()
+        await self.repository.session.flush()
         await self._sync_measurement_amounts_from_items(measurement=measurement)
         await self.repository.commit()
 
@@ -5470,6 +5454,7 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
             summary["committed_order_amount"] = Decimal(str(purchases.get("committed_total_amount", purchases["committed_order_amount"])))
             summary["planned_cost_amount"] = summary["approved_requisition_amount"]
             summary["measured_cost_amount"] = Decimal(str(purchases["measured_amount"]))
+            summary["paid_cost_amount"] = Decimal(str(purchases.get("paid_measured_amount", paid_cost))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             summary["purchase_phases"] = purchases.get("phases", [])
             if project.estimated_cost is not None:
                 realized_cost = summary["realized_amount"].quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -6353,7 +6338,9 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
         retentions_amount = measurement.retentions_amount or Decimal("0")
         net_amount = items_amount - retentions_amount
         if getattr(measurement, "subcontract_id", None):
-            net_amount = await SubcontractService(self).financial_amounts(measurement, items_amount)
+            contracts = SubcontractService(self)
+            await contracts.reserve_measured(measurement, items_amount)
+            net_amount = await contracts.financial_amounts(measurement, items_amount)
         if net_amount <= Decimal("0"):
             raise ConstructionInvalidValueError(
                 message="As retenções da medição não podem passar da soma dos itens.",

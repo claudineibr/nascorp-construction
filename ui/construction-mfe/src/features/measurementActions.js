@@ -44,7 +44,7 @@ export const measurementPayableBadge = (measurement) => {
       tone: "muted",
       label: "Pendente",
       detail: "Título no contrato global",
-      title: "OS de contrato por valor global: vincule o título no próprio contrato, na aba Empreitada da obra, em Títulos das medições do contrato.",
+      title: "OS de contrato por valor global: vincule o título no próprio contrato, na aba Empreitada da obra, em Pagamentos da empreitada.",
     }
   }
   if (measurement.status === "approved" && !measurement.subcontractId && isZeroValueMeasurement(measurement)) {
@@ -60,8 +60,18 @@ export const measurementPayableBadge = (measurement) => {
       tone: "muted",
       label: "Pendente",
       detail: "Título na aba Empreitada",
-      title: "Medição de contrato: vincule o título no próprio contrato, na aba Empreitada da obra, em Títulos das medições do contrato.",
+      title: "Medição de contrato: vincule o título no próprio contrato, na aba Empreitada da obra, em Pagamentos da empreitada.",
     }
   }
   return { tone: "muted", label: "Pendente", detail: null }
+}
+
+export const canApproveMeasurementInDialog = (measurement, bridge) => {
+  if (!measurement || measurement.reversalPending || !bridge?.canUpdate?.("construction_measurements")) return false
+  const selfApproval = Boolean(bridge.canUpdate("construction_measurement_self_approval"))
+  if (["draft", "rejected"].includes(measurement.status)) return selfApproval
+  if (!["submitted", "in_approval"].includes(measurement.status)) return false
+  if (selfApproval) return true
+  const userId = bridge.user?.id
+  return Boolean(userId) && ![measurement.createdByUserId, measurement.submittedByUserId].includes(userId)
 }
