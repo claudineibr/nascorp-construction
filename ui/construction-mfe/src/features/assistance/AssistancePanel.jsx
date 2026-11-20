@@ -7,6 +7,7 @@ import { maskPhone } from "../../utils/phoneInput"
 import { assistancePrintDocument } from "./assistancePrint"
 import { ReferencePicker } from "./ReferencePicker"
 import { Dialog } from "../subcontracts/DirectBillsSection"
+import { UnitBankSlipDialogFrame } from "../UnitBankSlipsDialog"
 import appStyles from "../../App.module.css"
 import styles from "./AssistancePanel.module.css"
 
@@ -265,6 +266,12 @@ export function AssistancePanel({
       setBusy(false)
     }
   }
+  const persistDraft = () => subcontractRequest({
+    bridge,
+    path: `/assistance-requests${draft.id ? `/${draft.id}` : ""}`,
+    method: draft.id ? "PUT" : "POST",
+    body: payload(draft),
+  })
   const save = async (event) => {
     event.preventDefault()
     if (draft.id && !dirty) {
@@ -273,12 +280,7 @@ export function AssistancePanel({
     }
     setBusy(true)
     try {
-      const result = await subcontractRequest({
-        bridge,
-        path: `/assistance-requests${draft.id ? `/${draft.id}` : ""}`,
-        method: draft.id ? "PUT" : "POST",
-        body: payload(draft),
-      })
+      const result = await persistDraft()
       setDraft(creating ? null : result)
       setCreating(false)
       setSavedPayload(JSON.stringify(payload(result)))
@@ -293,6 +295,11 @@ export function AssistancePanel({
   const transition = async (action) => {
     setBusy(true)
     try {
+      if (action === "complete" && dirty) {
+        const saved = await persistDraft()
+        setDraft(saved)
+        setSavedPayload(JSON.stringify(payload(saved)))
+      }
       const result = await subcontractRequest({
         bridge,
         path: `/assistance-requests/${draft.id}${action === "delete" ? "" : `/${action}`}`,
@@ -300,6 +307,7 @@ export function AssistancePanel({
         body: action === "reopen" ? { justification: reason } : null,
       })
       setDraft(action === "delete" ? null : result)
+      if (action !== "delete") setSavedPayload(JSON.stringify(payload(result)))
       if (embedded && action === "delete") onClose?.()
       setDeleting(false)
       setReopening(false)
@@ -360,6 +368,32 @@ export function AssistancePanel({
     </div>
   )
 
+  const editorTabs = (
+    <nav className={styles.tabs} role="tablist" aria-label="Seções da SAT" onKeyDown={(event) => {
+      const tabs = [...event.currentTarget.querySelectorAll('[role="tab"]')]
+      const index = tabs.indexOf(event.target)
+      if (index < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return
+      event.preventDefault()
+      const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length
+      tabs[next].click()
+      tabs[next].focus()
+    }}>
+      {[
+        ["general", "Dados gerais e contatos"],
+        ["complaints", "Reclamações"],
+        ["services", "Serviços"],
+        ["history", "Histórico"],
+      ].map(([key, label]) => (
+        <button type="button" role="tab" key={key} id={`${formId}-${key}`} aria-controls={`${formId}-panel`}
+          aria-selected={tab === key} tabIndex={tab === key ? 0 : -1} disabled={busy}
+          className={`${styles.tab} ${tab === key ? styles.tabActive : ""}`} onClick={() => setTab(key)}>
+          {label}
+        </button>
+      ))}
+    </nav>
+  )
+
   const editorFooter = draft ? (
     <div className={styles.editorFooter} role="group" aria-label="Ações da SAT">
       <button className={styles.modalSecondaryButton} type="button" onClick={closeEditor} disabled={busy}>
@@ -376,8 +410,8 @@ export function AssistancePanel({
             <button
               type="button"
               className={editorActionClasses.primary}
-              disabled={busy || dirty}
-              title={dirty ? "Salve as alterações antes de concluir" : "Concluir atendimento"}
+              disabled={busy}
+              title="Salvar alterações e concluir atendimento"
               onClick={() => transition("complete")}
             >
               Concluir SAT
@@ -582,25 +616,11 @@ export function AssistancePanel({
           busy={busy}
           onClose={closeEditor}
           footer={editorFooter}
+          headerContent={editorTabs}
+          scrollResetKey={tab}
           closeOnEsc={!reopening && !deleting}
         >
-          <nav className={appStyles.tabList}>
-            {[
-              ["general", "Dados gerais e contatos"],
-              ["complaints", "Reclamações"],
-              ["services", "Serviços"],
-              ["history", "Histórico"],
-            ].map(([key, label]) => (
-              <button
-                type="button"
-                className={`${appStyles.tabButton} ${tab === key ? appStyles.tabButtonActive : ""}`}
-                key={key}
-                onClick={() => setTab(key)}
-              >
-                {label}
-              </button>
-            ))}
-          </nav>
+          <div id={`${formId}-panel`} role="tabpanel" aria-labelledby={`${formId}-${tab}`}>
           <form id={formId} onSubmit={save}>
             <fieldset disabled={!editable || busy}>
               {tab === "general" ? (
@@ -724,7 +744,10 @@ export function AssistancePanel({
               ) : null}
               {tab === "complaints" ? (
                 <>
-                  <p>Salve as reclamações novas como Pendentes antes de registrar a análise.</p>
+                  <p>
+                    Para concluir, classifique todas as reclamações como Procedente ou Improcedente.
+                    Os dados da análise e os serviços são opcionais.
+                  </p>
                   {draft.complaints.map((item, index) => (
                     <div className={styles.item} key={item.id || index}>
                       <h4>Reclamação {item.original_number ?? index + 1}</h4>
@@ -745,10 +768,9 @@ export function AssistancePanel({
                       </label>
                       <div className={styles.grid}>
                         <label className={styles.field}>
-                          <span>Procedência</span>
+                          <span>Procedência (obrigatória para concluir)</span>
                           <select
                             value={item.provenance}
-                            disabled={!item.id}
                             onChange={(e) => changeItem("complaints", index, "provenance", e.target.value)}
                           >
                             <option value="pending">Pendente</option>
@@ -759,17 +781,15 @@ export function AssistancePanel({
                         <ReferencePicker
                           bridge={bridge}
                           kind="person"
-                          label="Analisado por"
+                          label="Analisado por (opcional)"
                           value={item.analyzed_by_person_id}
                           onChange={(id) => changeItem("complaints", index, "analyzed_by_person_id", id)}
-                          disabled={!item.id}
                         />
                         <label className={styles.field}>
-                          <span>Analisado em</span>
+                          <span>Analisado em (opcional)</span>
                           <input
                             type="datetime-local"
                             value={localDate(item.analyzed_at)}
-                            disabled={!item.id}
                             onChange={(e) => changeItem("complaints", index, "analyzed_at", instant(e.target.value))}
                           />
                         </label>
@@ -909,13 +929,14 @@ export function AssistancePanel({
                     disabled
                   />
                   <p>
-                    Registros históricos podem ter etapas incompletas. Confirme a análise das reclamações antes de
-                    concluir um atendimento reaberto.
+                    Registros históricos podem ter etapas incompletas. Classifique todas as reclamações como
+                    Procedente ou Improcedente antes de concluir um atendimento reaberto.
                   </p>
                 </>
               ) : null}
             </section>
           ) : null}
+          </div>
         </AssistanceEditorSurface>
       ) : null}
       {reopening && draft?.status === "completed" && ConfirmDialog ? (
@@ -978,7 +999,10 @@ export function AssistancePanel({
   )
 }
 
-function AssistanceEditorSurface({ bridge, title, busy, onClose, footer, children, dialogMaxWidth = 1100, closeOnEsc = true }) {
+function AssistanceEditorSurface({
+  bridge, title, busy, onClose, footer, headerContent, scrollResetKey, children,
+  dialogMaxWidth = 1100, closeOnEsc = true,
+}) {
   const Modal = bridge.components?.Modal
   const content = <div className={styles.editor}>{children}</div>
   return Modal ? (
@@ -990,14 +1014,16 @@ function AssistanceEditorSurface({ bridge, title, busy, onClose, footer, childre
       closeOnOverlayClick={!busy}
       dialogMaxWidth={dialogMaxWidth}
       footer={footer}
+      headerContent={headerContent}
+      scrollResetKey={scrollResetKey}
     >
       {content}
     </Modal>
   ) : (
-    <Dialog title={title} wide={dialogMaxWidth > 600} busy={busy} onClose={onClose}>
+    <UnitBankSlipDialogFrame bridge={bridge} title={title} onClose={busy ? undefined : onClose}
+      dialogMaxWidth={dialogMaxWidth} footer={footer} headerContent={headerContent} scrollResetKey={scrollResetKey}>
       {content}
-      <div className={styles.fallbackFooter}>{footer}</div>
-    </Dialog>
+    </UnitBankSlipDialogFrame>
   )
 }
 

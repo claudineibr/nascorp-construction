@@ -50,9 +50,10 @@ def service(complaint_id, executed=True, inspected=True):
     "provenance,analyzed,expected",
     [
         ("pending", False, "analysis"),
-        ("invalid", False, "analysis"),
+        ("invalid", False, "completion"),
         ("invalid", True, "completion"),
-        ("valid", True, "planning"),
+        ("valid", True, "completion"),
+        ("valid", False, "completion"),
     ],
 )
 def test_complaint_analysis_controls_completion(provenance, analyzed, expected):
@@ -60,7 +61,7 @@ def test_complaint_analysis_controls_completion(provenance, analyzed, expected):
     assert pending_stage(row) == expected
 
 
-def test_mixed_complaints_and_each_service_must_finish():
+def test_completion_requires_only_provenance_for_all_active_complaints():
     valid = complaint("valid")
     invalid = complaint("invalid")
     row = SimpleNamespace(
@@ -68,15 +69,19 @@ def test_mixed_complaints_and_each_service_must_finish():
         complaints=[valid, invalid],
         services=[service(valid.id), service(None, executed=False, inspected=False)],
     )
-    assert pending_stage(row) == "execution"
+    assert pending_stage(row) == "completion"
     row.services[1] = service(None, inspected=False)
-    assert pending_stage(row) == "inspection"
+    assert pending_stage(row) == "completion"
     row.services[1] = service(None)
     assert pending_stage(row) == "completion"
     row.services[0].complaint_id = None
-    assert pending_stage(row) == "planning"
+    assert pending_stage(row) == "completion"
     invalid.analyzed_at = None
+    assert pending_stage(row) == "completion"
+    invalid.provenance = "pending"
     assert pending_stage(row) == "analysis"
+    invalid.deleted_at = datetime.now(UTC)
+    assert pending_stage(row) == "completion"
 
 
 def test_empty_requests_and_historical_completions():
@@ -84,6 +89,33 @@ def test_empty_requests_and_historical_completions():
     assert pending_stage(row) == "analysis"
     row.status = "completed"
     assert pending_stage(row) == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provenance", ["valid", "invalid", "pending", None])
+async def test_transition_completion_without_analysis_or_service_details(provenance):
+    from unittest.mock import AsyncMock, Mock
+
+    row = SimpleNamespace(
+        id=uuid4(), company_id=uuid4(), status="open", completed_at=None,
+        complaints=[complaint(provenance, analyzed=False)], services=[],
+    )
+    repository = SimpleNamespace(release_operation=AsyncMock(), commit=AsyncMock())
+    handler = AssistanceRequestService(repository)
+    handler.get = AsyncMock(return_value=row)
+    handler.event = Mock()
+    if provenance in {"valid", "invalid"}:
+        await handler.transition(row.company_id, row.id, uuid4(), "completed")
+        assert row.status == "completed"
+        assert row.completed_at is not None
+        repository.commit.assert_awaited_once()
+        assert row.complaints[0].analyzed_at is None
+        assert row.services == []
+    else:
+        with pytest.raises(ConstructionDomainError, match="classifique todas"):
+            await handler.transition(row.company_id, row.id, uuid4(), "completed")
+        repository.commit.assert_not_awaited()
+        handler.event.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -224,6 +256,37 @@ async def test_unchanged_legacy_blank_description_is_preserved(description):
     old_service.source_id = None
     with pytest.raises(ConstructionDomainError, match="descrição"):
         await AssistanceRequestService(repository).validate(uuid4(), data, row)
+
+
+@pytest.mark.asyncio
+async def test_classifying_legacy_complaint_preserves_unchanged_incomplete_service():
+    from unittest.mock import AsyncMock
+
+    person_id = uuid4()
+    opened = datetime.now(UTC) - timedelta(days=2)
+    old_complaint = AssistanceComplaint(
+        id=uuid4(), description="Infiltração", provenance="pending", deleted_at=None,
+    )
+    old_service = AssistanceService(
+        id=uuid4(), source_id=17, description="", complaint_id=old_complaint.id,
+        executed_at=opened + timedelta(days=1), deleted_at=None,
+    )
+    row = AssistanceRequest(
+        id=uuid4(), project_id=uuid4(), unit_id=uuid4(), attendant_person_id=person_id,
+        opened_at=opened, complaints=[old_complaint], services=[old_service], contacts=[], history=[],
+    )
+    repository = SimpleNamespace(
+        project=AsyncMock(return_value=object()), unit=AsyncMock(return_value=object()),
+        valid_people=AsyncMock(side_effect=lambda company_id, ids: set(ids)),
+    )
+    data = AssistanceInput(
+        project_id=row.project_id, unit_id=row.unit_id, customer_person_id=person_id,
+        attendant_person_id=person_id, opened_at=opened,
+        complaints=[{"id": old_complaint.id, "description": "Infiltração", "provenance": "valid"}],
+        services=[{"id": old_service.id, "complaint_id": old_complaint.id, "description": "", "executed_at": old_service.executed_at}],
+    )
+    await AssistanceRequestService(repository).validate(uuid4(), data, row)
+    assert old_service.executed_by_person_id is None
 
 
 @pytest.mark.asyncio

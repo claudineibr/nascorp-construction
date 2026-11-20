@@ -34,17 +34,8 @@ def pending_stage(row):
     if row.status == "completed":
         return "completed"
     complaints = active(row.complaints)
-    services = active(row.services)
-    if not complaints or any(
-        c.provenance == "pending" or not c.analyzed_by_person_id or not c.analyzed_at for c in complaints
-    ):
+    if not complaints or any(c.provenance not in {"valid", "invalid"} for c in complaints):
         return "analysis"
-    if any(c.provenance == "valid" and not any(s.complaint_id == c.id for s in services) for c in complaints):
-        return "planning"
-    if any(not s.due_date or not s.executed_at or not s.executed_by_person_id for s in services):
-        return "execution"
-    if any(not s.inspected_at or not s.inspected_by_person_id for s in services):
-        return "inspection"
     return "completion"
 
 
@@ -147,10 +138,6 @@ class AssistanceRequestService:
             )
             if unchanged and data.opened_at == row.opened_at:
                 continue
-            if not old and complaint.provenance != "pending":
-                self.invalid("Reclamações novas começam com procedência Pendente.")
-            if bool(complaint.analyzed_at) != bool(complaint.analyzed_by_person_id):
-                self.invalid("Informe analista e data da análise juntos.")
             if complaint.analyzed_at and (
                 complaint.provenance == "pending"
                 or complaint.analyzed_at < data.opened_at
@@ -166,10 +153,7 @@ class AssistanceRequestService:
             analyses = [complaint] if complaint else []
             analysis_unchanged = all(
                 c.id in existing_complaints
-                and all(
-                    getattr(existing_complaints[c.id], key) == getattr(c, key)
-                    for key in ("provenance", "analyzed_at", "analyzed_by_person_id")
-                )
+                and existing_complaints[c.id].analyzed_at == c.analyzed_at
                 for c in analyses
             )
             if (
@@ -189,10 +173,8 @@ class AssistanceRequestService:
             if service.inspected_at and (not service.executed_at or service.inspected_at < service.executed_at):
                 self.invalid("A inspeção deve ocorrer após a execução.")
             if service.executed_at and any(
-                not c.analyzed_at
-                or not c.analyzed_by_person_id
-                or c.provenance == "pending"
-                or service.executed_at < c.analyzed_at
+                c.provenance == "pending"
+                or (c.analyzed_at and service.executed_at < c.analyzed_at)
                 for c in analyses
             ):
                 self.invalid("Registre a análise da reclamação vinculada antes da execução.")
@@ -277,13 +259,15 @@ class AssistanceRequestService:
         return await self.get(company_id, row.id)
 
     async def transition(self, company_id, request_id, actor, action, justification=None):
+        logger.info(f"[sat] transicao: company_id={company_id} sat_id={request_id} actor={actor} action={action}")
         await self.repository.release_operation(company_id)
         row = await self.get(company_id, request_id, True)
         previous = {"status": row.status, "completed_at": str(row.completed_at) if row.completed_at else None}
         if action == "completed":
             if row.status != "open" or pending_stage(row) != "completion":
                 self.invalid(
-                    "Conclusão exige análise de todas as reclamações, serviços vinculados às procedentes e prazo, execução e inspeção de cada serviço."
+                    "Para concluir uma SAT aberta, classifique todas as reclamações como Procedente ou Improcedente. "
+                    "A SAT precisa ter ao menos uma reclamação."
                 )
             row.status = "completed"
             row.completed_at = datetime.now(UTC)
@@ -296,4 +280,5 @@ class AssistanceRequestService:
             row.deleted_at = datetime.now(UTC)
         self.event(row, actor, action, {**previous, "justification": justification})
         await self.repository.commit()
+        logger.info(f"[sat] transicao_concluida: company_id={company_id} sat_id={request_id} action={action}")
         return row if action == "deleted" else await self.get(company_id, row.id)

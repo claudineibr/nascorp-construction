@@ -241,10 +241,67 @@
   min-width: 0;
   box-sizing: border-box;
 }
-.fallbackFooter {
-  border-top: 1px solid var(--color-border);
-  padding-top: 1rem;
-  margin-top: 1rem;
+.tabs,
+.tabs * {
+  box-sizing: border-box;
+  min-width: 0;
+}
+.tabs {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+  gap: 0;
+  border-bottom: 2px solid var(--color-border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  margin: 0;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 12px 20px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--color-text-muted);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  position: relative;
+}
+.tab::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: transparent;
+}
+.tab:hover,
+.tab:focus-visible {
+  color: var(--color-text);
+}
+.tab:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: -2px;
+}
+.tabActive {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+.tabActive::after {
+  background: var(--color-primary);
+}
+@media (width <= 640px) {
+  .tab {
+    padding: 0.7rem;
+  }
 }
 .clearableField {
   position: relative;

@@ -67,7 +67,7 @@ async def main():
             ):
                 result = await client.get(base, params=filters)
                 assert result.status_code == 200, result.text
-            assert (await client.post(f"{base}/{row.id}/complete")).status_code == 422
+            assert (await client.get(f"{base}/{row.id}")).status_code == 200
             current["ctx"] = ConstructionContext(
                 company_id=company,
                 user_id=ctx.user_id,
@@ -132,7 +132,10 @@ async def main():
             )
             request["complaints"][0]["provenance"] = "valid"
             assert (await client.put(f"{base}/{sat_id}", json=request)).status_code == 200
-            assert (await client.post(f"{base}/{sat_id}/complete")).status_code == 422
+            assert (await client.post(f"{base}/{sat_id}/complete")).status_code == 200
+            assert (await client.post(
+                f"{base}/{sat_id}/reopen", json={"justification": "Registrar dados opcionais do reparo"}
+            )).status_code == 200
             request["services"] = [
                 {
                     "description": "Reparo",
@@ -143,7 +146,7 @@ async def main():
             service_result = await client.put(f"{base}/{sat_id}", json=request)
             assert service_result.status_code == 200, service_result.text
             assert service_result.json()["overdue"] is True
-            assert (await client.post(f"{base}/{sat_id}/complete")).status_code == 422
+            assert service_result.json()["pending_stage"] == "completion"
             service = request["services"][0]
             service.update(
                 id=service_result.json()["services"][0]["id"],
@@ -151,7 +154,7 @@ async def main():
                 executed_at=(opened + timedelta(hours=2)).isoformat(),
             )
             assert (await client.put(f"{base}/{sat_id}", json=request)).status_code == 200
-            assert (await client.post(f"{base}/{sat_id}/complete")).status_code == 422
+            assert (await client.get(f"{base}/{sat_id}")).json()["pending_stage"] == "completion"
             service.update(inspected_by_person_id=str(person), inspected_at=(opened + timedelta(hours=3)).isoformat())
             assert (await client.put(f"{base}/{sat_id}", json=request)).status_code == 200
             assert (await client.post(f"{base}/{sat_id}/complete")).status_code == 200
