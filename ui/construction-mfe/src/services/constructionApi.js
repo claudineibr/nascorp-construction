@@ -1385,7 +1385,7 @@ export async function listErpPaymentMethods({ bridge }) {
 // A conta que recebeu cada forma decide a conta contabil de debito
 // (BANK_CASH_{id}). Sem a lista aqui, PIX no Itau e TED no Bradesco debitariam o
 // mesmo razao -- o defeito que a conta por linha existe para corrigir.
-export async function listErpCompanyBankAccounts({ bridge }) {
+export async function listErpCompanyBankAccounts({ bridge, distinguishAccounts = false }) {
   const erpApiBaseUrl = bridge?.erpApiBaseUrl || import.meta.env.VITE_ERP_API_URL || DEFAULT_ERP_API_URL
   const companyId = bridge?.companyContext?.companyId
   if (!companyId) {
@@ -1400,10 +1400,11 @@ export async function listErpCompanyBankAccounts({ bridge }) {
 
   return (payload?.financial_accounts ?? [])
     .filter((account) => account?.is_active !== false)
-    .map((account) => ({
-      id: account.id,
-      label: account.bank_name || account.account_number || "Conta sem nome",
-    }))
+    .map((account) => {
+      const label = account.bank_name || account.account_number || "Conta sem nome"
+      const ending = String(account.account_number || "").slice(-4)
+      return { id: account.id, label: distinguishAccounts && ending ? label + " · final " + ending : label }
+    })
 }
 
 export async function deleteConstructionUnitInstallment({

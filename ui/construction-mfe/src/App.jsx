@@ -34,6 +34,7 @@ import {
 import { InstallmentObservationModal } from "./features/InstallmentObservationModal.jsx"
 import { formatUnitType, unitTypeOptions } from "./features/unitTypes.js"
 import { commissionStatusLabel } from "./features/unitCommissions.js"
+import { BankRepassBatches, UnitBankRepasses } from "./features/BankRepasses.jsx"
 import { UnitFinancialSummary } from "./features/UnitFinancialSummary.jsx"
 import { ProjectSummaryDashboard } from "./features/ProjectSummaryDashboard.jsx"
 import { brazilTodayISO, setBusinessTimezone, formatBusinessDate } from "./utils/brazilDate.js"
@@ -5072,6 +5073,10 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                   />
                 ) : (
                   <>
+                    {canSeeBankRepasses(bridge, selectedProject) && (
+                      <BankRepassBatches key={companyId + ":" + selectedProject.id} bridge={bridge} projectId={selectedProject.id}
+                        projectName={selectedProject.name} openHistory={bridge.initialRepassHistory && bridge.initialProjectId === selectedProject.id} />
+                    )}
                     <div className={styles.unitFilters}>
                       <PersonPicker
                         bridge={bridge}
@@ -5328,6 +5333,11 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           loadingDocumentationTypes={loadingDocumentationTypes}
           loading={submittingSale}
           composition={saleComposition}
+          bankRepasses={saleTargetUnit?.currentSaleId && selectedProject && canSeeBankRepasses(bridge, selectedProject) && (
+            <UnitBankRepasses key={companyId + ":" + saleTargetUnit.currentSaleId}
+              bridge={bridge} saleId={saleTargetUnit.currentSaleId}
+              onChanged={() => loadUnitPaymentPlan(saleTargetUnit.id)} />
+          )}
           hasSegregatedAssets={Boolean(
             saleUnitForm.terminationTerms?.hasSegregatedAssets ?? selectedProject?.hasSegregatedAssets
           )}
@@ -6337,6 +6347,11 @@ function BlocksList({ blocks, loading, error, onRetry, onEdit, onDelete }) {
       </table>
     </div>
   )
+}
+
+function canSeeBankRepasses(bridge, project) {
+  return project.developmentType === "INCORPORATION" && bridge.components?.Modal &&
+    bridge.canRead?.("receivable") && bridge.canRead?.("construction_units") && bridge.canRead?.("construction_projects")
 }
 
 function UnitDetailPanel({
@@ -10409,6 +10424,7 @@ function SaleUnitModal({
   loadingDocumentationTypes,
   loading,
   composition = { status: "ready", receivableTotal: null },
+  bankRepasses,
   hasSegregatedAssets = false,
 }) {
   const isDelivered = unit?.status === "delivered"
@@ -10672,6 +10688,7 @@ function SaleUnitModal({
                 />
               </label>
             </div>
+            {isEditing && bankRepasses}
           </div>
 
           {isEditing ? (
