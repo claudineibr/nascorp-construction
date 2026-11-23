@@ -6818,7 +6818,7 @@ export function UnitInstallmentsPanel({
           </p>
         </article>
         <article className={styles.integrationCard}>
-          <h3>Liberado pelo banco</h3>
+          <h3>Previsão de repasse</h3>
           <p className={styles.metricValue}>{formatMoney(composition.settlementTotal)}</p>
           <p className={styles.metricHint}>subsídio, FGTS e financiamento - não geram parcela</p>
         </article>
@@ -8225,6 +8225,7 @@ function RowActionsMenu({ label = "Ações", actions, busy = false, busyLabel = 
   const [isOpen, setIsOpen] = useState(false)
   const [menuPosition, setMenuPosition] = useState(null)
   const wrapperRef = useRef(null)
+  const menuRef = useRef(null)
 
   const visibleActions = actions.filter((action) => action.visible !== false)
 
@@ -8235,10 +8236,16 @@ function RowActionsMenu({ label = "Ações", actions, busy = false, busyLabel = 
 
     const triggerRect = wrapperRef.current.getBoundingClientRect()
     const estimatedHeight = visibleActions.length * 40 + 16
-    const opensUpwards = triggerRect.bottom + estimatedHeight > window.innerHeight
+    const above = Math.max(0, triggerRect.top - 14)
+    const below = Math.max(0, window.innerHeight - triggerRect.bottom - 14)
+    const opensUpwards = estimatedHeight > below && above > below
+    const maxHeight = opensUpwards ? above : below
+    const width = Math.min(240, window.innerWidth - 16)
     setMenuPosition({
-      top: opensUpwards ? Math.max(triggerRect.top - estimatedHeight - 6, 8) : triggerRect.bottom + 6,
-      right: Math.max(window.innerWidth - triggerRect.right, 8),
+      top: opensUpwards ? triggerRect.top - Math.min(estimatedHeight, maxHeight) - 6 : triggerRect.bottom + 6,
+      right: Math.min(Math.max(window.innerWidth - triggerRect.right, 8), window.innerWidth - width - 8),
+      maxHeight,
+      width,
     })
   }, [visibleActions.length])
 
@@ -8256,20 +8263,29 @@ function RowActionsMenu({ label = "Ações", actions, busy = false, busyLabel = 
     updateMenuPosition()
 
     const handleClickOutside = (event) => {
-      if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
+      if (!wrapperRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) {
         setIsOpen(false)
       }
     }
 
-    const handleDismiss = () => setIsOpen(false)
+    const handleScroll = (event) => {
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return
+      const anchor = wrapperRef.current?.getBoundingClientRect()
+      if (!anchor || anchor.bottom <= 0 || anchor.top >= window.innerHeight
+          || anchor.right <= 0 || anchor.left >= window.innerWidth) {
+        setIsOpen(false)
+        return
+      }
+      updateMenuPosition()
+    }
 
     document.addEventListener("mousedown", handleClickOutside)
-    window.addEventListener("resize", handleDismiss)
-    window.addEventListener("scroll", handleDismiss, true)
+    window.addEventListener("resize", updateMenuPosition)
+    window.addEventListener("scroll", handleScroll, true)
     return () => {
       document.removeEventListener("mousedown", handleClickOutside)
-      window.removeEventListener("resize", handleDismiss)
-      window.removeEventListener("scroll", handleDismiss, true)
+      window.removeEventListener("resize", updateMenuPosition)
+      window.removeEventListener("scroll", handleScroll, true)
     }
   }, [isOpen, updateMenuPosition])
 
@@ -8308,8 +8324,8 @@ function RowActionsMenu({ label = "Ações", actions, busy = false, busyLabel = 
         )}
       </button>
 
-      {isOpen && menuPosition ? (
-        <div className={styles.actionsDropdown} role="menu" style={menuPosition}>
+      {isOpen && menuPosition ? createPortal(
+        <div className={styles.actionsDropdown} ref={menuRef} role="menu" style={menuPosition}>
           {visibleActions.flatMap((action, index) => {
             const ActionIcon = action.icon
             const itemClassName = action.danger
@@ -8342,7 +8358,8 @@ function RowActionsMenu({ label = "Ações", actions, busy = false, busyLabel = 
 
             return [renderedAction]
           })}
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   )
@@ -10306,6 +10323,12 @@ function ReserveUnitModal({ reserveForm, unit, people, onClose, onChange, onSubm
   )
 }
 
+const saleRepassHelp = {
+  financing: "Valor previsto do empréstimo habitacional que o banco vai repassar à empresa. Use o valor informado pelo banco na composição da venda.",
+  fgts: "Parte do saldo do FGTS do comprador que será usada para pagar o imóvel. Informe o valor previsto para esta venda.",
+  government_subsidy: "Benefício do programa habitacional que compõe o pagamento da venda. Informe o valor previsto para este imóvel.",
+}
+
 function SaleDocumentationEditor({ saleForm, onChange, documentationTypes, loadingDocumentationTypes, disabled }) {
   const documentationRows = saleForm.documentations ?? []
   const documentationTotal = sumSaleDocumentations(buildSaleDocumentationsFromForm(saleForm))
@@ -10340,7 +10363,7 @@ function SaleDocumentationEditor({ saleForm, onChange, documentationTypes, loadi
       {documentationRows.map((documentationRow) => (
         <div key={documentationRow.key} className={styles.formGrid}>
           <div className={styles.filterControl}>
-            <span>Tipo *</span>
+            <span>Tipo * <InfoTip floating insideLabel label="Sobre o tipo de documentação">Escolha ou cadastre a despesa cobrada do comprador, como cartório ou avaliação.</InfoTip></span>
             <CreatableCombobox
               allowCreate
               disabled={disabled}
@@ -10366,7 +10389,7 @@ function SaleDocumentationEditor({ saleForm, onChange, documentationTypes, loadi
             />
           </div>
           <label className={styles.filterControl}>
-            <span>Valor *</span>
+            <span>Valor * <InfoTip floating insideLabel label="Sobre o valor da documentação">Valor da despesa que será cobrada do comprador. Exemplo: R$ 500,00 de cartório.</InfoTip></span>
             <input
               type="text"
               inputMode="decimal"
@@ -10537,9 +10560,10 @@ function SaleUnitModal({
               {formatMoney(receivableTotal)} e refazer as parcelas em aberto. Confira antes de continuar.
             </p>
           ) : null}
-          <div className={styles.formGrid}>
+          <div className={styles.salePeopleGrid}>
             <PersonPicker
-              label={isDelivered ? "Comprador" : "Comprador*"}
+              label="Comprador"
+              labelHelp={<InfoTip floating insideLabel label="Sobre o comprador">Pessoa principal identificada como compradora no contrato da unidade. Busque pelo nome cadastrado.</InfoTip>}
               disabled={isDelivered}
               value={saleForm.buyerPersonId}
               onChange={(value) => onChange("buyerPersonId", value)}
@@ -10549,22 +10573,28 @@ function SaleUnitModal({
             />
             <PersonPicker
               label="Comprador secundário"
+              labelHelp={<InfoTip floating insideLabel label="Sobre o comprador secundário">Outra pessoa identificada como compradora no mesmo contrato. Deixe em branco quando houver apenas um comprador.</InfoTip>}
               disabled={isDelivered}
               value={saleForm.secondaryBuyerPersonId}
               onChange={(value) => onChange("secondaryBuyerPersonId", value)}
               knownPeople={people}
               emptyLabel={isDelivered ? "Comprador secundário não informado" : "Buscar comprador secundário"}
             />
-            <PersonPicker
-              label="Corretor"
-              value={saleForm.brokerPersonId}
-              onChange={(value) => onChange("brokerPersonId", value)}
-              knownPeople={people}
-              businessRole="broker"
-              emptyLabel="Buscar corretor pelo nome"
-            />
+            <div className={styles.saleBrokerRow}>
+              <PersonPicker
+                label="Corretor"
+                labelHelp={<InfoTip floating insideLabel label="Sobre o corretor">Pessoa que intermediou esta venda. Selecione o corretor cadastrado pelo nome.</InfoTip>}
+                value={saleForm.brokerPersonId}
+                onChange={(value) => onChange("brokerPersonId", value)}
+                knownPeople={people}
+                businessRole="broker"
+                emptyLabel="Buscar corretor pelo nome"
+              />
+            </div>
+          </div>
+          <div className={styles.formGrid}>
             <label className={styles.filterControl}>
-              <span>{isDelivered ? "Preço da venda" : "Preço da venda*"}</span>
+              <span>{isDelivered ? "Preço da venda" : "Preço da venda*"} <InfoTip floating insideLabel label="Sobre o preço da venda">Valor total negociado pelo imóvel, antes de descontar abatimentos e somar despesas de documentação.</InfoTip></span>
               <input
                 type="text"
                 inputMode="decimal"
@@ -10578,7 +10608,7 @@ function SaleUnitModal({
               )}
             </label>
             <label className={styles.filterControl}>
-              <span>Desconto</span>
+              <span>Desconto <InfoTip floating insideLabel label="Sobre o desconto">Valor em reais abatido do preço da venda. Exemplo: digite R$ 5.000,00 se esse foi o valor do abatimento acordado.</InfoTip></span>
               <input
                 type="text"
                 inputMode="decimal"
@@ -10588,7 +10618,7 @@ function SaleUnitModal({
               />
             </label>
             <label className={styles.filterControl}>
-              <span>Assinatura do contrato</span>
+              <span>Assinatura do contrato <InfoTip floating insideLabel label="Sobre a data de assinatura">Dia em que as partes assinaram o contrato de venda da unidade.</InfoTip></span>
               <input
                 type="date"
                 value={saleForm.contractSignatureDate}
@@ -10624,16 +10654,13 @@ function SaleUnitModal({
 
           <div className={styles.card}>
             <div className={styles.scopeMeta}>
-              <strong>Liberado pelo banco</strong>
-              <span className={styles.metricHint}>
-                Compoe o preço da venda e <strong>não gera parcela</strong>: a data de pagamento depende da
-                liberação, então a data informada e apenas a previsão.
-              </span>
+              <strong>Previsão de repasse</strong>
+              <span className={styles.metricHint}>Valores que devem entrar pelo banco e que compõem o preço da venda.</span>
             </div>
             {settlementSources.map((source) => (
               <div key={source.sourceType} className={styles.formGrid}>
                 <label className={styles.filterControl}>
-                  <span>{source.label}</span>
+                  <span>{source.label} <InfoTip floating insideLabel label={`Sobre ${source.label}`}>{saleRepassHelp[source.sourceType]}</InfoTip></span>
                   <input
                     type="text"
                     inputMode="decimal"
@@ -10646,7 +10673,7 @@ function SaleUnitModal({
                   />
                 </label>
                 <label className={styles.filterControl}>
-                  <span>Previsão de liberação</span>
+                  <span>Previsão de liberação <InfoTip floating insideLabel label={`Sobre a previsão de liberação de ${source.label}`}>Data estimada em que esse valor será liberado pelo banco. Use a previsão informada para esta venda.</InfoTip></span>
                   <input
                     type="date"
                     disabled={loading || compositionLoading || compositionFailed}
@@ -10674,17 +10701,16 @@ function SaleUnitModal({
                 <input
                   type="checkbox"
                   checked={saleForm.financingCompleted}
-                  disabled={loading}
-                  onChange={(event) => onChange("financingCompleted", event.target.checked)}
+                  disabled
                 />
-                <span>Financiamento concluído</span>
+                <span>Financiamento concluído <InfoTip floating insideLabel label="Sobre financiamento concluído">Indica se o financiamento da venda foi concluído. Consulte Recebimentos do banco para ver os valores recebidos.</InfoTip></span>
               </label>
               <label className={styles.filterControl}>
-                <span>Data do financiamento</span>
+                <span>Data do financiamento <InfoTip floating insideLabel label="Sobre a data do financiamento">Data da conclusão do financiamento. A data de cada depósito aparece em Recebimentos do banco.</InfoTip></span>
                 <input
                   type="date"
                   value={saleForm.financingDate}
-                  onChange={(event) => onChange("financingDate", event.target.value)}
+                  readOnly
                 />
               </label>
             </div>
@@ -10809,7 +10835,7 @@ function SaleUnitModal({
 
           {isDelivered && (
             <label className={styles.filterControl}>
-              <span>Motivo da alteração dos valores *</span>
+              <span>Motivo da alteração dos valores * <InfoTip floating insideLabel label="Sobre o motivo da alteração">Explique a alteração dos valores da unidade entregue. Exemplo: a Caixa confirmou um valor diferente no contrato definitivo. O motivo fica no Histórico.</InfoTip></span>
               <textarea rows={3} maxLength={2000} value={saleForm.changeReason ?? ""}
                 onChange={(event) => onChange("changeReason", event.target.value)}
                 placeholder="Ex.: atualização conforme contrato definitivo do banco" />
@@ -10820,7 +10846,7 @@ function SaleUnitModal({
           )}
 
           <label className={styles.filterControl}>
-            <span>Observação</span>
+            <span>Observação <InfoTip floating insideLabel label="Sobre a observação">Anote informações úteis para consultar a venda depois, como condições acordadas, pendências ou referências do contrato.</InfoTip></span>
             <textarea
               rows={3}
               value={saleForm.saleNotes}
@@ -10847,7 +10873,7 @@ function SaleUnitModal({
                     <td className={styles.textRight}>- {formatMoney(discountAmount)}</td>
                   </tr>
                   <tr>
-                    <td>Liberado pelo banco (subsídio + FGTS + financiamento)</td>
+                    <td>Previsão de repasse (subsídio + FGTS + financiamento)</td>
                     <td className={styles.textRight}>- {formatMoney(settlementTotal)}</td>
                   </tr>
                   <tr>

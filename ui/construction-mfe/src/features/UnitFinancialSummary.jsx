@@ -62,6 +62,9 @@ export function UnitFinancialSummary({ bridge, unit, plan, formatMoney, download
     ["Entrada", summary.entry],
     ["Desconto", saleValues.Desconto],
   ]
+  if (Number(summary.bank_confirmed) > 0) details.push(["Repasses confirmados no banco", summary.bank_confirmed])
+  if (Number(summary.bank_historical) > 0) details.push(["Repasses recebidos no histórico", summary.bank_historical])
+  if (Number(summary.bank_outstanding) > 0) details.push(["Repasses a receber", summary.bank_outstanding])
 
   return (
     <section className={styles.card} aria-label="Resumo financeiro da unidade">

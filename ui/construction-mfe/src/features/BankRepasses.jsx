@@ -88,6 +88,7 @@ function CreditForm({ bridge, selected, onClose, onSaved, inline = false }) {
   const [data, setData] = useState({ bank_account_id: "", credit_date: "", reference: "", amount: "" })
   const [manualLines, setManualLines] = useState(null)
   const [proof, setProof] = useState(null)
+  const [entryReference, setEntryReference] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
 
@@ -135,10 +136,11 @@ function CreditForm({ bridge, selected, onClose, onSaved, inline = false }) {
       const formData = new FormData()
       formData.append("payload", JSON.stringify({
         ...data, amount: (credit / 100).toFixed(2), allocations, confirmed_in_statement: true,
+        entry_reference: entryReference.trim() || null,
       }))
       if (proof) formData.append("proof", proof)
       await api(bridge, "/confirm", { method: "POST", body: formData })
-      onSaved("Recebimento salvo. A Contabilidade pode conferir e dar baixa neste registro.")
+      onSaved("Repasse recebido e contabilizado.")
     } catch (err) {
       setError(err.message)
     } finally {
@@ -154,7 +156,7 @@ function CreditForm({ bridge, selected, onClose, onSaved, inline = false }) {
     return [row.project, row.unit, labels[row.source]].join(" · ")
   }
 
-  return <RepassForm bridge={bridge} title="Registrar recebimento" submitLabel="Confirmar recebimento no banco"
+  return <RepassForm bridge={bridge} title="Registrar recebimento" submitLabel="Confirmar e baixar repasse"
     onClose={onClose} onSubmit={submit} busy={busy} error={error} disabled={!ready} inline={inline} formId={formId}>
     {singleSale ? <>
       {sources.length > 1 && <p className={styles.formNote}>Preencha só os valores que entraram neste depósito.</p>}
@@ -207,6 +209,13 @@ function CreditForm({ bridge, selected, onClose, onSaved, inline = false }) {
           onChange={(event) => setProof(event.target.files[0] || null)} />
       </label>
     </details>
+    {bridge.canUpdate?.("accounting_entry") && <details className={styles.breakdown}>
+      <summary>Depósito já lançado no razão</summary>
+      <label className={styles.field}>Referência do lançamento no razão
+        <input form={formId} maxLength={50} value={entryReference}
+          onChange={(event) => setEntryReference(event.target.value)} />
+      </label>
+    </details>}
     {needsManual && <fieldset className={styles.formGrid}>
       <legend>Quanto entrou de cada tipo?</legend>
       {sources.map((row) => <label className={styles.field} key={row.key}>
@@ -228,14 +237,9 @@ function CreditForm({ bridge, selected, onClose, onSaved, inline = false }) {
 }
 
 function AccountingModal({ bridge, credit, item, onClose, onSaved }) {
-  const options = useRepassData(bridge, "/sales/" + item.sale_id + "/installments", 0)
-  const [treatment, setTreatment] = useState("receivable")
-  const [target, setTarget] = useState("")
+  const [reference, setReference] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
-  const canAccount = bridge.canUpdate?.("accounting_entry")
-  const eligible = (options.data || []).filter((row) => Number(row.outstanding) >= Number(item.amount))
-
 
   async function submit(event) {
     event.preventDefault()
@@ -244,8 +248,8 @@ function AccountingModal({ bridge, credit, item, onClose, onSaved }) {
     try {
       await api(bridge, "/" + credit.id + "/allocations/" + item.id + "/account", {
         method: "POST", body: {
-          treatment, target_id: treatment === "receivable" ? target : null,
-          entry_reference: treatment === "existing" ? target.trim() : null,
+          treatment: reference.trim() ? "existing" : "direct",
+          entry_reference: reference.trim() || null,
         },
       })
       onSaved("Repasse contabilizado.")
@@ -257,28 +261,13 @@ function AccountingModal({ bridge, credit, item, onClose, onSaved }) {
   }
 
   return <RepassForm bridge={bridge} title="Contabilizar repasse"
-    submitLabel={treatment === "receivable" ? "Dar baixa na parcela" : "Confirmar contabilização"} onClose={onClose}
-    onSubmit={submit} busy={busy} error={error || options.error} disabled={treatment !== "advance" && !target.trim()}>
+    submitLabel={reference.trim() ? "Vincular lançamento" : "Contabilizar depósito"} onClose={onClose}
+    onSubmit={submit} busy={busy} error={error}>
     <strong>{item.unit_code} · {labels[item.source]} · {formatBRL(item.amount)}</strong>
-    <label className={styles.field}>Tratamento contábil *
-      <select value={treatment} onChange={(event) => { setTreatment(event.target.value); setTarget("") }}>
-        <option value="receivable">Baixar parcela da venda</option>
-        {canAccount && bridge.canCreate?.("receivable") && <option value="advance">Registrar adiantamento</option>}
-        {canAccount && <option value="existing">Vincular lançamento já contabilizado</option>}
-      </select>
+    <p className={styles.formNote}>Se o depósito já estiver no razão, informe a referência para usar o lançamento existente.</p>
+    <label className={styles.field}>Referência do lançamento no razão
+      <input maxLength={50} value={reference} onChange={(event) => setReference(event.target.value)} />
     </label>
-    {treatment === "receivable" && <>
-      <p className={styles.formNote}>Escolha a parcela que corresponde a este repasse.</p>
-      <label className={styles.field}>Parcela *
-        <select required value={target} onChange={(event) => setTarget(event.target.value)}>
-          <option value="">{options.loading ? "Carregando parcelas..." : eligible.length ? "Selecione" : "Nenhuma parcela disponível"}</option>
-          {eligible.map((row) => <option key={row.id} value={row.id}>Parcela {row.number} · Saldo {formatBRL(row.outstanding)}</option>)}
-        </select>
-      </label>
-    </>}
-    {treatment === "existing" && <label className={styles.field}>Nº de referência do lançamento no razão *
-      <input required maxLength={50} value={target} onChange={(event) => setTarget(event.target.value)} />
-    </label>}
   </RepassForm>
 }
 
@@ -389,14 +378,14 @@ export function UnitBankRepasses({ bridge, saleId, onChanged, canRegister = true
           <span>{labels[item.source]} · {formatBRL(item.amount)} · {
             { pending: "Para contabilizar", accounted: "Contabilizado", historical: "Valor original" }[item.accounting_status]
           }</span>
-          {credit.can_manage && writable && item.accounting_status === "pending" && <button type="button" className={styles.secondary}
+          {credit.can_manage && writable && bridge.canUpdate?.("accounting_entry") && item.accounting_status === "pending" && <button type="button" className={styles.secondary}
             onClick={() => setDialog({ kind: "account", credit, item })}>Contabilizar</button>}
         </div>
       ))}
     </article>)}
     {dialog?.kind === "account" && <AccountingModal bridge={bridge} {...dialog} onClose={() => setDialog(null)} onSaved={saved} />}
     {dialog?.kind === "reverse" && <ConfirmDialog isOpen title="Estornar repasse" variant="danger"
-      message="O estorno reabre o saldo do repasse nas unidades vinculadas e estorna as baixas geradas por esta operação."
+      message="O estorno reabre o saldo do repasse e estorna a contabilização gerada pelo ONAVE para este depósito."
       confirmLabel="Estornar" loading={reversing} onCancel={() => setDialog(null)} onConfirm={reverse} />}
   </section>
 }
