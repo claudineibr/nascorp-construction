@@ -15,6 +15,8 @@ from app.domain.exceptions import ConstructionDomainError
 from app.domain.permissions import ConstructionFeature, PermissionAction
 from app.domain.services import ConstructionProjectService
 from app.domain.services.construction_contract_context_service import ConstructionContractContextService
+from app.domain.services.unit_signal_report_service import UnitSignalReportService
+from app.schemas.construction.unit_signal_report import UnitSignalProjectOptions, UnitSignalReportResponse, UnitSignalStatusFilter
 from app.schemas.construction.unit_contract import (
     ConstructionUnitContractContextResponse,
     ConstructionUnitSummaryContextResponse,
@@ -156,6 +158,49 @@ async def dwelling_report(
             ctx.company_id, project_id=project_id, correspondent=correspondent,
             client_situation=client_situation, process_status=process_status,
         )
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+_require_unit_signal_report = require_permission("report_unit_signals", PermissionAction.READ)
+
+
+@router.get("/unit-signal-report/projects", response_model=UnitSignalProjectOptions)
+async def unit_signal_report_projects(
+    search: str | None = Query(default=None, max_length=120),
+    ctx: ConstructionContext = Depends(_require_unit_signal_report),
+    session: AsyncSession = Depends(get_session),
+):
+    service = UnitSignalReportService(ConstructionRepository(session, scope=ctx.project_scope), ctx)
+    try:
+        return await service.projects(search)
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/unit-signal-report/beneficiaries", response_model=list[UUID])
+async def unit_signal_report_beneficiaries(
+    ctx: ConstructionContext = Depends(_require_unit_signal_report),
+    session: AsyncSession = Depends(get_session),
+):
+    service = UnitSignalReportService(ConstructionRepository(session, scope=ctx.project_scope), ctx)
+    try:
+        return await service.beneficiaries()
+    except ConstructionDomainError as exc:
+        raise _http_error(exc=exc) from exc
+
+
+@router.get("/unit-signal-report", response_model=UnitSignalReportResponse)
+async def unit_signal_report(
+    project_id: UUID | None = None,
+    beneficiary_id: UUID | None = None,
+    report_status: UnitSignalStatusFilter = "unpaid",
+    ctx: ConstructionContext = Depends(_require_unit_signal_report),
+    session: AsyncSession = Depends(get_session),
+):
+    service = UnitSignalReportService(ConstructionRepository(session, scope=ctx.project_scope), ctx)
+    try:
+        return await service.build(project_id, beneficiary_id, report_status)
     except ConstructionDomainError as exc:
         raise _http_error(exc=exc) from exc
 

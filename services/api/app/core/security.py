@@ -42,6 +42,8 @@ async def get_construction_context(
 ) -> ConstructionContext:
     token = _extract_bearer_token(authorization=authorization)
     payload = _decode_jwt(token=token)
+    if payload.get("purpose"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token inválido")
     user_id = _extract_user_id(payload=payload)
     effective_permissions = await _resolve_permissions(
         permission_client=permission_client,
@@ -62,6 +64,7 @@ async def get_construction_context(
     bind_business_timezone(effective_permissions.timezone)
     return ConstructionContext(
         timezone=effective_permissions.timezone,
+        can_view_all_unit_signals=effective_permissions.can_view_all_unit_signals,
         company_id=x_company_id,
         user_id=user_id,
         person_id=effective_permissions.person_id,

@@ -22,6 +22,7 @@ class ConstructionContext:
     feature_permissions: dict[str, int]
     project_scope: ProjectScope = field(default_factory=ProjectScope.unlimited)
     timezone: str = "America/Sao_Paulo"
+    can_view_all_unit_signals: bool = False
 
     def can(self, feature: str, action: int) -> bool:
         return (int(self.feature_permissions.get(feature, 0)) & action) == action

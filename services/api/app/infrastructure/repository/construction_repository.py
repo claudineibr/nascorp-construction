@@ -1089,6 +1089,64 @@ class ConstructionRepository(UnitSaleValueAuditRepository, UnitTransferRepositor
             ).values(sale_id=sale_id).execution_options(synchronize_session=False)
         )
 
+    def _unit_signal_report_query(self, company_id, beneficiary_id=None):
+        signal = ConstructionUnitCommission
+        unit = ConstructionUnit
+        project = ConstructionProject
+        query = (
+            select(signal.id)
+            .select_from(signal)
+            .join(unit, and_(unit.id == signal.unit_id, unit.company_id == signal.company_id))
+            .join(project, and_(project.id == unit.project_id, project.company_id == unit.company_id))
+            .where(
+                signal.company_id == company_id,
+                signal.deleted_at.is_(None),
+                unit.deleted_at.is_(None),
+                project.deleted_at.is_(None),
+                or_(
+                    signal.sale_id.is_(None),
+                    signal.sale_id == unit.current_sale_id,
+                    signal.payment_date.is_not(None),
+                ),
+                *scope_conditions(unit, self.scope),
+            )
+        )
+
+        if beneficiary_id is not None:
+            query = query.where(signal.beneficiary_person_id == beneficiary_id)
+        return query
+
+    async def unit_signal_report_projects(self, company_id, search, beneficiary_id):
+        project = ConstructionProject
+        query = self._unit_signal_report_query(company_id, beneficiary_id).with_only_columns(project.id, project.name)
+        if search:
+            query = query.where(project.name.ilike(f"%{search}%"))
+        return (await self.session.execute(query.distinct().order_by(project.name, project.id).limit(30))).mappings().all()
+
+    async def unit_signal_report_project_name(self, company_id, project_id, beneficiary_id):
+        project = ConstructionProject
+        query = self._unit_signal_report_query(company_id, beneficiary_id).with_only_columns(project.name)
+        return await self.session.scalar(query.where(project.id == project_id).limit(1))
+
+    async def unit_signal_report_beneficiaries(self, company_id):
+        column = ConstructionUnitCommission.beneficiary_person_id
+        query = self._unit_signal_report_query(company_id).with_only_columns(column).distinct()
+        return (await self.session.scalars(query)).all()
+
+    async def unit_signal_report_rows(self, company_id, project_id, beneficiary_id):
+        signal = ConstructionUnitCommission
+        unit = ConstructionUnit
+        project = ConstructionProject
+        query = self._unit_signal_report_query(company_id, beneficiary_id).with_only_columns(
+            project.id.label("project_id"), project.name.label("project_name"),
+            unit.id.label("unit_id"), unit.code.label("unit_code"), unit.description.label("unit_description"),
+            signal.beneficiary_person_id, signal.sequence_number, signal.amount, signal.due_date, signal.payment_date,
+        )
+        if project_id is not None:
+            query = query.where(project.id == project_id)
+        query = query.order_by(project.name, project.id, unit.code, unit.id, signal.due_date, signal.sequence_number)
+        return (await self.session.execute(query)).mappings().all()
+
     async def list_unit_commissions(
         self,
         *,

@@ -369,9 +369,11 @@ def create_test_client(*, permissions: dict[str, int], service: "FakeProjectServ
     return TestClient(app)
 
 
-def make_authorization_header(*, user_id: UUID) -> str:
+def make_authorization_header(*, user_id: UUID, purpose=None) -> str:
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {"sub": str(user_id), "exp": int((datetime.now(tz=UTC) + timedelta(minutes=10)).timestamp())}
+    if purpose is not None:
+        payload["purpose"] = purpose
     header_value = base64url_encode(json.dumps(header, separators=(",", ":")).encode())
     payload_value = base64url_encode(json.dumps(payload, separators=(",", ":")).encode())
     signed_value = f"{header_value}.{payload_value}".encode()
@@ -393,6 +395,18 @@ def test_create_project_rejects_invalid_jwt() -> None:
         json={"code": "OBRA-001", "name": "Obra Alpha"},
     )
 
+    assert response.status_code == 401
+
+
+def test_signals_report_requires_an_access_token():
+    client = create_test_client(permissions={"report_unit_signals": PermissionAction.READ})
+    response = client.get(
+        "/v1/construction/unit-signal-report",
+        headers={
+            "Authorization": make_authorization_header(user_id=uuid4(), purpose="mfa_challenge"),
+            "X-Company-ID": str(uuid4()),
+        },
+    )
     assert response.status_code == 401
 
 
