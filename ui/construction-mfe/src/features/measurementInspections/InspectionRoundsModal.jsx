@@ -1,5 +1,3 @@
-import { FileSpreadsheet } from "lucide-react"
-
 import styles from "./MeasurementInspections.module.css"
 import { describeActor, describeInspector } from "./actorLabel"
 import { roundStatusLabel } from "./inspectionVocabulary"
@@ -58,18 +56,12 @@ export function InspectionRoundsModal({ inspection, onClose }) {
                         {round.sequenceNumber}. {roundStatusLabel[round.status] ?? round.status}
                       </span>
                       <span className={styles.timelineMoment}>{formatMoment(round.verifiedAt)}</span>
-                      {round.source === "migration" ? (
-                        <span className={styles.sourceTag} title="Veio da carga do sistema antigo">
-                          <FileSpreadsheet size={12} />
-                          carga do legado
-                        </span>
-                      ) : null}
                       {round.isInferred ? (
                         <span
                           className={styles.sourceTag}
-                          title="Reprovação deduzida do status do legado: data, motivo e responsável não foram preservados"
+                          title="Reprovação sem data, motivo ou responsável informados"
                         >
-                          inferida
+                          Sem detalhes
                         </span>
                       ) : null}
                     </div>

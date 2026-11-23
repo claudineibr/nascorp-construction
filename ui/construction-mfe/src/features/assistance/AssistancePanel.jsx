@@ -22,7 +22,7 @@ const stageLabels = {
   completed: "Concluída",
 }
 const eventLabels = {
-  imported: "Importada",
+  imported: "Registro inicial",
   created: "Criada",
   updated: "Alterada",
   completed: "Concluída",

@@ -21,7 +21,6 @@ export function buildUnitHistoryRows({ buyers, sales, transfers, unitId }) {
     id: `buyer:${item.id}`,
     buyerPersonId: item.buyer_person_id,
     buyerName: item.buyer_name,
-    originLabel: item.origin_label,
     includedAt: item.included_at,
     includedBy: item.included_by_name,
     excludedAt: item.excluded_at,
@@ -45,7 +44,6 @@ export function buildUnitHistoryRows({ buyers, sales, transfers, unitId }) {
     if (!row) {
       row = {
         id: `sale:${sale.id}`, buyerPersonId: sale.buyerPersonId,
-        originLabel: sale.source === "LEGACY" ? "Sistema anterior" : "ONAVE",
         includedAt: sale.soldAt,
         excludedAt: sale.status === "ACTIVE" ? null : endedAt || sale.terminationDate,
         sales: [], transfers: [],
@@ -68,7 +66,7 @@ export function buildUnitHistoryRows({ buyers, sales, transfers, unitId }) {
     }
     if (!row) {
       row = {
-        id: `transfer:${transfer.transfer_id}`, originLabel: "ONAVE",
+        id: `transfer:${transfer.transfer_id}`,
         includedAt: outgoing ? null : transfer.occurred_at,
         excludedAt: outgoing ? transfer.occurred_at : null,
         sales: [], transfers: [],

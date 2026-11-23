@@ -2,6 +2,7 @@ import { Plus, X } from "lucide-react"
 
 import appStyles from "../../App.module.css"
 import styles from "./unitTermination.module.css"
+import { InfoTip } from "../../components/InfoTip.jsx"
 import { formatCurrencyInput } from "../../utils/currencyInput.js"
 
 export const TERMINATION_DEDUCTION_TYPES = [
@@ -40,7 +41,7 @@ export function TerminationTermsEditor({ terms, onChange, hasSegregatedAssets = 
         return (
           <div key={index} className={styles.deductionRow}>
             <label className={appStyles.filterControl}>
-              <span>Tipo de dedução*</span>
+              <span>Tipo de dedução* <InfoTip floating insideLabel label="Sobre o tipo de dedução">Escolha o que o contrato permite descontar do valor a devolver, como multa ou corretagem.</InfoTip></span>
               <select
                 value={deduction.type}
                 disabled={disabled}
@@ -54,7 +55,7 @@ export function TerminationTermsEditor({ terms, onChange, hasSegregatedAssets = 
               </select>
             </label>
             <label className={appStyles.filterControl}>
-              <span>{isMoney ? "Valor*" : "Percentual*"}</span>
+              <span>{isMoney ? "Valor*" : "Percentual*"} <InfoTip floating insideLabel label="Sobre o valor da dedução">Informe o valor em reais ou o percentual, conforme o tipo escolhido. Exemplo: 10 para uma dedução de 10%.</InfoTip></span>
               <input
                 type="text"
                 inputMode="decimal"
@@ -69,7 +70,7 @@ export function TerminationTermsEditor({ terms, onChange, hasSegregatedAssets = 
               />
             </label>
             <label className={appStyles.filterControl}>
-              <span>Descrição</span>
+              <span>Descrição <InfoTip floating insideLabel label="Sobre a descrição da dedução">Identificação opcional da dedução. Exemplo: multa prevista na cláusula 8.</InfoTip></span>
               <input
                 type="text"
                 maxLength={120}
@@ -100,7 +101,7 @@ export function TerminationTermsEditor({ terms, onChange, hasSegregatedAssets = 
       </div>
       <div className={appStyles.formGrid}>
         <label className={appStyles.filterControl}>
-          <span>Mínimo a devolver (% do pago)</span>
+          <span>Mínimo a devolver (% do pago) <InfoTip floating insideLabel label="Sobre o mínimo a devolver">Percentual mínimo do total pago que deve ser devolvido ao comprador no distrato.</InfoTip></span>
           <input
             type="text"
             inputMode="decimal"
@@ -111,7 +112,7 @@ export function TerminationTermsEditor({ terms, onChange, hasSegregatedAssets = 
           />
         </label>
         <label className={appStyles.filterControl}>
-          <span>Prazo de devolução (dias)</span>
+          <span>Prazo de devolução (dias) <InfoTip floating insideLabel label="Sobre o prazo de devolução">Número de dias previsto nas regras da venda para devolver o valor ao comprador.</InfoTip></span>
           <input
             type="text"
             inputMode="numeric"

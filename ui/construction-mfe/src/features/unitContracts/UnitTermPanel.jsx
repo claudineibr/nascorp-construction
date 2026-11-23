@@ -5,7 +5,7 @@ import { Dialog } from "../subcontracts/DirectBillsSection.jsx";
 import styles from "./UnitContractPanel.module.css";
 import termStyles from "./UnitTermPanel.module.css";
 
-const origins = { legacy: "Legado", generation: "Gerado", manual: "Manual" };
+const origins = { legacy: "Documento arquivado", generation: "Gerado", manual: "Manual" };
 
 export function UnitTermPanel({ bridge, unit, kind }) {
   const title = kind === "delivery_term" ? "Termo de entrega" : "TCD";
@@ -92,7 +92,7 @@ export function UnitTermPanel({ bridge, unit, kind }) {
         <tbody>{history.items.map((row) => <tr key={row.id}>
           <td><button type="button" className={styles.secondaryButton} onClick={() => setSelected(row)}>{row.version_number}</button></td>
           <td>{origins[row.type] ?? row.type}</td><td>{row.created_by_name}</td>
-          <td>{row.type === "legacy" ? "Importado em " : ""}{new Date(`${row.applied_at}Z`).toLocaleString("pt-BR")}</td>
+          <td>{row.type === "legacy" ? "Data de geração não informada" : new Date(`${row.applied_at}Z`).toLocaleString("pt-BR")}</td>
           <td>{row.reason || "-"}</td>
         </tr>)}</tbody>
       </table></div>}

@@ -6,7 +6,7 @@ import { UnitContractManualEdit } from "./UnitContractManualEdit.jsx";
 import { Dialog } from "../subcontracts/DirectBillsSection.jsx";
 import styles from "./UnitContractPanel.module.css";
 
-const origin = { generation: "Geração", regeneration: "Regeração", legacy: "Legado", initial: "Inicial", manual: "Manual", adjustment: "Reajuste", signature: "Assinatura" };
+const origin = { generation: "Geração", regeneration: "Regeração", legacy: "Documento arquivado", initial: "Inicial", manual: "Manual", adjustment: "Reajuste", signature: "Assinatura" };
 const status = { draft: "Minuta", signed: "Assinado", sent: "Enviado", active: "Ativo", canceled: "Cancelado" };
 const labels = { primary: "Comprador principal", secondary: "Segundo comprador", empreendimento: "Nome da obra", metragem: "M² Obra",
   lote: "Lote", matricula: "Matrícula", creci: "CRECI", corretor: "Corretor", dataentrega: "Entrega prevista",
@@ -196,7 +196,7 @@ export function UnitContractPanel({ bridge, unit }) {
         <tbody>{history.items.map((row) => <tr key={row.id}>
           <td><button type="button" className={styles.secondaryButton} onClick={() => setSelected(row)}>{row.version_number}</button></td>
           <td>{origin[row.type] ?? row.type}</td><td>{row.template_name || "Não informado"}</td><td>{row.created_by_name || "Não informado"}</td>
-          <td>{row.type === "legacy" ? "Data legada não informada; importado em " : ""}{new Date(`${row.applied_at}Z`).toLocaleString("pt-BR")}</td>
+          <td>{row.type === "legacy" ? "Data de geração não informada" : new Date(`${row.applied_at}Z`).toLocaleString("pt-BR")}</td>
           <td>{status[row.status] ?? row.status}</td><td>{row.reason || "-"}</td>
           <td><button type="button" className={styles.secondaryButton} onClick={() => printVersion(row)} disabled={busy || !row.content_html}>
             <Printer size={16} aria-hidden="true" />Imprimir contrato

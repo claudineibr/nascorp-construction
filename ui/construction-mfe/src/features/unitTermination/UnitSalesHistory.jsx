@@ -154,8 +154,7 @@ export function UnitSalesHistory({ bridge, unit, people = [], onEnsurePeople, re
               <tr><td colSpan={6}>{loading ? "Carregando histórico..." : "Nenhum histórico registrado."}</td></tr>
             ) : rows.map((row) => (
               <tr key={row.id}>
-                <td title={row.originLabel === "ONAVE" ? "Registro criado neste sistema"
-                  : `Origem do registro: ${row.originLabel || "não informada"}`}>
+                <td>
                   {row.buyerName || personName(row.buyerPersonId) || "Cliente não identificado no histórico"}
                 </td>
                 <td>

@@ -4916,13 +4916,14 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                 (tab.id !== "accountsReceivable" || ProjectAccountsReceivable) &&
                 (tab.id !== "serviceInvoices" || ProjectServiceInvoices)).map((tab) => {
                 const Icon = tab.icon
+                const active = projectDetailTab === tab.id
                 return (
                   <button
                     key={tab.id}
                     type="button"
-                    ref={projectDetailTab === tab.id ? revealActiveTab : undefined}
-                    className={`${styles.projectTabButton} ${projectDetailTab === tab.id ? styles.projectTabButtonActive : ""}`}
-                    aria-current={projectDetailTab === tab.id ? "page" : undefined}
+                    ref={active ? revealActiveTab : undefined}
+                    className={`${styles.projectTabButton} ${active ? styles.projectTabButtonActive : ""}`}
+                    aria-current={active ? "page" : undefined}
                     onClick={() => setProjectDetailTab(tab.id)}
                   >
                     <Icon size={16} aria-hidden="true" />
@@ -7460,7 +7461,7 @@ function PayInstallmentModal({
 
           {locked ? (
             <p className={styles.metricHint}>
-              {canReceive ? "A parcela tem recibo legado definitivo: não aceita alteração, estorno nem exclusão."
+              {canReceive ? "A parcela está bloqueada para alteração, estorno e exclusão porque tem recibo definitivo."
                 : "Seu perfil precisa de permissão para alterar Unidades de Obra e Contas a Receber."}
             </p>
           ) : (
@@ -9527,7 +9528,7 @@ const PROJECT_FIELD_HELP = {
     "Identifica a SPE da obra, mesmo quando outra empresa contratou a construção.",
   ],
   estimatedCost: [
-    "Informe o valor de referência previsto para a obra. Para uma empreitada migrada, o dado pode corresponder ao valor do contrato no sistema de origem.",
+    "Informe o valor de referência previsto para a obra. Em uma empreitada, use o valor do contrato como referência.",
     "Para um valor de quatro milhões, quatrocentos e noventa e nove mil reais, informe 4.499.000,00.",
     "O valor fica no cadastro da obra como referência.",
   ],
