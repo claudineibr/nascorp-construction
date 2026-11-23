@@ -16,25 +16,30 @@ const api = (bridge, path, options = {}) => requestJson({
   bridge, baseUrl: bridge.erpApiBaseUrl, path: "/v1/bank-repasses" + path, ...options,
 })
 
+const historicalPageSize = 1000
+
 const amountKey = (sale, source) => sale + ":" + source
 const positive = (amount) => Number(amount) > 0
 const cents = (amount) => Math.round(Number(currencyDecimal(amount)) * 100)
 const asMoney = (totalCents) => formatBRL(totalCents / 100)
 
 function useRepassData(bridge, path, revision) {
-  const [state, setState] = useState({ data: null, error: "", loading: true })
+  const [state, setState] = useState(null)
   useEffect(() => {
     const controller = new AbortController()
     if (!path) return () => controller.abort()
-    setState({ data: null, error: "", loading: true })
     api(bridge, path, { signal: controller.signal }).then((data) => {
-      if (!controller.signal.aborted) setState({ data, error: "", loading: false })
+      if (!controller.signal.aborted) setState({ bridge, path, revision, data, error: "", loading: false })
     }).catch((error) => {
-      if (!controller.signal.aborted) setState({ data: null, error: error.message, loading: false })
+      if (!controller.signal.aborted) {
+        setState({ bridge, path, revision, data: null, error: error.message, loading: false })
+      }
     })
     return () => controller.abort()
   }, [bridge, path, revision])
-  return state
+  return state?.bridge === bridge && state?.path === path && state?.revision === revision
+    ? state
+    : { data: null, error: "", loading: true }
 }
 
 function RepassTable({ sale }) {
@@ -415,25 +420,35 @@ function BankRepassBatchPanel({ bridge, projectId, projectName, historicalMode }
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [objects, setObjects] = useState({})
+  const [selectHistoryByDefault, setSelectHistoryByDefault] = useState(true)
   const [revision, setRevision] = useState(0)
   const [dialog, setDialog] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState("")
   const [selectedSale, setSelectedSale] = useState(null)
   const [amounts, setAmounts] = useState({})
-  const search = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
+  const search = new URLSearchParams({
+    page: String(historicalMode ? 1 : page),
+    page_size: String(historicalMode ? historicalPageSize : pageSize),
+  })
+  if (historicalMode) search.set("historical", "true")
   if (!allWorks) search.set("project_id", projectId)
   const view = useRepassData(bridge, "/sales?" + search.toString(), revision)
-  const items = view.data?.items || []
+  const sales = view.data?.items || []
+  const items = historicalMode ? sales.slice((page - 1) * pageSize, page * pageSize) : sales
+  const exceedsHistoryLimit = historicalMode && view.data?.total > sales.length
+  const totalItems = historicalMode ? sales.length : (view.data?.total ?? 0)
+  const totalPages = historicalMode ? Math.ceil(totalItems / pageSize) : view.data?.total_pages
   const writable = Boolean(bridge.canUpdate?.("receivable"))
   const Pagination = bridge.components.Pagination
   const primary = bridge.actionClasses?.primary || styles.primary
   const canSelect = (sale) => sale.amounts.some((row) => positive(row.outstanding) || (!historicalMode && positive(row.historical)))
   const selectable = items.filter(canSelect)
+  const selectedForHistory = (sale) => objects[sale.sale_id] ?? selectHistoryByDefault
   const pageSelection = selectable.filter((sale) => historicalMode
-    ? (objects[sale.sale_id] ?? (sale.financing_completed && !sale.terminated))
+    ? selectedForHistory(sale)
     : Boolean(depositSelections[sale.sale_id]))
-  const selected = historicalMode ? pageSelection : Object.values(depositSelections)
+  const selected = historicalMode ? sales.filter(selectedForHistory) : Object.values(depositSelections)
   const allocations = (historicalMode ? selected : []).flatMap((sale) => sale.amounts.map((row) => {
     const key = amountKey(sale.sale_id, row.source)
     return { sale_id: sale.sale_id, source: row.source, amount: currencyDecimal(amounts[key] ?? currencyFromNumber(row.outstanding)) }
@@ -454,23 +469,31 @@ function BankRepassBatchPanel({ bridge, projectId, projectName, historicalMode }
     setRevision((current) => current + 1)
   }
 
+  function selectAllHistory(checked) {
+    setObjects({})
+    setSelectHistoryByDefault(checked)
+  }
+
   function reset() {
     setDialog(null)
     setAmounts({})
-    setObjects({})
+    selectAllHistory(true)
     setDepositSelections({})
+    if (historicalMode) changePage(1)
     refresh()
   }
 
   function changePage(next) {
     setPage(next)
-    setAmounts({})
-    setObjects({})
     setSelectedSale(null)
   }
 
   function changeScope(checked) {
     setAllWorks(checked)
+    if (historicalMode) {
+      setAmounts({})
+      selectAllHistory(true)
+    }
     if (!checked) {
       setDepositSelections((current) => Object.fromEntries(
         Object.entries(current).filter(([, sale]) => sale.project_id === projectId),
@@ -530,10 +553,17 @@ function BankRepassBatchPanel({ bridge, projectId, projectName, historicalMode }
             ? (selected.length === 1 ? "1 venda selecionada" : `${selected.length} vendas selecionadas`)
             : (historicalMode ? "Marque as vendas para revisar." : "Marque as vendas deste depósito para continuar.")}
         </span>
-        {selected.length > 0 && <button type="button" className={styles.secondary}
-          onClick={() => historicalMode ? selectSales(selectable, false) : setDepositSelections({})}>Limpar seleção</button>}
+        {selected.length > 0 && <button type="button" className={styles.secondary} onClick={() => {
+          if (historicalMode) selectAllHistory(false)
+          else setDepositSelections({})
+        }}>Limpar seleção</button>}
+        {historicalMode && !selected.length && sales.length > 0 && <button type="button"
+          className={styles.secondary} onClick={() => selectAllHistory(true)}>
+          Selecionar todas
+        </button>}
         <button type="button" className={primary} aria-describedby={selectionId}
-          disabled={view.loading || Boolean(view.error) || (historicalMode ? !allocations.length : !selected.length)}
+          disabled={view.loading || Boolean(view.error) || exceedsHistoryLimit ||
+            (historicalMode ? !allocations.length : !selected.length)}
           onClick={() => { setError(""); setDialog(historicalMode ? "approve" : { kind: "credit", selected }) }}>
           {historicalMode ? "Revisar lote" : "Preencher dados do depósito"}
         </button>
@@ -541,7 +571,12 @@ function BankRepassBatchPanel({ bridge, projectId, projectName, historicalMode }
     </div>
     {view.loading && <p role="status">Carregando repasses...</p>}
     {view.error && <p role="alert" className={styles.error}>{view.error}</p>}
-    {!view.loading && !view.error && !items.length && <p>Nenhuma venda com previsão de repasse.</p>}
+    {exceedsHistoryLimit && <p role="alert" className={styles.error}>
+      Há mais de mil vendas no histórico. Desmarque Mostrar vendas de todas as obras e revise um lote por obra.
+    </p>}
+    {!view.loading && !view.error && !items.length && <p>
+      {historicalMode ? "Nenhuma venda com saldo para regularizar." : "Nenhuma venda com previsão de repasse."}
+    </p>}
     {items.length > 0 && <div className={styles.scroll}>
       <table className={styles.table}>
         <thead><tr>
@@ -599,8 +634,8 @@ function BankRepassBatchPanel({ bridge, projectId, projectName, historicalMode }
         })}</tbody>
       </table>
     </div>}
-    {Pagination && view.data?.total > 0 && <Pagination currentPage={page} totalPages={view.data.total_pages}
-      totalItems={view.data.total} pageSize={pageSize} onPageChange={changePage}
+    {Pagination && totalItems > 0 && <Pagination currentPage={page} totalPages={totalPages}
+      totalItems={totalItems} pageSize={pageSize} onPageChange={changePage}
       onPageSizeChange={(size) => { setPageSize(size); changePage(1) }} />}
     {dialog?.kind === "credit" && <CreditForm bridge={bridge} selected={dialog.selected} onClose={() => setDialog(null)}
       onSaved={(message) => { reset(); bridge.feedback?.success?.(message) }} />}
