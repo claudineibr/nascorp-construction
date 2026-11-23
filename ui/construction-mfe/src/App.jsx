@@ -1513,6 +1513,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
   const [unitPaymentPlanError, setUnitPaymentPlanError] = useState(null)
   const [saleUnitForm, setSaleUnitForm] = useState(defaultSaleUnitForm)
   const [saleTargetUnit, setSaleTargetUnit] = useState(null)
+  const [saleRepassRevision, setSaleRepassRevision] = useState(0)
   const saleEditorRequest = useRef(null)
   const [terminationUnit, setTerminationUnit] = useState(null)
   const [transferUnit, setTransferUnit] = useState(null)
@@ -5075,7 +5076,8 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
                   <>
                     {canSeeBankRepasses(bridge, selectedProject) && (
                       <BankRepassBatches key={companyId + ":" + selectedProject.id} bridge={bridge} projectId={selectedProject.id}
-                        projectName={selectedProject.name} openHistory={bridge.initialRepassHistory && bridge.initialProjectId === selectedProject.id} />
+                        projectName={selectedProject.name} saleRevision={saleRepassRevision}
+                        openHistory={bridge.initialRepassHistory && bridge.initialProjectId === selectedProject.id} />
                     )}
                     <div className={styles.unitFilters}>
                       <PersonPicker
@@ -5336,7 +5338,10 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           bankRepasses={saleTargetUnit?.currentSaleId && selectedProject && canSeeBankRepasses(bridge, selectedProject) && (
             <UnitBankRepasses key={companyId + ":" + saleTargetUnit.currentSaleId}
               bridge={bridge} saleId={saleTargetUnit.currentSaleId}
-              onChanged={() => loadUnitPaymentPlan(saleTargetUnit.id)} />
+              onChanged={() => {
+                setSaleRepassRevision((current) => current + 1)
+                loadUnitPaymentPlan(saleTargetUnit.id)
+              }} />
           )}
           hasSegregatedAssets={Boolean(
             saleUnitForm.terminationTerms?.hasSegregatedAssets ?? selectedProject?.hasSegregatedAssets

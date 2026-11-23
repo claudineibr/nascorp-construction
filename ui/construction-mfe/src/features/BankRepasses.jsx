@@ -276,6 +276,21 @@ function AccountingModal({ bridge, credit, item, onClose, onSaved }) {
   </RepassForm>
 }
 
+function describeRepassReversal(credit) {
+  const sales = new Set(credit.allocations.map((item) => item.sale_id)).size
+  const batch = sales > 1
+  const historical = !credit.bank_account_id
+  const amount = formatBRL(credit.amount)
+  const title = batch ? "Estornar lote" : historical ? "Estornar histórico" : "Estornar repasse"
+  const scope = batch
+    ? `Você vai estornar o lote inteiro de ${sales} vendas, no valor total de ${amount}.`
+    : `Você vai estornar ${amount} desta venda.`
+  const effect = historical
+    ? "O saldo a receber será reaberto para os repasses incluídos no histórico."
+    : "O saldo a receber será reaberto. O ONAVE também estorna os lançamentos que gerou para este crédito."
+  return { title, message: `${scope} ${effect}`, confirmLabel: batch ? "Estornar lote inteiro" : "Estornar" }
+}
+
 export function UnitBankRepasses({ bridge, saleId, onChanged, canRegister = true }) {
   const [revision, setRevision] = useState(0)
   const [dialog, setDialog] = useState(null)
@@ -374,7 +389,9 @@ export function UnitBankRepasses({ bridge, saleId, onChanged, canRegister = true
           {credit.proof_name && <button type="button" className={styles.secondary} onClick={() => download(credit)}>Comprovante</button>}
           {credit.bank_account_id && credit.can_manage && !credit.proof_name && <span>Conferido no extrato · sem anexo</span>}
           {credit.can_manage && bridge.canDelete?.("receivable") && ConfirmDialog && (
-            <button type="button" className={styles.secondary} onClick={() => setDialog({ kind: "reverse", credit })}>Estornar</button>
+            <button type="button" className={styles.secondary} onClick={() => setDialog({ kind: "reverse", credit })}>
+              {credit.allocations.some((item) => item.sale_id !== saleId) ? "Estornar lote" : "Estornar"}
+            </button>
           )}
         </div>
       </div>
@@ -389,13 +406,13 @@ export function UnitBankRepasses({ bridge, saleId, onChanged, canRegister = true
       ))}
     </article>)}
     {dialog?.kind === "account" && <AccountingModal bridge={bridge} {...dialog} onClose={() => setDialog(null)} onSaved={saved} />}
-    {dialog?.kind === "reverse" && <ConfirmDialog isOpen title="Estornar repasse" variant="danger"
-      message="O estorno reabre o saldo do repasse e estorna a contabilização gerada pelo ONAVE para este depósito."
-      confirmLabel="Estornar" loading={reversing} onCancel={() => setDialog(null)} onConfirm={reverse} />}
+    {dialog?.kind === "reverse" && <ConfirmDialog isOpen variant="danger"
+      {...describeRepassReversal(dialog.credit)} loading={reversing}
+      onCancel={reversing ? undefined : () => setDialog(null)} onConfirm={reverse} />}
   </section>
 }
 
-export function BankRepassBatches({ bridge, projectId, projectName, openHistory }) {
+export function BankRepassBatches({ bridge, projectId, projectName, openHistory, saleRevision }) {
   const writable = bridge.canUpdate?.("receivable")
   const [mode, setMode] = useState(writable && openHistory ? "historical" : null)
   const toggle = (next) => setMode((current) => current === next ? null : next)
@@ -408,11 +425,12 @@ export function BankRepassBatches({ bridge, projectId, projectName, openHistory 
         Regularizar histórico
       </button>}
     </div>
-    {mode && <BankRepassBatchPanel key={mode} bridge={bridge} projectId={projectId} projectName={projectName} historicalMode={mode === "historical"} />}
+    {mode && <BankRepassBatchPanel key={mode} bridge={bridge} projectId={projectId} projectName={projectName}
+      saleRevision={saleRevision} historicalMode={mode === "historical"} />}
   </div>
 }
 
-function BankRepassBatchPanel({ bridge, projectId, projectName, historicalMode }) {
+function BankRepassBatchPanel({ bridge, projectId, projectName, historicalMode, saleRevision = 0 }) {
   const scopeId = useId()
   const selectionId = useId()
   const [depositSelections, setDepositSelections] = useState({})
@@ -433,12 +451,13 @@ function BankRepassBatchPanel({ bridge, projectId, projectName, historicalMode }
   })
   if (historicalMode) search.set("historical", "true")
   if (!allWorks) search.set("project_id", projectId)
-  const view = useRepassData(bridge, "/sales?" + search.toString(), revision)
+  const view = useRepassData(bridge, "/sales?" + search.toString(), revision + saleRevision)
   const sales = view.data?.items || []
-  const items = historicalMode ? sales.slice((page - 1) * pageSize, page * pageSize) : sales
   const exceedsHistoryLimit = historicalMode && view.data?.total > sales.length
   const totalItems = historicalMode ? sales.length : (view.data?.total ?? 0)
   const totalPages = historicalMode ? Math.ceil(totalItems / pageSize) : view.data?.total_pages
+  const currentPage = historicalMode && totalPages ? Math.min(page, totalPages) : page
+  const items = historicalMode ? sales.slice((currentPage - 1) * pageSize, currentPage * pageSize) : sales
   const writable = Boolean(bridge.canUpdate?.("receivable"))
   const Pagination = bridge.components.Pagination
   const primary = bridge.actionClasses?.primary || styles.primary
@@ -634,7 +653,7 @@ function BankRepassBatchPanel({ bridge, projectId, projectName, historicalMode }
         })}</tbody>
       </table>
     </div>}
-    {Pagination && totalItems > 0 && <Pagination currentPage={page} totalPages={totalPages}
+    {Pagination && totalItems > 0 && <Pagination currentPage={currentPage} totalPages={totalPages}
       totalItems={totalItems} pageSize={pageSize} onPageChange={changePage}
       onPageSizeChange={(size) => { setPageSize(size); changePage(1) }} />}
     {dialog?.kind === "credit" && <CreditForm bridge={bridge} selected={dialog.selected} onClose={() => setDialog(null)}
