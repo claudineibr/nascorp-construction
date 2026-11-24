@@ -68,6 +68,7 @@ class ConstructionProject(PreservedHistory, Base):
         default=ConstructionProjectType.RESIDENTIAL_VERTICAL,
     )
     development_type = mapped_column(String(20), nullable=True)
+    cost_appropriation_paused = mapped_column(Boolean, nullable=False, server_default=text("false"))
     customer_person_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
     cnpj_spe: Mapped[str | None] = mapped_column(String(18), nullable=True)
     address_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
