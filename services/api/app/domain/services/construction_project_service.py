@@ -966,7 +966,7 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
         if unit.status == ConstructionUnitStatus.DELIVERED and "sale_price" in updates:
             if updates.pop("sale_price") != unit.sale_price:
                 raise ConstructionInvalidValueError(
-                    message="O preço de uma unidade entregue é preenchido em Editar venda e bloqueado após o primeiro registro.",
+                    message="Para alterar o preço de uma unidade entregue, use Editar venda.",
                     error_code="CONSTRUCTION_DELIVERED_SALE_PRICE_LOCKED",
                 )
 
@@ -1449,14 +1449,8 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
             exclude_unset=True, exclude={"sale_id", "documentations", "bank_sources", "termination_terms", "change_reason", "expected_updated_at"},
         )
         requested_price = changes.pop("sale_price", None)
-        if requested_price is not None:
-            if unit.sale_price is None:
-                changes["sale_price"] = requested_price
-            elif requested_price != unit.sale_price:
-                raise ConstructionInvalidValueError(
-                    message="O preço da venda já foi preenchido e está bloqueado.",
-                    error_code="CONSTRUCTION_DELIVERED_SALE_PRICE_LOCKED",
-                )
+        if requested_price is not None and requested_price != unit.sale_price:
+            changes["sale_price"] = requested_price
 
         if "broker_person_id" in changes and request.broker_person_id != unit.broker_person_id:
             await self._require_company_people(
@@ -1558,7 +1552,7 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
 
         previous_discount = unit.discount_amount or Decimal("0")
         discount = request.discount_amount if "discount_amount" in request.model_fields_set else previous_discount
-        if discount >= sale_price and (unit.sale_price is None or discount > previous_discount):
+        if discount >= sale_price and (sale_price != unit.sale_price or discount > previous_discount):
             raise ConstructionInvalidValueError(
                 message="O desconto da venda precisa ser menor que o preço de venda.",
                 error_code="CONSTRUCTION_UNIT_DISCOUNT_EXCEEDS_SALE_PRICE",
@@ -5658,6 +5652,17 @@ class ConstructionProjectService(UnitSaleValueAuditService, UnitTransferService,
             raise self._erp_domain_error(
                 request_error=request_error,
                 fallback_message="Não foi possível incluir a parcela no ERP.",
+            ) from request_error
+        except httpx.RequestError as request_error:
+            _logger.warning(
+                f"[unit_installments] resultado_incerto: company_id={company_id} unit_id={unit.id} "
+                f"receivable_id={target_receivable_id} first_number={request.starting_number} "
+                f"count={request.count} error_type={type(request_error).__name__}"
+            )
+            raise ConstructionDomainError(
+                message="Confira se as parcelas foram incluídas antes de enviar novamente.",
+                status_code=504,
+                error_code="CONSTRUCTION_UNIT_INSTALLMENT_RESULT_UNKNOWN",
             ) from request_error
 
     async def pay_unit_installment(

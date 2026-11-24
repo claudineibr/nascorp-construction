@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { requestJson } from "../services/constructionApi.js"
 import styles from "./UnitFinancialSummary.module.css"
 
-export function UnitFinancialSummary({ bridge, unit, plan, formatMoney, downloadAction }) {
+export function UnitFinancialSummary({ bridge, unit, plan, formatMoney, downloadAction, onViewInstallments }) {
   const FieldInfo = bridge?.components?.FieldInfo
   const [summary, setSummary] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -52,6 +52,7 @@ export function UnitFinancialSummary({ bridge, unit, plan, formatMoney, download
     </section>
   )
 
+  const hasUnbilledBalance = unit.status === "delivered" && Number(summary.balance_to_charge) > 0
   const saleValues = Object.fromEntries(summary.sale_values)
   const openTotal = summary.groups.reduce((sum, group) => sum + Number(group.pending) + Number(group.overdue), 0)
   const openCount = summary.groups.reduce((sum, group) => sum + group.pending_count + group.overdue_count, 0)
@@ -119,7 +120,7 @@ export function UnitFinancialSummary({ bridge, unit, plan, formatMoney, download
           </span>
         </div>
         <div>
-          <strong>{formatMoney(summary.balance_to_charge)}</strong>
+          <strong className={hasUnbilledBalance ? styles.unbilledAmount : undefined}>{formatMoney(summary.balance_to_charge)}</strong>
           <span className={styles.metricLabel}>
             Saldo sem cobrança lançada
             {FieldInfo && (
@@ -127,10 +128,16 @@ export function UnitFinancialSummary({ bridge, unit, plan, formatMoney, download
                 label="Saldo sem cobrança lançada"
                 description="Parte do saldo devedor que ainda não tem cobrança. É o saldo devedor menos as cobranças da venda em aberto, com mínimo de zero."
                 example="R$ 183.450,00 de saldo devedor menos R$ 16.750,00 em cobranças abertas resulta em R$ 166.700,00."
-                usage="Mostra quanto ainda precisa ser cobrado por sinal ou aditivo."
+                usage="Use este saldo para conferir quanto falta distribuir nas cobranças da unidade."
               />
             )}
           </span>
+          {hasUnbilledBalance && (
+            <span className={styles.unbilledWarning} role="status">
+              Confira como esse saldo será pago. Se for parcelar, veja as cobranças existentes em{" "}
+              <button type="button" className={styles.installmentsLink} onClick={onViewInstallments}>Parcelas</button>.
+            </span>
+          )}
         </div>
       </div>
     </section>

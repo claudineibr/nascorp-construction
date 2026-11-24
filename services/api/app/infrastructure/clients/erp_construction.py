@@ -499,7 +499,8 @@ class ErpConstructionClient:
             "amount": format(amount, "f") if amount is not None else None,
         }
 
-        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=10) as client:
+        timeout = httpx.Timeout(10, read=50)
+        async with httpx.AsyncClient(base_url=settings.erp_api_url, timeout=timeout) as client:
             response = await client.post(
                 "/v1/internal/construction/unit-installments",
                 headers=self._service_headers(company_id=company_id, user_id=user_id),

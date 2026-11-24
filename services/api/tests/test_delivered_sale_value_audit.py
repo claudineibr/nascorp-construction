@@ -102,8 +102,35 @@ async def test_audit_failure_prevents_value_changes_and_commit():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", [{"sale_price": "170000.00"}, {"sale_id": str(uuid4())},
-                                    {"financing_date": date(2100, 1, 1)}])
+async def test_delivered_price_correction_updates_sale_and_audits_price_without_billing():
+    service, unit, sale, repository, client = scenario()
+    sale.sale_price = unit.sale_price
+    actor = uuid4()
+    request = ConstructionDeliveredSaleUpdateRequest(
+        sale_id=sale.id, expected_updated_at=unit.updated_at, documentations=[],
+        sale_price=Decimal("205500.00"), change_reason="Preço conforme contrato",
+    )
+
+    await service._update_delivered_sale(unit, request, actor, None)
+
+    audit = repository.add.call_args.args[0]
+    assert audit.old_data["sale_price"] == "167275.05"
+    assert audit.new_data["sale_price"] == "205500.00"
+    assert audit.new_data["balance"] == "55500.00"
+    assert audit.actor_user_id == actor
+    assert audit.reason == "Preço conforme contrato"
+    assert unit.sale_price == sale.sale_price == Decimal("205500.00")
+    assert unit.status == "delivered"
+    repository.commit.assert_awaited_once()
+    client.deliver_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [
+    {"sale_price": "100.00", "discount_amount": "100.00"},
+    {"sale_id": str(uuid4())},
+    {"financing_date": date(2100, 1, 1)},
+])
 async def test_existing_guards_still_reject_invalid_changes(change):
     service, unit, sale, repository, _ = scenario()
     data = dict(sale_id=sale.id, expected_updated_at=unit.updated_at, documentations=[], bank_sources=[{"source_type": "financing", "amount": "168000.00"}],

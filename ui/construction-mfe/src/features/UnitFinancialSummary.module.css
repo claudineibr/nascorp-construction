@@ -45,6 +45,19 @@
 }
 .saleDetails { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .metric .overdue, .grandTotal .overdue { color: var(--color-error-text); }
+.saleTotals .unbilledAmount, .unbilledWarning { color: var(--color-warning-text); }
+.unbilledWarning { font-size: 0.875rem; }
+.installmentsLink {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
 .state { color: var(--color-text); padding: 1rem; }
 .retry { color: var(--color-primary); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; padding: 0.5rem; cursor: pointer; }
 @media (max-width: 800px) {

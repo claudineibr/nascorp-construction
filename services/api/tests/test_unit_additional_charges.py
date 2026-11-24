@@ -3,8 +3,10 @@ from decimal import Decimal
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import httpx
 import pytest
 
+from app.domain.exceptions import ConstructionDomainError
 from app.domain.services import ConstructionProjectService
 from app.schemas.construction import ConstructionUnitAdjustmentCreate, ConstructionUnitInstallmentCreateRequest
 from tests.test_construction_project_service import FakeConstructionRepository
@@ -42,3 +44,28 @@ async def test_delivered_unit_accepts_additional_charges_without_contract_or_bal
         )
         assert client.adjustments[0]["construction_sale_id"] == unit.current_sale_id
     service._has_balance_to_charge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delivered_installment_timeout_keeps_the_result_unknown():
+    company_id = uuid4()
+    repository = FakeConstructionRepository()
+    client = RecordingAdjustmentErpClient()
+    client.create_unit_installments = AsyncMock(side_effect=httpx.ReadTimeout("ERP response delayed"))
+    _, unit = seed_project_and_unit(repository, company_id=company_id)
+    unit.status = "delivered"
+    unit.external_receivable_id = uuid4()
+    service = ConstructionProjectService(repository=repository, erp_client=client)
+    request = ConstructionUnitInstallmentCreateRequest(
+        starting_number=37,
+        count=2,
+        first_due_date=date(2026, 12, 10),
+        amount=Decimal("15237.72"),
+    )
+
+    with pytest.raises(ConstructionDomainError) as error:
+        await service.create_unit_installments(company_id=company_id, unit_id=unit.id, request=request)
+
+    assert error.value.status_code == 504
+    assert error.value.error_code == "CONSTRUCTION_UNIT_INSTALLMENT_RESULT_UNKNOWN"
+    client.create_unit_installments.assert_awaited_once()

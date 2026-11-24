@@ -3114,7 +3114,14 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       setCreateInstallmentForm(defaultCreateInstallmentForm)
       await loadUnitPaymentPlan(selectedUnit.id)
     } catch (requestError) {
-      bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível incluir a parcela.")
+      if (requestError?.status >= 500 || requestError instanceof TypeError || requestError instanceof SyntaxError) {
+        setIsCreateInstallmentOpen(false)
+        setCreateInstallmentForm(defaultCreateInstallmentForm)
+        bridge?.feedback?.warning?.("Não foi possível confirmar a inclusão. Confira as parcelas antes de enviar novamente.")
+        await loadUnitPaymentPlan(selectedUnit.id)
+      } else {
+        bridge?.feedback?.error?.(requestError?.message ?? "Não foi possível incluir a parcela.")
+      }
     } finally {
       setSubmittingCreateInstallment(false)
     }
@@ -3764,6 +3771,13 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
       return
     }
 
+    const deliveredPriceChanged = isDelivered &&
+      saleUnitForm.salePrice !== formatCurrencyFromNumber(saleTargetUnit.salePrice)
+    if (deliveredPriceChanged && parseCurrencyFormValue(saleUnitForm.salePrice) <= 0) {
+      bridge?.feedback?.warning?.("Informe um preço de venda maior que zero.")
+      return
+    }
+
     const validationError = (isDelivered
       ? saleDocumentationError(saleUnitForm)
       : requiredSaleFieldError(saleUnitForm, saleTargetUnit.status === "sold"))
@@ -3784,7 +3798,7 @@ function ConstructionWorkspace({ bridge: providedBridge }) {
           saleId: saleTargetUnit.currentSaleId,
           saleData: {
             ...saleUnitForm,
-            salePrice: saleTargetUnit.salePrice == null ? saleUnitForm.salePrice : null,
+            salePrice: deliveredPriceChanged ? saleUnitForm.salePrice : null,
             expectedUpdatedAt: saleTargetUnit.updatedAt,
             bankSources: paymentSources.filter((source) => !SALE_INSTALLMENT_SOURCE_TYPES.includes(source.sourceType)),
             documentations,
@@ -6573,6 +6587,7 @@ function UnitDetailPanel({
           unit={unit}
           plan={paymentPlan}
           formatMoney={formatMoney}
+          onViewInstallments={() => onTabChange("installments")}
           downloadAction={(
             <button
               type="button"
@@ -7216,7 +7231,7 @@ function CreateInstallmentModal({ unit, form, onClose, onChange, onSubmit, loadi
                 onChange={(event) => onChange("amount", formatCurrencyInput(event.target.value))}
                 placeholder="0,00"
               />
-              <small className={styles.fieldHint}>em branco divide o saldo que falta parcelar</small>
+              <small className={styles.fieldHint}>em branco divide o saldo ainda não parcelado do título</small>
             </label>
           </div>
 
@@ -10458,7 +10473,6 @@ function SaleUnitModal({
 }) {
   const isDelivered = unit?.status === "delivered"
   const isEditing = unit?.status === "sold" || isDelivered
-  const salePriceLocked = isDelivered && unit.salePrice != null
   const grossSalePrice = parseCurrencyFormValue(saleForm.salePrice)
   const discountAmount = parseCurrencyFormValue(saleForm.discountAmount)
 
@@ -10604,14 +10618,11 @@ function SaleUnitModal({
               <input
                 type="text"
                 inputMode="decimal"
-                disabled={loading || salePriceLocked}
+                disabled={loading}
                 value={saleForm.salePrice}
                 onChange={(event) => onChange("salePrice", formatCurrencyInput(event.target.value))}
                 placeholder="0,00"
               />
-              {isDelivered && !salePriceLocked && (
-                <span className={styles.metricHint}>O preço fica bloqueado após o primeiro preenchimento.</span>
-              )}
             </label>
             <label className={styles.filterControl}>
               <span>Desconto <InfoTip floating insideLabel label="Sobre o desconto">Valor em reais abatido do preço da venda. Exemplo: digite R$ 5.000,00 se esse foi o valor do abatimento acordado.</InfoTip></span>
