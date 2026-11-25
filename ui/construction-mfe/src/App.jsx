@@ -6166,7 +6166,7 @@ function ProjectList({
 }) {
   if (loading) {
     return (
-      <div className={`${styles.tableWrapper} ${styles.projectListWrapper}`} aria-busy="true">
+      <div className={styles.recordList} aria-busy="true">
         <div className={styles.empty}>
           <RefreshCw className={styles.spinIcon} size={16} />
           Carregando obras...
@@ -6177,7 +6177,7 @@ function ProjectList({
 
   if (error) {
     return (
-      <div className={`${styles.tableWrapper} ${styles.projectListWrapper}`}>
+      <div className={styles.recordList}>
         <div className={styles.empty}>
           <span>{error}</span>
           <button type="button" className={styles.secondaryButton} onClick={onRetry}>
@@ -6191,37 +6191,37 @@ function ProjectList({
 
   if (!projects.length) {
     return (
-      <div className={`${styles.tableWrapper} ${styles.projectListWrapper}`}>
+      <div className={styles.recordList}>
         <div className={styles.empty}>Nenhuma obra encontrada.</div>
       </div>
     )
   }
 
   return (
-    <div className={`${styles.tableWrapper} ${styles.projectListWrapper}`}>
-      <table className={`${styles.table} ${styles.projectListTable}`}>
-        <thead>
-          <tr>
-            <th>Código</th>
-            <th>Obra</th>
-            {showBuyerUnits ? <th>Unidades do comprador</th> : null}
-            <th>Status</th>
-            <th>Ações</th>
+    <div className={styles.recordList}>
+      <table className={styles.table} role="table">
+        <thead role="rowgroup">
+          <tr role="row">
+            <th role="columnheader" scope="col">Código</th>
+            <th role="columnheader" scope="col">Obra</th>
+            {showBuyerUnits ? <th role="columnheader" scope="col">Unidades do comprador</th> : null}
+            <th role="columnheader" scope="col">Status</th>
+            <th role="columnheader" scope="col" className={styles.recordActions}>Ações</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody role="rowgroup">
           {projects.map((project) => {
             const situation = projectSituation(project)
             const projectStatusClass = projectSituationClass(situation)
             return (
-              <tr key={project.id}>
-                <td className={styles.projectCodeCell} data-label="Código">{project.code}</td>
-                <td className={styles.projectNameCell} data-label="Obra">
+              <tr role="row" key={project.id}>
+                <td role="cell" data-label="Código">{project.code}</td>
+                <td role="cell" className={styles.recordTitle}>
                   <strong>{project.name}</strong>
                   <div className={styles.rowSecondaryText}>{project.cnpjSpe || "-"}</div>
                 </td>
                 {showBuyerUnits ? (
-                  <td className={styles.projectUnitsCell} data-label="Unidades do comprador">
+                  <td role="cell" className={styles.recordWide} data-label="Unidades do comprador">
                     <div className={styles.buyerUnitsList}>
                       {project.buyerUnits.map((unit) => (
                         <div key={unit.unitId}>
@@ -6244,12 +6244,12 @@ function ProjectList({
                     </div>
                   </td>
                 ) : null}
-                <td className={styles.projectStatusCell} data-label="Status">
+                <td role="cell" data-label="Status">
                   <span className={`${styles.statusPill} ${projectStatusClass}`}>
                     {projectSituationLabel[situation] ?? situation}
                   </span>
                 </td>
-                <td className={styles.projectActionsCell}>
+                <td role="cell" className={styles.recordActions}>
                   <RowActionsMenu
                     actions={[
                       {
@@ -6287,7 +6287,7 @@ function ProjectList({
 function BlocksList({ blocks, loading, error, onRetry, onEdit, onDelete }) {
   if (loading) {
     return (
-      <div className={styles.tableWrapper} aria-busy="true">
+      <div className={styles.recordList} aria-busy="true">
         <div className={styles.empty}>
           <RefreshCw className={styles.spinIcon} size={16} />
           Carregando blocos...
@@ -6298,7 +6298,7 @@ function BlocksList({ blocks, loading, error, onRetry, onEdit, onDelete }) {
 
   if (error) {
     return (
-      <div className={styles.tableWrapper}>
+      <div className={styles.recordList}>
         <div className={styles.empty}>
           <span>{error}</span>
           <button type="button" className={styles.secondaryButton} onClick={onRetry}>
@@ -6312,36 +6312,36 @@ function BlocksList({ blocks, loading, error, onRetry, onEdit, onDelete }) {
 
   if (!blocks.length) {
     return (
-      <div className={styles.tableWrapper}>
+      <div className={styles.recordList}>
         <div className={styles.empty}>Nenhum bloco cadastrado para a obra selecionada.</div>
       </div>
     )
   }
 
   return (
-    <div className={styles.tableWrapper}>
-      <table className={styles.table}>
-        <thead>
-          <tr>
-            <th>Código</th>
-            <th>Nome</th>
-            <th>Pavimentos</th>
-            <th>Status</th>
-            <th>Ações</th>
+    <div className={styles.recordList}>
+      <table className={styles.table} role="table">
+        <thead role="rowgroup">
+          <tr role="row">
+            <th role="columnheader" scope="col">Código</th>
+            <th role="columnheader" scope="col">Nome</th>
+            <th role="columnheader" scope="col">Pavimentos</th>
+            <th role="columnheader" scope="col">Status</th>
+            <th role="columnheader" scope="col" className={styles.recordActions}>Ações</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody role="rowgroup">
           {blocks.map((block) => (
-            <tr key={block.id}>
-              <td>{block.code}</td>
-              <td>{block.name}</td>
-              <td>{block.floorsCount ?? "-"}</td>
-              <td>
+            <tr role="row" key={block.id}>
+              <td role="cell" data-label="Código">{block.code}</td>
+              <td role="cell" className={styles.recordTitle}>{block.name}</td>
+              <td role="cell" data-label="Pavimentos">{block.floorsCount ?? "-"}</td>
+              <td role="cell" data-label="Status">
                 <span className={`${styles.statusPill} ${styles[`status${block.status}`] || ""}`}>
                   {block.status === "active" ? "Ativo" : "Inativo"}
                 </span>
               </td>
-              <td>
+              <td role="cell" className={styles.recordActions}>
                 <RowActionsMenu
                   actions={[
                     {
@@ -6521,7 +6521,7 @@ function UnitDetailPanel({
       </div>
 
       <section className={styles.tabCard}>
-        <div className={`${styles.tabList} ${styles.unitTabList}`}>
+        <nav className={`${styles.tabList} ${styles.unitTabList}`} aria-label="Abas da unidade">
           {unitDetailTabs.filter((tab) => (["delivery_term", "debt_confession"].includes(tab.id) ? bridge.canRead?.("contract") : tab.id !== "assistance" || bridge.canRead?.("construction_units"))).map((tab) => {
             const Icon = tab.icon
             return (
@@ -6530,14 +6530,15 @@ function UnitDetailPanel({
                 type="button"
                 ref={activeTab === tab.id ? revealActiveTab : undefined}
                 className={`${styles.tabButton} ${activeTab === tab.id ? styles.tabButtonActive : ""}`}
+                aria-current={activeTab === tab.id ? "true" : undefined}
                 onClick={() => onTabChange(tab.id)}
               >
-                <Icon size={16} />
+                <Icon size={16} aria-hidden="true" />
                 {tab.label}
               </button>
             )
           })}
-        </div>
+        </nav>
       </section>
 
       {activeTab === "assistance" ? <AssistancePanel key={unit.id} bridge={bridge} projectId={unit.projectId} unitId={unit.id} /> : null}
@@ -8246,9 +8247,43 @@ function RowActionsMenu({ label = "Ações", actions, busy = false, busyLabel = 
   const [isOpen, setIsOpen] = useState(false)
   const [menuPosition, setMenuPosition] = useState(null)
   const wrapperRef = useRef(null)
+  const triggerRef = useRef(null)
   const menuRef = useRef(null)
 
   const visibleActions = actions.filter((action) => action.visible !== false)
+
+  const attachMenu = useCallback((node) => {
+    menuRef.current = node
+    if (!node) return
+    const firstItem = node.querySelector('[role="menuitem"]:not(:disabled)') ?? node
+    firstItem.focus({ preventScroll: true })
+  }, [])
+
+  const closeAndRestoreFocus = () => {
+    setIsOpen(false)
+    triggerRef.current?.focus({ preventScroll: true })
+  }
+
+  const handleMenuKeyDown = (event) => {
+    if (event.key === "Escape" || event.key === "Tab") {
+      if (event.key === "Escape") {
+        event.preventDefault()
+        event.stopPropagation()
+      }
+      closeAndRestoreFocus()
+      return
+    }
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return
+
+    event.preventDefault()
+    const items = [...event.currentTarget.querySelectorAll('[role="menuitem"]:not(:disabled)')]
+    if (!items.length) return
+    const current = items.indexOf(document.activeElement)
+    const step = event.key === "ArrowDown" ? 1 : -1
+    const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+      : (current + step + items.length) % items.length
+    items[next]?.focus()
+  }
 
   const updateMenuPosition = useCallback(() => {
     if (!wrapperRef.current) {
@@ -8256,14 +8291,14 @@ function RowActionsMenu({ label = "Ações", actions, busy = false, busyLabel = 
     }
 
     const triggerRect = wrapperRef.current.getBoundingClientRect()
-    const estimatedHeight = visibleActions.length * 40 + 16
+    const estimatedHeight = visibleActions.length * 44 + 16
     const above = Math.max(0, triggerRect.top - 14)
     const below = Math.max(0, window.innerHeight - triggerRect.bottom - 14)
     const opensUpwards = estimatedHeight > below && above > below
     const maxHeight = opensUpwards ? above : below
     const width = Math.min(240, window.innerWidth - 16)
     setMenuPosition({
-      top: opensUpwards ? triggerRect.top - Math.min(estimatedHeight, maxHeight) - 6 : triggerRect.bottom + 6,
+      ...(opensUpwards ? { bottom: window.innerHeight - triggerRect.top + 6 } : { top: triggerRect.bottom + 6 }),
       right: Math.min(Math.max(window.innerWidth - triggerRect.right, 8), window.innerWidth - width - 8),
       maxHeight,
       width,
@@ -8325,6 +8360,7 @@ function RowActionsMenu({ label = "Ações", actions, busy = false, busyLabel = 
     <div className={styles.actionsDropdownWrapper} ref={wrapperRef}>
       <button
         type="button"
+        ref={triggerRef}
         className={triggerClassName}
         onClick={() => setIsOpen((previous) => !previous)}
         aria-expanded={isOpen}
@@ -8340,13 +8376,21 @@ function RowActionsMenu({ label = "Ações", actions, busy = false, busyLabel = 
         ) : (
           <>
             {label}
-            <ChevronDown size={14} className={chevronClassName} />
+            <ChevronDown size={14} className={chevronClassName} aria-hidden="true" />
           </>
         )}
       </button>
 
       {isOpen && menuPosition ? createPortal(
-        <div className={styles.actionsDropdown} ref={menuRef} role="menu" style={menuPosition}>
+        <div
+          className={styles.actionsDropdown}
+          ref={attachMenu}
+          role="menu"
+          aria-label={label}
+          tabIndex={-1}
+          onKeyDown={handleMenuKeyDown}
+          style={menuPosition}
+        >
           {visibleActions.flatMap((action, index) => {
             const ActionIcon = action.icon
             const itemClassName = action.danger
@@ -8357,15 +8401,16 @@ function RowActionsMenu({ label = "Ações", actions, busy = false, busyLabel = 
                 key={action.key}
                 type="button"
                 role="menuitem"
+                tabIndex={-1}
                 className={itemClassName}
                 onClick={() => {
-                  setIsOpen(false)
+                  closeAndRestoreFocus()
                   action.onSelect()
                 }}
                 disabled={action.disabled}
                 title={action.title}
               >
-                {ActionIcon ? <ActionIcon size={16} /> : null}
+                {ActionIcon ? <ActionIcon size={16} aria-hidden="true" /> : null}
                 <span>{action.label}</span>
               </button>
             )
@@ -8408,7 +8453,7 @@ function UnitsList({
 
   if (loading) {
     return (
-      <div className={styles.tableWrapper} aria-busy="true">
+      <div className={styles.recordList} aria-busy="true">
         <div className={styles.empty}>
           <RefreshCw className={styles.spinIcon} size={16} />
           Carregando unidades...
@@ -8419,7 +8464,7 @@ function UnitsList({
 
   if (error) {
     return (
-      <div className={styles.tableWrapper}>
+      <div className={styles.recordList}>
         <div className={styles.empty}>
           <span>{error}</span>
           <button type="button" className={styles.secondaryButton} onClick={onRetry}>
@@ -8433,25 +8478,25 @@ function UnitsList({
 
   if (!units.length) {
     return (
-      <div className={styles.tableWrapper}>
+      <div className={styles.recordList}>
         <div className={styles.empty}>{emptyMessage}</div>
       </div>
     )
   }
 
   return (
-    <div className={styles.tableWrapper}>
-      <table className={styles.table}>
-        <thead>
-          <tr>
-            <th>Descrição</th>
-            <th>Bloco</th>
-            <th>Status</th>
-            <th>Preço</th>
-            <th>Ações</th>
+    <div className={styles.recordList}>
+      <table className={styles.table} role="table">
+        <thead role="rowgroup">
+          <tr role="row">
+            <th role="columnheader" scope="col">Descrição</th>
+            <th role="columnheader" scope="col">Bloco</th>
+            <th role="columnheader" scope="col">Status</th>
+            <th role="columnheader" scope="col">Preço</th>
+            <th role="columnheader" scope="col" className={styles.recordActions}>Ações</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody role="rowgroup">
           {units.map((unit) => {
             const canReserve = unit.status === "available"
             const canRelease = unit.status === "reserved"
@@ -8459,19 +8504,19 @@ function UnitsList({
             const canEditSale = canEditUnitSale(unit, canEditDeliveredSale)
 
             return (
-              <tr key={unit.id}>
-                <td>
+              <tr role="row" key={unit.id}>
+                <td role="cell" className={styles.recordTitle}>
                   <strong>{unit.description || unit.code}</strong>
                   <div className={styles.rowSecondaryText}>{unit.code}</div>
                 </td>
-                <td>{unit.blockId ? blockNameById[unit.blockId] ?? unit.blockId : "-"}</td>
-                <td>
+                <td role="cell" className={styles.recordWide} data-label="Bloco">{unit.blockId ? blockNameById[unit.blockId] ?? unit.blockId : "-"}</td>
+                <td role="cell" data-label="Status">
                   <span className={`${styles.statusPill} ${styles[`status${unit.status}`] || ""}`}>
                     {unitStatusLabel[unit.status] ?? unit.status}
                   </span>
                 </td>
-                <td>{formatMoney(unit.salePrice)}</td>
-                <td>
+                <td role="cell" data-label="Preço">{formatMoney(unit.salePrice)}</td>
+                <td role="cell" className={styles.recordActions}>
                   <RowActionsMenu
                     actions={[
                       {
@@ -8542,7 +8587,7 @@ function UnitsList({
 function ScheduleList({ phases, loading, error, onRetry, onEdit, onDelete, today, measuredByPhase }) {
   if (loading) {
     return (
-      <div className={styles.tableWrapper} aria-busy="true">
+      <div className={styles.recordList} aria-busy="true">
         <div className={styles.empty}>
           <RefreshCw className={styles.spinIcon} size={16} />
           Carregando cronograma...
@@ -8553,7 +8598,7 @@ function ScheduleList({ phases, loading, error, onRetry, onEdit, onDelete, today
 
   if (error) {
     return (
-      <div className={styles.tableWrapper}>
+      <div className={styles.recordList}>
         <div className={styles.empty}>
           <span>{error}</span>
           <button type="button" className={styles.secondaryButton} onClick={onRetry}>
@@ -8567,48 +8612,48 @@ function ScheduleList({ phases, loading, error, onRetry, onEdit, onDelete, today
 
   if (!phases.length) {
     return (
-      <div className={styles.tableWrapper}>
+      <div className={styles.recordList}>
         <div className={styles.empty}>Nenhuma fase cadastrada para a obra selecionada.</div>
       </div>
     )
   }
 
   return (
-    <div className={styles.tableWrapper}>
-      <table className={styles.table}>
-        <thead>
-          <tr>
-            <th>Ordem</th>
-            <th>Fase</th>
-            <th>Status</th>
-            <th>Início previsto</th>
-            <th>Fim previsto</th>
-            {measuredByPhase && <th>Prazo</th>}
-            <th>Progresso</th>
-            {measuredByPhase && <th>Medido (% do valor)</th>}
-            {(onEdit || onDelete) && <th>Ações</th>}
+    <div className={styles.recordList}>
+      <table className={styles.table} role="table">
+        <thead role="rowgroup">
+          <tr role="row">
+            <th role="columnheader" scope="col">Ordem</th>
+            <th role="columnheader" scope="col">Fase</th>
+            <th role="columnheader" scope="col">Status</th>
+            <th role="columnheader" scope="col">Início previsto</th>
+            <th role="columnheader" scope="col">Fim previsto</th>
+            {measuredByPhase && <th role="columnheader" scope="col">Prazo</th>}
+            <th role="columnheader" scope="col">Progresso</th>
+            {measuredByPhase && <th role="columnheader" scope="col">Medido (% do valor)</th>}
+            {(onEdit || onDelete) && <th role="columnheader" scope="col" className={styles.recordActions}>Ações</th>}
           </tr>
         </thead>
-        <tbody>
+        <tbody role="rowgroup">
           {phases.map((phase) => {
             const measured = measuredByPhase?.get(phase.id)
             const valuePercent = measured && Number(measured.contracted) > 0
               ? (100 * Number(measured.accumulated) / Number(measured.contracted)).toLocaleString("pt-BR", { maximumFractionDigits: 2 })
               : null
-            return <tr key={phase.id}>
-              <td>{phase.sequenceOrder}</td>
-              <td>{phase.name}</td>
-              <td>
+            return <tr role="row" key={phase.id}>
+              <td role="cell" data-label="Ordem">{phase.sequenceOrder}</td>
+              <td role="cell" className={styles.recordTitle}>{phase.name}</td>
+              <td role="cell" data-label="Status">
                 <span className={`${styles.statusPill} ${styles[`status${phase.status}`] || ""}`}>
                   {scheduleStatusLabel[phase.status] ?? phase.status}
                 </span>
               </td>
-              <td>{formatDate(phase.plannedStartDate)}</td>
-              <td>{formatDate(phase.plannedEndDate)}</td>
-              {measuredByPhase && <td>{phaseDeadline(phase, today)}</td>}
-              <td>{Number(phase.progressPercent ?? 0)}%</td>
-              {measuredByPhase && <td>{valuePercent === null ? "—" : `${valuePercent}%`}</td>}
-              {(onEdit || onDelete) && <td>
+              <td role="cell" data-label="Início previsto">{formatDate(phase.plannedStartDate)}</td>
+              <td role="cell" data-label="Fim previsto">{formatDate(phase.plannedEndDate)}</td>
+              {measuredByPhase && <td role="cell" data-label="Prazo">{phaseDeadline(phase, today)}</td>}
+              <td role="cell" data-label="Progresso">{Number(phase.progressPercent ?? 0)}%</td>
+              {measuredByPhase && <td role="cell" data-label="Medido (% do valor)">{valuePercent === null ? "—" : `${valuePercent}%`}</td>}
+              {(onEdit || onDelete) && <td role="cell" className={styles.recordActions}>
                 <RowActionsMenu
                   actions={[
                     {

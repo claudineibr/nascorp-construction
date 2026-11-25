@@ -373,7 +373,11 @@
 
 @media (max-width: 760px) {
   .projectFiltersGrid {
-    grid-template-columns: minmax(0, 1fr);
+    gap: 0.65rem;
+  }
+
+  .projectFiltersGrid > :nth-child(-n+2) {
+    grid-column: 1 / -1;
   }
 }
 
@@ -694,6 +698,16 @@
   overflow-x: auto;
   overflow-y: auto;
   scrollbar-gutter: auto;
+}
+
+.recordList {
+  composes: tableWrapper;
+}
+
+.recordList .table .recordActions {
+  width: 1%;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .contractContent {
@@ -1809,6 +1823,90 @@
     width: 100%;
   }
 
+  .page {
+    gap: 0.9rem;
+    min-width: 0;
+  }
+
+  .page :is(.filtersCard, .card, .tabCard) {
+    box-sizing: border-box;
+    min-width: 0;
+    padding: 0.65rem;
+  }
+
+  .page .projectTabCard > .tableCard { padding: 0; }
+
+  .heroActions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+  }
+
+  .heroActions > :only-child { grid-column: 1 / -1; }
+  .heroActions > button,
+  .detailActions > button,
+  .tableHeaderActions > button,
+  .actionsTrigger,
+  .actionsDropdownItem {
+    box-sizing: border-box;
+    min-width: 0;
+    min-height: 44px;
+    padding: 0.5rem 0.65rem;
+    font-size: 0.85rem;
+    line-height: 1.25;
+  }
+
+  .heroActions > button,
+  .detailActions > button,
+  .tableHeaderActions > button,
+  .actionsTrigger {
+    border-radius: 12px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .heroActions > button > svg,
+  .detailActions > button > svg,
+  .tableHeaderActions > button > svg,
+  .actionsDropdownItem > svg {
+    flex: 0 0 auto;
+  }
+
+  .page :is(.heroActions, .detailActions, .tableHeaderActions) > .primaryButton {
+    border-color: var(--color-primary);
+    background: var(--color-primary);
+    color: var(--color-text-inverse);
+  }
+
+  .page :is(.heroActions, .detailActions, .tableHeaderActions) > .primaryButton:hover:not(:disabled) {
+    border-color: var(--color-primary-strong);
+    background: var(--color-primary-strong);
+  }
+
+  .projectTabButton {
+    min-height: 44px;
+    padding: 0.55rem 0.65rem;
+  }
+
+  .tabList { overflow-y: hidden; }
+
+  .unitTabList .tabButton {
+    min-height: 44px;
+    border-color: var(--color-border);
+    border-radius: 10px;
+    padding: 0.45rem 0.65rem;
+  }
+
+  .unitTabList .tabButtonActive { border-color: var(--color-primary); }
+
+  .actionsTrigger:focus-visible,
+  .actionsDropdownItem:focus-visible,
+  .projectTabButton:focus-visible,
+  .unitTabList .tabButton:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: -3px;
+  }
+
   .spanTwoColumns {
     grid-column: span 1;
   }
@@ -2053,80 +2151,85 @@
 }
 
 @media (width <= 640px) {
-  .projectListWrapper {
+  .recordList {
     box-sizing: border-box;
     min-width: 0;
-    max-width: 100%;
-    padding: 0.5rem;
+    height: auto;
+    max-height: min(560px, 70svh);
+    padding: 0.4rem;
+    background: var(--color-surface-muted);
   }
 
-  .projectListTable {
+  .recordList > .empty { padding: 0.5rem; }
+
+  .recordList .table {
     display: block;
-    box-sizing: border-box;
     min-width: 0;
-    width: 100%;
     background: transparent;
   }
 
-  .projectListTable thead {
-    display: none;
+  .recordList thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
-  .projectListTable tbody {
+  .recordList tbody {
     display: grid;
-    gap: 0.65rem;
-    min-width: 0;
+    gap: 0.4rem;
   }
 
-  .projectListTable tbody tr {
+  .recordList tbody tr {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas: "code actions" "name name" "status status" "units units";
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     align-items: start;
-    gap: 0.65rem;
+    gap: 0.5rem 0.7rem;
     box-sizing: border-box;
     min-width: 0;
-    padding: 0.75rem;
+    padding: 0.65rem;
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);
     background: var(--color-surface);
   }
 
-  .projectListTable tbody tr:nth-child(even) {
+  .recordList tbody tr:nth-child(even) {
     background: var(--color-surface);
   }
 
-  .projectListTable tbody td {
+  .recordList tbody td {
     box-sizing: border-box;
     min-width: 0;
-    width: auto;
     padding: 0;
     border: 0;
     overflow-wrap: anywhere;
     white-space: normal;
   }
 
-  .projectListTable td[data-label]::before {
+  .recordList td[data-label]::before {
     display: block;
-    margin-bottom: 0.25rem;
+    margin-bottom: 0.2rem;
     color: var(--color-text-muted);
-    font-size: max(11px, 0.7rem);
+    font-size: max(11px, 0.75rem);
     font-weight: 600;
-    content: attr(data-label);
+    content: attr(data-label) / "";
   }
 
-  .projectCodeCell { grid-area: code; }
-  .projectNameCell { grid-area: name; }
-  .projectStatusCell { grid-area: status; }
-  .projectUnitsCell { grid-area: units; }
-  .projectActionsCell { grid-area: actions; justify-self: end; }
+  .recordList :is(.recordTitle, .recordWide) { grid-column: 1 / -1; }
+  .recordList .recordTitle { grid-row: 1; align-self: center; font-weight: 700; }
+  .recordList tr:has(.recordActions) > .recordTitle { grid-column: 1; }
+  .recordList .recordWide { order: 1; }
 
-  .projectActionsCell button {
-    min-height: 40px;
+  .recordList .table .recordActions {
+    grid-area: 1 / 2;
+    justify-self: end;
+    width: auto;
   }
 
-  .projectUnitsCell .buyerUnitLink {
-    min-height: 40px;
+  .recordList .buyerUnitLink {
+    min-height: 44px;
     white-space: normal;
     overflow-wrap: anywhere;
   }
@@ -2203,7 +2306,19 @@
 @media (width <= 768px) {
   .unitDetailHeader { flex-direction: column; align-items: stretch; }
   .unitDetailHeader .scopeMeta { flex: none; }
-  .unitDetailActions { justify-content: flex-start; width: 100%; }
+  .unitDetailActions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    overflow: visible;
+    width: 100%;
+  }
+
+  .unitDetailActions > button {
+    min-height: 44px;
+    width: 100%;
+    white-space: normal;
+  }
 }
 
 .procurementRequestTitle {

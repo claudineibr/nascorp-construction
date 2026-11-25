@@ -7,6 +7,7 @@
   --color-text-muted: #6b7280;
   --color-inverse-text: #0f172a;
   --color-primary: #2563eb;
+  --color-text-inverse: #ffffff;
   --color-primary-strong: #1d4ed8;
   --color-border: #e5e7eb;
   --border-primary: rgba(37, 99, 235, 0.25);
@@ -43,6 +44,7 @@
   --color-text-muted: #9ca3af;
   --color-inverse-text: #f9fafb;
   --color-primary: #60a5fa;
+  --color-text-inverse: #111827;
   --color-primary-strong: #3b82f6;
   --color-border: #374151;
   --border-primary: rgba(96, 165, 250, 0.25);
