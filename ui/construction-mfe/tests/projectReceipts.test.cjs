@@ -27,9 +27,13 @@ const context = {
   formatMoney: String, formatDate: String, NOTHING_LEFT_TO_CHARGE: "Sem saldo",
 }
 for (const icon of ["RefreshCw", "Plus", "CheckCircle", "FileText", "Trash2"]) context[icon] = () => null
+test.before(async () => {
+  const { commissionStatusLabel } = await import("../src/features/unitCommissions.js")
+  context.commissionStatusLabel = commissionStatusLabel
+})
 vm.createContext(context)
 vm.runInContext(source.slice(source.indexOf("const PROJECT_FIELD_HELP ="), source.indexOf("function ProjectModal(")), context)
-for (const name of ["ProjectModal", "UnitCommissionsPanel"]) {
+for (const name of ["getChargeDisabledReason", "ProjectModal", "UnitCommissionsPanel"]) {
   const start = source.indexOf(`function ${name}(`)
   const end = source.indexOf("\nfunction ", start + 1)
   vm.runInContext(esbuild.transformSync(source.slice(start, end), { loader: "jsx", jsx: "automatic", format: "cjs" }).code, context)
@@ -79,10 +83,11 @@ test("project groups subjects and shows the business-day field only for enabled 
 test("signal receipt requires payment, respects read access and targets its own row", () => {
   const commission = { id: "signal", sequenceNumber: 1, beneficiaryPersonId: "broker", amount: 1500 }
   let selected
-  for (const paid of [false, true]) {
+  for (const [paymentDate, paymentMethod] of [[null, null], ["2026-10-01", null], ["2026-10-01", "PIX"]]) {
+    const paid = Boolean(paymentDate && paymentMethod)
     for (const allowed of [false, true]) {
       menus.length = 0
-      const row = { ...commission, paymentDate: paid ? "2026-10-01" : null }
+      const row = { ...commission, paymentDate, paymentMethod }
       renderToStaticMarkup(React.createElement(context.UnitCommissionsPanel, {
         unit: { status: "sold" }, people: [], plan: { commissions: [row] },
         onReceipt: allowed ? value => { selected = value } : null,
