@@ -8,7 +8,7 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build
+RUN npm run build -- --base=/construction-mfe/
 
 FROM nginx:1.29-alpine-slim AS production
 
