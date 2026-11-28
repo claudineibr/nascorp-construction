@@ -10,6 +10,131 @@
   color: var(--color-text);
 }
 
+.browserToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: .65rem 1rem;
+}
+
+.breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.breadcrumbs li {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  overflow-wrap: anywhere;
+}
+
+.breadcrumbs button,
+.folderLink,
+.fileLocation {
+  padding: .35rem 0;
+  border: 0;
+  background: none;
+  color: var(--color-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.breadcrumbs button:hover:not(:disabled),
+.folderLink:hover:not(:disabled),
+.fileLocation:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.breadcrumbs button:focus-visible,
+.folderLink:focus-visible,
+.fileLocation:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.search {
+  display: flex;
+  flex: 1 1 16rem;
+  align-items: center;
+  max-width: 25rem;
+  gap: .5rem;
+  padding: 0 .75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+}
+
+.search:focus-within {
+  outline: 2px solid var(--color-primary);
+}
+
+.search input,
+.folderForm input {
+  width: 100%;
+  min-width: 0;
+  padding: calc(.65rem * var(--density-control, 1));
+  color: var(--color-text);
+  font: inherit;
+}
+
+.search input {
+  border: 0;
+  background: transparent;
+  outline: 0;
+}
+
+.search svg,
+.folderLink svg {
+  flex-shrink: 0;
+}
+
+.searchHint {
+  color: var(--color-text-muted);
+}
+
+.table .folderCell {
+  width: auto;
+  text-align: left;
+  white-space: normal;
+}
+
+.folderLink {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  overflow-wrap: anywhere;
+}
+
+.fileLocation {
+  padding: 0;
+  overflow-wrap: anywhere;
+}
+
+.folderForm,
+.folderForm label,
+.folderForm input {
+  box-sizing: border-box;
+}
+
+.folderForm label {
+  display: grid;
+  gap: .35rem;
+}
+
+.folderForm input {
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
+}
+
 .uploadStatus {
   display: grid;
   gap: 8px;

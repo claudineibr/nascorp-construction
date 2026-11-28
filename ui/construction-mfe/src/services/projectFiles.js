@@ -18,6 +18,42 @@ export async function listAllProjectFiles(bridge, projectId, signal) {
   return { items: [...files.values()] }
 }
 
+export async function browseProjectFiles(bridge, projectId, options, signal) {
+  const { folderId, search, sort, page, pageSize, all } = options
+  const params = new URLSearchParams({
+    q: search, sort: sort.key, direction: sort.direction, page_size: all ? 100 : pageSize,
+  })
+  if (folderId) params.set("folder_id", folderId)
+  const load = (number) => {
+    params.set("page", number)
+    return requestJson({ bridge, baseUrl: baseUrl(bridge), path: `${pathFor(projectId)}/browse?${params}`, signal })
+  }
+  const first = await load(all ? 1 : page)
+  if (!all || first.total_pages <= 1) return first
+  const files = new Map(first.items.map((file) => [file.id, file]))
+  for (let number = 2; number <= first.total_pages; number += 1) {
+    const next = await load(number)
+    for (const file of next.items) files.set(file.id, file)
+  }
+  return { ...first, items: [...files.values()] }
+}
+
+export async function readProjectFileSources(bridge, projectId, ids, signal) {
+  const batches = []
+  for (let start = 0; start < ids.length; start += 300) {
+    batches.push(requestJson({
+      bridge, baseUrl: baseUrl(bridge), path: `${pathFor(projectId)}/file-sources`,
+      method: "POST", body: { file_ids: ids.slice(start, start + 300) }, signal,
+    }))
+  }
+  return new Map((await Promise.all(batches)).flat().map((file) => [file.id, file.folder_id]))
+}
+
+export const createProjectFolder = (bridge, projectId, name, parentId) => requestJson({
+  bridge, baseUrl: baseUrl(bridge), path: `${pathFor(projectId)}/folders`,
+  method: "POST", body: { name, parent_id: parentId },
+})
+
 export async function checkProjectFileAvailability(bridge, projectId, fileId, signal) {
   try {
     await requestJson({
@@ -79,9 +115,10 @@ async function fileRequest(bridge, path, options = {}, onProgress) {
   return response
 }
 
-export async function uploadProjectFile(bridge, projectId, file, { signal, onProgress }) {
+export async function uploadProjectFile(bridge, projectId, file, { signal, onProgress, folderId }) {
   const body = new FormData()
   body.append("file", file)
+  if (folderId) body.append("folder_id", folderId)
   const response = await fileRequest(bridge, pathFor(projectId), { method: "POST", body, signal }, onProgress)
   return response.json()
 }
